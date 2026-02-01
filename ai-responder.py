@@ -5,6 +5,7 @@ import logging
 import threading
 import requests
 from meshtastic.tcp_interface import TCPInterface
+from meshtastic.serial_interface import SerialInterface
 from pubsub import pub
 
 # Configuration Defaults
@@ -16,15 +17,19 @@ DEFAULT_OLLAMA_PORT = '11434'
 DEFAULT_OLLAMA_MODEL = 'llama3.2:1b'
 ACK_TIMEOUT = 20 # Seconds to wait for radio/neighbor ACK
 DEFAULT_ALLOWED_CHANNELS = [0, 3] # Default to DM and Private
-CONFIG_FILE = '/app/data/config.json'
+CONFIG_FILE = os.environ.get('CONFIG_FILE', '/app/data/config.json')
 
 # Environment Variables (Static config)
+INTERFACE_TYPE = os.environ.get('INTERFACE_TYPE', 'tcp').lower()
+SERIAL_PORT = os.environ.get('SERIAL_PORT', '/dev/ttyACM0')
 MESHTASTIC_HOST = os.environ.get('MESHTASTIC_HOST', DEFAULT_MESHTASTIC_HOST)
 MESHTASTIC_PORT = int(os.environ.get('MESHTASTIC_PORT', DEFAULT_MESHTASTIC_PORT))
 OLLAMA_HOST = os.environ.get('OLLAMA_HOST', DEFAULT_OLLAMA_HOST)
 OLLAMA_PORT = os.environ.get('OLLAMA_PORT', DEFAULT_OLLAMA_PORT)
 OLLAMA_MODEL = os.environ.get('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL)
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ENV_ADMIN_NODE_ID = os.environ.get('ADMIN_NODE_ID', '')
 
 # Logging setup
@@ -75,9 +80,14 @@ class AIResponder:
     def connect(self):
         while self.running:
             try:
-                logger.info(f"Connecting to Meshtastic node at {MESHTASTIC_HOST}:{MESHTASTIC_PORT}...")
-                self.iface = TCPInterface(hostname=MESHTASTIC_HOST, portNumber=MESHTASTIC_PORT)
-                logger.info("Connected successfully!")
+                if INTERFACE_TYPE == 'serial':
+                    logger.info(f"Connecting to Serial node at {SERIAL_PORT}...")
+                    self.iface = SerialInterface(devPath=SERIAL_PORT)
+                else:
+                    logger.info(f"Connecting to TCP node at {MESHTASTIC_HOST}:{MESHTASTIC_PORT}...")
+                    self.iface = TCPInterface(hostname=MESHTASTIC_HOST, portNumber=MESHTASTIC_PORT)
+                
+                logger.info(f"Connected successfully to {INTERFACE_TYPE} interface!")
                 
                 # Standard subscription
                 pub.subscribe(self.on_receive, "meshtastic.receive")
@@ -179,20 +189,25 @@ class AIResponder:
         # !ai -p [provider]
         if cmd == '-p':
             if len(args) == 2:
-                status = f"Current Provider: {self.config['current_provider']}"
-                self.send_response(status, from_node, to_node, channel, is_admin_cmd=True)
+                current = self.config['current_provider']
+                providers = ['ollama', 'gemini', 'openai', 'anthropic']
+                msg = ["Providers:"]
+                for p in providers:
+                    status = "✅" if p == current else "❌"
+                    msg.append(f"{status} {p}")
+                self.send_response(", ".join(msg), from_node, to_node, channel, is_admin_cmd=True)
             else:
                 new_provider = args[2].lower()
-                if new_provider in ['online', 'gemini']:
-                    self.config['current_provider'] = 'gemini'
+                if new_provider in ['online', 'gemini', 'openai', 'anthropic']:
+                    self.config['current_provider'] = new_provider
                     self.save_config()
-                    self.send_response("✅ Switched to ONLINE provider (Gemini).", from_node, to_node, channel, is_admin_cmd=True)
+                    self.send_response(f"✅ Switched to ONLINE provider ({new_provider}).", from_node, to_node, channel, is_admin_cmd=True)
                 elif new_provider in ['local', 'ollama']:
                     self.config['current_provider'] = 'ollama'
                     self.save_config()
                     self.send_response("✅ Switched to LOCAL provider (Ollama).", from_node, to_node, channel, is_admin_cmd=True)
                 else:
-                    self.send_response("❌ Unknown provider. Use 'local' or 'online'.", from_node, to_node, channel, is_admin_cmd=True)
+                    self.send_response("❌ Unknown provider. Use 'local', 'gemini', 'openai', or 'anthropic'.", from_node, to_node, channel, is_admin_cmd=True)
 
         # !ai -c [-add/-rem]
         elif cmd == '-c':
@@ -265,13 +280,25 @@ class AIResponder:
             threading.Thread(target=self.handle_ai_request, args=(from_node, to_node, channel, prompt)).start()
 
     def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False):
-        target = '^all' if to_node == '^all' else from_node
-        if is_admin_cmd and not self.config.get('admin_nodes'):
-            if "(Bootstrap Mode)" not in text:
-                text += " (Bootstrap Mode)"
+        """
+        Send a response message.
+        If dm -> reply dm.
+        If broadcast -> broadcast.
+        If broadcast AND admin command -> reply dm (to reduce spam).
+        """
+        target = '^all'
+        
+        # If it's an admin command (or error), and it came from a specific user, reply privately
+        # even if they shouted it to the channel.
+        if is_admin_cmd and from_node.startswith('!'):
+            target = from_node
+        # Normal logic: reply to sender if they DM'd us
+        elif to_node != '^all':
+            target = from_node
+
+        logger.info(f"Sending response to {target}: {text[:50]}...")
         try:
             self.iface.sendText(text, destinationId=target, channelIndex=channel)
-            logger.info(f"Sent response to {target}: {text[:50]}...")
         except Exception as e:
             logger.error(f"Failed to send response: {e}")
 
@@ -329,6 +356,10 @@ class AIResponder:
             return self.get_ollama_response(prompt)
         elif provider == 'gemini':
             return self.get_gemini_response(prompt)
+        elif provider == 'openai':
+            return self.get_openai_response(prompt)
+        elif provider == 'anthropic':
+            return self.get_anthropic_response(prompt)
         return f"Error: Unknown provider '{provider}'"
 
     def get_ollama_response(self, prompt):
@@ -375,6 +406,55 @@ class AIResponder:
                 logger.error(f"Gemini connection error: {e}")
                 last_err = "Connection Error"
         return f"Gemini Error: {last_err}. Check API Key."
+
+    def get_openai_response(self, prompt):
+        if not OPENAI_API_KEY: return "Error: OpenAI API key missing."
+        url = 'https://api.openai.com/v1/chat/completions'
+        payload = {
+            'model': 'gpt-3.5-turbo',
+            'messages': [{'role': 'user', 'content': f"Context: Meshtastic assistant. Concise. Task: {prompt}"}],
+            'max_tokens': 150
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {OPENAI_API_KEY}'
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+            else:
+                logger.error(f"OpenAI error: {response.status_code} - {response.text}")
+                return f"OpenAI Error: {response.status_code}"
+        except Exception as e:
+            logger.error(f"OpenAI connection error: {e}")
+            return f"Error calling OpenAI: {str(e)}"
+
+    def get_anthropic_response(self, prompt):
+        if not ANTHROPIC_API_KEY: return "Error: Anthropic API key missing."
+        url = 'https://api.anthropic.com/v1/messages'
+        payload = {
+            'model': 'claude-3-haiku-20240307',
+            'max_tokens': 150,
+            'messages': [{'role': 'user', 'content': f"Context: Meshtastic assistant. Concise. Task: {prompt}"}]
+        }
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+        }
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('content', [{}])[0].get('text', '').strip()
+            else:
+                logger.error(f"Anthropic error: {response.status_code} - {response.text}")
+                return f"Anthropic Error: {response.status_code}"
+        except Exception as e:
+            logger.error(f"Anthropic connection error: {e}")
+            return f"Error calling Anthropic: {str(e)}"
 
 if __name__ == "__main__":
     responder = AIResponder()
