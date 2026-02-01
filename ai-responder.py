@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import threading
 import requests
 from meshtastic.tcp_interface import TCPInterface
 from pubsub import pub
@@ -260,7 +261,8 @@ class AIResponder:
 
         else:
             prompt = message[4:].strip()
-            self.handle_ai_request(from_node, to_node, channel, prompt)
+            # Run AI request in a separate thread to avoid blocking the radio interface
+            threading.Thread(target=self.handle_ai_request, args=(from_node, to_node, channel, prompt)).start()
 
     def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False):
         target = '^all' if to_node == '^all' else from_node
