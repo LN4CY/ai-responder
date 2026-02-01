@@ -232,23 +232,39 @@ class TestAIResponder(unittest.TestCase):
             self.responder.on_receive(pkt_dm, None)
             mock_process.assert_called()
 
-    def test_help_allowed_on_disabled_channel(self):
-        """Test that !ai -h works even if the channel is disabled (Broadcast)."""
-        # 1. Disable ALL channels
-        self.responder.config['allowed_channels'] = []
+    def test_help_privacy_logic(self):
+        """Test !ai -h reply privacy and channel restrictions."""
         
+        # Case 1: Channel 0 Disabled -> Should be IGNORED (Broadcast)
+        self.responder.config['allowed_channels'] = []
         with patch.object(self.responder, 'process_command') as mock_process:
-            # 2. Send Help Broadcast (Should be ALLOWED)
-            pkt_help = {'decoded': {'text': '!ai -h'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
-            self.responder.on_receive(pkt_help, None)
-            mock_process.assert_called()
-            
-            mock_process.reset_mock()
-            
-            # 3. Send Normal Command Broadcast (Should be IGNORED)
-            pkt_ai = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
-            self.responder.on_receive(pkt_ai, None)
+            pkt = {'decoded': {'text': '!ai -h'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt, None)
             mock_process.assert_not_called()
+
+        # Case 2: Channel 0 Enabled -> Should reply Public (User)
+        self.responder.config['allowed_channels'] = [0]
+        # self.responder.is_admin is standard logic (default everyone admin? NO, check config)
+        self.responder.config['admin_nodes'] = ['!admin'] 
+        
+        with patch.object(self.responder, 'send_response') as mock_send_pub:
+            # Send as Non-Admin (!tester)
+            pkt = {'decoded': {'text': '!ai -h'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt, None)
+            mock_send_pub.assert_called()
+            # Check is_admin_cmd=False (Public)
+            kwargs = mock_send_pub.call_args.kwargs
+            self.assertFalse(kwargs.get('is_admin_cmd', False), "Help from User on enabled ch should be Public")
+
+        # Case 3: Channel 0 Enabled -> Should reply Private (Admin)
+        with patch.object(self.responder, 'send_response') as mock_send_priv:
+            # Send as Admin (!admin)
+            pkt = {'decoded': {'text': '!ai -h'}, 'fromId': '!admin', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt, None)
+            mock_send_priv.assert_called()
+            # Check is_admin_cmd=True (Private)
+            kwargs = mock_send_priv.call_args.kwargs
+            self.assertTrue(kwargs.get('is_admin_cmd', False), "Help from Admin should be Private")
 
     def test_connection_logic(self):
         """Test interface selection logic."""

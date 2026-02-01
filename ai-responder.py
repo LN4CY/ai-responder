@@ -125,9 +125,7 @@ class AIResponder:
                 return
 
             # Check if channel is allowed (DMs are always allowed)
-            # EXCEPTION: !ai -h (Help) is always allowed
-            is_help = message.strip() in ['!ai -h', '!ai --help']
-            if to_node == '^all' and channel not in self.config['allowed_channels'] and not is_help:
+            if to_node == '^all' and channel not in self.config['allowed_channels']:
                 return
 
             # Command Processing
@@ -169,6 +167,7 @@ class AIResponder:
         
         # !ai -h (Help)
         if cmd == '-h':
+            # Admin Help -> Private
             if self.is_admin(from_node):
                 help_msg = (
                     "🤖 Admin Commands:\n"
@@ -177,9 +176,12 @@ class AIResponder:
                     "!ai -c [add|rm] : Manage Channels\n"
                     "!ai -a [add|rm] : Manage Admins"
                 )
+                self.send_response(help_msg, from_node, to_node, channel, is_admin_cmd=True)
+            # User Help -> Public (if on enabled public channel)
+            # Note: send_response handles 'Private if DM' automatically.
             else:
                 help_msg = "🤖 Usage: !ai <question>"
-            self.send_response(help_msg, from_node, to_node, channel, is_admin_cmd=True)
+                self.send_response(help_msg, from_node, to_node, channel, is_admin_cmd=False)
             return
 
         # Check Admin for ALL other commands (starting with -)
