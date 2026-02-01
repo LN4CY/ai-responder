@@ -16,8 +16,8 @@ graph TD
         AI[AI Responder]
         
         subgraph AI Providers
-            Ollama[Ollama (Local)]
-            Gemini[Google Gemini (Cloud)]
+            Ollama["Ollama (Local)"]
+            Gemini["Google Gemini (Cloud)"]
         end
     end
 
