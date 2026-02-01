@@ -54,7 +54,7 @@ The application also persists runtime configuration changes (like allowed channe
 {
   "current_provider": "ollama",
   "allowed_channels": [0, 3],
-  "admin_nodes": ["!9e044360"]
+  "admin_nodes": ["!12345678"]
 }
 ```
 
