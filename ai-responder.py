@@ -124,8 +124,8 @@ class AIResponder:
             if not message:
                 return
 
-            # Check if channel is allowed
-            if channel not in self.config['allowed_channels']:
+            # Check if channel is allowed (DMs are always allowed)
+            if to_node == '^all' and channel not in self.config['allowed_channels']:
                 return
 
             # Command Processing
@@ -237,9 +237,6 @@ class AIResponder:
                         self.save_config()
                         self.send_response(f"✅ Added Channel {target_idx}", from_node, to_node, channel, is_admin_cmd=True)
                 elif action == 'rm' or action == '-rem' or action == '-rm':
-                    if target_idx == 0:
-                         self.send_response("⛔ Cannot disable Channel 0.", from_node, to_node, channel, is_admin_cmd=True)
-                         return
                     if target_idx in self.config['allowed_channels']:
                         self.config['allowed_channels'].remove(target_idx)
                         self.save_config()

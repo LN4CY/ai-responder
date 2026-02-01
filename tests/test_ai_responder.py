@@ -185,6 +185,53 @@ class TestAIResponder(unittest.TestCase):
         args, _ = mock_post.call_args
         self.assertEqual(args[0], 'https://api.anthropic.com/v1/messages')
 
+    def test_disable_channel_0(self):
+        """Test that Channel 0 can be disabled and doing so ignores Broadcasts on Ch0."""
+        # Setup: Ensure ch0 is initially enabled
+        self.responder.config['allowed_channels'] = [0, 3]
+        
+        # 1. Verify response on Channel 0 (enabled)
+        with patch.object(self.responder, 'process_command') as mock_process:
+            # BROADCAST packet (explicit)
+            pkt = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt, None)
+            mock_process.assert_called()
+        
+        # 2. Disable Channel 0 via Admin command (Call REAL method)
+        self.responder.config['admin_nodes'] = ['!admin']
+        self.responder.process_command("!ai -c rm 0", "!admin", "!bot", 3)
+        
+        # Check config
+        self.assertNotIn(0, self.responder.config['allowed_channels'])
+        
+        # 3. Verify IGNORE on Channel 0 (disabled BROADCAST)
+        with patch.object(self.responder, 'process_command') as mock_process_2:
+            pkt = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt, None)
+            mock_process_2.assert_not_called()
+            
+            # 4. Verify ALLOW on Channel 3 (still enabled)
+            pkt_ch3 = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 3}
+            self.responder.on_receive(pkt_ch3, None)
+            mock_process_2.assert_called()
+
+    def test_dm_standalone(self):
+        """Test that DMs work even if all channels are disabled."""
+        # 1. Disable ALL channels
+        self.responder.config['allowed_channels'] = []
+        
+        with patch.object(self.responder, 'process_command') as mock_process:
+            # 2. Send Broadcast (Should be IGNORED)
+            pkt_bc = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt_bc, None)
+            mock_process.assert_not_called()
+            
+            # 3. Send DM (Should be ACCEPTED)
+            # DM implies toId != '^all'
+            pkt_dm = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '!ai_bot', 'channel': 0}
+            self.responder.on_receive(pkt_dm, None)
+            mock_process.assert_called()
+
     def test_connection_logic(self):
         """Test interface selection logic."""
         with patch('ai_responder.SerialInterface') as mock_serial, \
