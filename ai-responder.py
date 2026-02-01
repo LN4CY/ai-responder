@@ -125,7 +125,9 @@ class AIResponder:
                 return
 
             # Check if channel is allowed (DMs are always allowed)
-            if to_node == '^all' and channel not in self.config['allowed_channels']:
+            # EXCEPTION: !ai -h (Help) is always allowed
+            is_help = message.strip() in ['!ai -h', '!ai --help']
+            if to_node == '^all' and channel not in self.config['allowed_channels'] and not is_help:
                 return
 
             # Command Processing

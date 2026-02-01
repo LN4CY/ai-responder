@@ -232,6 +232,24 @@ class TestAIResponder(unittest.TestCase):
             self.responder.on_receive(pkt_dm, None)
             mock_process.assert_called()
 
+    def test_help_allowed_on_disabled_channel(self):
+        """Test that !ai -h works even if the channel is disabled (Broadcast)."""
+        # 1. Disable ALL channels
+        self.responder.config['allowed_channels'] = []
+        
+        with patch.object(self.responder, 'process_command') as mock_process:
+            # 2. Send Help Broadcast (Should be ALLOWED)
+            pkt_help = {'decoded': {'text': '!ai -h'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt_help, None)
+            mock_process.assert_called()
+            
+            mock_process.reset_mock()
+            
+            # 3. Send Normal Command Broadcast (Should be IGNORED)
+            pkt_ai = {'decoded': {'text': '!ai hi'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
+            self.responder.on_receive(pkt_ai, None)
+            mock_process.assert_not_called()
+
     def test_connection_logic(self):
         """Test interface selection logic."""
         with patch('ai_responder.SerialInterface') as mock_serial, \
