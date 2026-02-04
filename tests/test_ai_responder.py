@@ -18,6 +18,25 @@ AIResponder = mod.AIResponder
 
 class TestAIResponder(unittest.TestCase):
     def setUp(self):
+        # Patch paths to use a temp dir
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.mock_history_dir = os.path.join(self.test_dir, 'history')
+        self.mock_config_file = os.path.join(self.test_dir, 'config.json')
+        
+        # Ensure clean state
+        if not os.path.exists(self.mock_history_dir):
+            os.makedirs(self.mock_history_dir)
+            
+        # Patch the module-level variables
+        self.patcher_config = patch('ai_responder.CONFIG_FILE', self.mock_config_file)
+        self.patcher_history = patch('ai_responder.HISTORY_DIR', self.mock_history_dir)
+        self.patcher_config.start()
+        self.patcher_history.start()
+        
+        # Re-init responder to pick up mocked paths if needed (though they are global consts)
+        # Note: In the actual script, these are read at module level. 
+        # But methods use them directly.
+        
         self.responder = AIResponder()
         self.responder.iface = MagicMock()
         self.responder.config = {
@@ -27,6 +46,17 @@ class TestAIResponder(unittest.TestCase):
         }
         # Silence logging
         mod.logger.setLevel('CRITICAL')
+
+    def tearDown(self):
+        self.patcher_config.stop()
+        self.patcher_history.stop()
+        
+        # Cleanup temp files
+        if os.path.exists(self.mock_config_file):
+            os.remove(self.mock_config_file)
+        if os.path.exists(self.mock_history_dir):
+            import shutil
+            shutil.rmtree(self.mock_history_dir)
 
     def test_provider_list(self):
         """Test listing providers."""
