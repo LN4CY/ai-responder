@@ -115,7 +115,9 @@ class TestAIResponder(unittest.TestCase):
         
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {'response': 'Ollama says hi'}
+        mock_response.json.return_value = {
+            'message': {'role': 'assistant', 'content': 'Ollama says hi'}
+        }
         mock_post.return_value = mock_response
 
         response = self.responder.get_ai_response("hi")
@@ -297,6 +299,43 @@ class TestAIResponder(unittest.TestCase):
             
             mock_serial.assert_called_with(devPath='COM3')
             mock_tcp.assert_not_called()
+
+    def test_public_commands(self):
+        """Test that -m and -n are accessible to public users and reply publicly."""
+        self.responder.config['allowed_channels'] = [0]
+        self.responder.config['admin_nodes'] = ['!admin']
+
+        # 1. Test !ai -m as !user (Public)
+        self.responder.get_memory_status = MagicMock(return_value="Memory Stat")
+        # Mock send_response to check is_admin_cmd flag
+        with patch.object(self.responder, 'send_response') as mock_send:
+            self.responder.process_command('!ai -m', '!user', '^all', 0)
+            mock_send.assert_called()
+            # Must be is_admin_cmd=False to allow public reply in channel
+            self.assertFalse(mock_send.call_args.kwargs.get('is_admin_cmd', False))
+
+        # 2. Test !ai -n as !user (Public)
+        self.responder.clear_history = MagicMock()
+        with patch('threading.Thread') as mock_thread:
+            self.responder.process_command('!ai -n hello', '!user', '^all', 0)
+            self.responder.clear_history.assert_called_with('!user')
+            mock_thread.assert_called()
+
+    def test_new_conversation_command(self):
+        """Test !ai -n logic: clear history and thread start."""
+        self.responder.clear_history = MagicMock()
+        
+        with patch('threading.Thread') as mock_thread:
+            self.responder.process_command('!ai -n why is sky blue?', '!user', '^all', 0)
+            
+            # Verify history cleared
+            self.responder.clear_history.assert_called_with('!user')
+            
+            # Verify thread started with correct args
+            mock_thread.assert_called_once()
+            _, kwargs = mock_thread.call_args
+            self.assertEqual(kwargs['kwargs']['initial_msg'], "Thinking (New Conversation)... 🤖")
+            self.assertEqual(kwargs['args'][3], "why is sky blue?")
 
 if __name__ == "__main__":
     unittest.main()
