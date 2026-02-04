@@ -27,5 +27,5 @@ jobs:
           cut-off: 14 days ago UTC
           account-type: personal
           token: ${{ secrets.GITHUB_TOKEN }}
-          filter-tags: fix-*,feat-*
+          filter-tags: fix-*,feat-*,pr-*
           keep-at-least: 3
