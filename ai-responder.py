@@ -21,9 +21,14 @@ ACK_TIMEOUT = 20 # Seconds to wait for radio/neighbor ACK
 DEFAULT_ALLOWED_CHANNELS = [0, 3] # Default to DM and Private
 CONFIG_FILE = os.environ.get('CONFIG_FILE', '/app/data/config.json')
 HISTORY_DIR = '/app/data/history'
+CONVERSATIONS_DIR = '/app/data/conversations'
 HISTORY_MAX_BYTES = int(os.environ.get('HISTORY_MAX_BYTES', 2 * 1024 * 1024)) # Default 2MB
 HISTORY_MAX_MESSAGES = int(os.environ.get('HISTORY_MAX_MESSAGES', 1000)) # Default 1000
 OLLAMA_MAX_MESSAGES = int(os.environ.get('OLLAMA_MAX_MESSAGES', 10)) # Max messages for Local context
+MAX_CONVERSATIONS = 10 # Maximum saved conversations per user
+SESSION_TIMEOUT = 300 # 5 minutes in seconds
+SYSTEM_PROMPT_LOCAL_FILE = os.environ.get('SYSTEM_PROMPT_LOCAL_FILE', '/app/system_prompt_local.txt')
+SYSTEM_PROMPT_ONLINE_FILE = os.environ.get('SYSTEM_PROMPT_ONLINE_FILE', '/app/system_prompt_online.txt')
 
 # Environment Variables (Static config)
 INTERFACE_TYPE = os.environ.get('INTERFACE_TYPE', 'tcp').lower()
@@ -45,7 +50,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger('AI-Responder')
 
-SYSTEM_PROMPT = "You are a helpful AI assistant on a Meshtastic mesh network. You can answer general questions or help with mesh topics. Keep responses concise as bandwidth is limited."
+# Default system prompts (fallback if files don't exist)
+DEFAULT_SYSTEM_PROMPT_LOCAL = "You are a helpful AI assistant on a Meshtastic mesh network. You can answer general questions or help with mesh topics. Keep responses concise as bandwidth is limited."
+DEFAULT_SYSTEM_PROMPT_ONLINE = "You are a helpful AI assistant on a Meshtastic mesh network. You can answer general questions or help with mesh topics. While bandwidth is limited, you can provide comprehensive responses when needed."
+
+def load_system_prompt(provider):
+    """Load system prompt from file based on provider type."""
+    if provider in ['ollama', 'local']:
+        prompt_file = SYSTEM_PROMPT_LOCAL_FILE
+        default = DEFAULT_SYSTEM_PROMPT_LOCAL
+    else:
+        prompt_file = SYSTEM_PROMPT_ONLINE_FILE
+        default = DEFAULT_SYSTEM_PROMPT_ONLINE
+    
+    try:
+        if os.path.exists(prompt_file):
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                prompt = f.read().strip()
+                if prompt:
+                    logger.info(f"Loaded system prompt from {prompt_file}")
+                    return prompt
+    except Exception as e:
+        logger.warning(f"Failed to load system prompt from {prompt_file}: {e}")
+    
+    logger.info(f"Using default system prompt for {provider}")
+    return default
+
 
 class AIResponder:
     def __init__(self):
@@ -56,10 +86,15 @@ class AIResponder:
         self.last_probe = 0
         self.connection_lost = False
         self.history = {} # In-memory cache: {user_id: [{'role': 'user'/'assistant', 'content': '...'}]}
+        self.active_sessions = {} # {user_id: {'name': str, 'index': int, 'started': float, 'last_activity': float}}
         
         # Ensure history directory exists
         if not os.path.exists(HISTORY_DIR):
             os.makedirs(HISTORY_DIR)
+        
+        # Ensure conversations directory exists
+        if not os.path.exists(CONVERSATIONS_DIR):
+            os.makedirs(CONVERSATIONS_DIR)
 
     def load_history(self, user_id):
         """Load history from disk (if exists) into memory."""
@@ -139,7 +174,12 @@ class AIResponder:
         size_limit_mb = HISTORY_MAX_BYTES / (1024 * 1024)
         size_pct = (size_bytes / HISTORY_MAX_BYTES) * 100
         
-        return f"🧠 Context ({provider_label}): {active_context}/{context_limit} (| History: {msg_count}) | 💾 Storage: {size_mb:.2f}/{size_limit_mb:.2f} MB ({size_pct:.1f}%)"
+        # Conversation slot usage
+        metadata = self.load_conversation_metadata(user_id)
+        user_convs = {name: data for name, data in metadata.items() if not name.startswith('channel_')}
+        slots_used = len(user_convs)
+        
+        return f"🧠 Context ({provider_label}): {active_context}/{context_limit} (| History: {msg_count}) | 💾 Storage: {size_mb:.2f}/{size_limit_mb:.2f} MB ({size_pct:.1f}%) | 📚 Slots: {slots_used}/{MAX_CONVERSATIONS}"
 
     def clear_history(self, user_id):
         """Clear memory and disk history for a user."""
@@ -151,6 +191,318 @@ class AIResponder:
                 logger.info(f"Cleared history for {user_id}")
             except Exception as e:
                 logger.error(f"Failed to delete history file for {user_id}: {e}")
+
+    # ===== Conversation Management =====
+    
+    def get_user_conversations_dir(self, user_id):
+        """Get the conversations directory for a user."""
+        user_dir = os.path.join(CONVERSATIONS_DIR, user_id)
+        if not os.path.exists(user_dir):
+            os.makedirs(user_dir)
+        return user_dir
+    
+    def get_conversation_metadata_path(self, user_id):
+        """Get the metadata file path for a user's conversations."""
+        return os.path.join(self.get_user_conversations_dir(user_id), 'metadata.json')
+    
+    def load_conversation_metadata(self, user_id):
+        """Load conversation metadata for a user."""
+        metadata_path = self.get_conversation_metadata_path(user_id)
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load conversation metadata for {user_id}: {e}")
+        return {}
+    
+    def save_conversation_metadata(self, user_id, metadata):
+        """Save conversation metadata for a user."""
+        metadata_path = self.get_conversation_metadata_path(user_id)
+        try:
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save conversation metadata for {user_id}: {e}")
+    
+    def generate_conversation_name(self):
+        """Generate a unique conversation name based on timestamp."""
+        return f"chat_{time.strftime('%Y%m%d_%H%M%S')}"
+    
+    def get_channel_conversation_name(self, channel_index):
+        """Get the conversation name for a channel-specific slot."""
+        # Try to get channel name from interface
+        channel_name = f"Ch{channel_index}"
+        if self.iface and self.iface.localNode:
+            try:
+                ch = self.iface.localNode.channels[channel_index]
+                if ch and ch.settings and ch.settings.name:
+                    channel_name = ch.settings.name
+            except:
+                pass
+        return f"channel_{channel_name}"
+    
+    def get_next_available_index(self, metadata):
+        """Get the next available conversation index (1-10)."""
+        # Filter out channel conversations (they don't use numbered slots)
+        user_convs = {name: data for name, data in metadata.items() if not name.startswith('channel_')}
+        used_indices = {conv['index'] for conv in user_convs.values()}
+        for i in range(1, MAX_CONVERSATIONS + 1):
+            if i not in used_indices:
+                return i
+        return None
+    
+    def save_conversation(self, user_id, conversation_name, is_channel=False):
+        """Save current history as a named conversation."""
+        if user_id not in self.history:
+            return False, "No conversation history to save."
+        
+        metadata = self.load_conversation_metadata(user_id)
+        
+        # Check if conversation already exists
+        if conversation_name in metadata:
+            # Update existing conversation
+            index = metadata[conversation_name]['index']
+        else:
+            # Channel conversations get index 0 (reserved, doesn't count against limit)
+            if is_channel:
+                index = 0
+            else:
+                # Check if we have space for a new user conversation
+                user_convs = {name: data for name, data in metadata.items() if not name.startswith('channel_')}
+                if len(user_convs) >= MAX_CONVERSATIONS:
+                    return False, f"Maximum {MAX_CONVERSATIONS} conversations reached. Delete one first."
+                
+                # Get next available index
+                index = self.get_next_available_index(metadata)
+                if index is None:
+                    return False, "No available conversation slots."
+        
+        # Save conversation history
+        conv_path = os.path.join(self.get_user_conversations_dir(user_id), f"{conversation_name}.json.gz")
+        try:
+            with gzip.open(conv_path, 'wt', encoding='utf-8') as f:
+                json.dump(self.history[user_id], f)
+            
+            # Update metadata
+            metadata[conversation_name] = {
+                'index': index,
+                'created': metadata.get(conversation_name, {}).get('created', time.time()),
+                'last_access': time.time(),
+                'is_channel': is_channel
+            }
+            self.save_conversation_metadata(user_id, metadata)
+            
+            if is_channel:
+                logger.info(f"Saved channel conversation '{conversation_name}' for {user_id}")
+            else:
+                logger.info(f"Saved conversation '{conversation_name}' (index {index}) for {user_id}")
+            return True, f"Conversation saved as '{conversation_name}' (slot {index})"
+        except Exception as e:
+            logger.error(f"Failed to save conversation: {e}")
+            return False, f"Error saving conversation: {str(e)}"
+    
+    def load_conversation(self, user_id, identifier):
+        """Load a conversation by name or index."""
+        metadata = self.load_conversation_metadata(user_id)
+        
+        if not metadata:
+            return False, "No saved conversations found."
+        
+        # Find conversation by name or index
+        conversation_name = None
+        if identifier.isdigit():
+            # Search by index
+            target_index = int(identifier)
+            for name, data in metadata.items():
+                if data['index'] == target_index:
+                    conversation_name = name
+                    break
+        else:
+            # Search by name
+            if identifier in metadata:
+                conversation_name = identifier
+        
+        if not conversation_name:
+            return False, f"Conversation '{identifier}' not found."
+        
+        # Load conversation history
+        conv_path = os.path.join(self.get_user_conversations_dir(user_id), f"{conversation_name}.json.gz")
+        try:
+            with gzip.open(conv_path, 'rt', encoding='utf-8') as f:
+                self.history[user_id] = json.load(f)
+            
+            # Update last access time
+            metadata[conversation_name]['last_access'] = time.time()
+            self.save_conversation_metadata(user_id, metadata)
+            
+            logger.info(f"Loaded conversation '{conversation_name}' for {user_id}")
+            return True, f"Loaded conversation '{conversation_name}' (slot {metadata[conversation_name]['index']})"
+        except Exception as e:
+            logger.error(f"Failed to load conversation: {e}")
+            return False, f"Error loading conversation: {str(e)}"
+    
+    def list_conversations(self, user_id):
+        """List all saved conversations for a user."""
+        metadata = self.load_conversation_metadata(user_id)
+        
+        if not metadata:
+            return "No saved conversations."
+        
+        # Filter out channel conversations
+        user_convs = {name: data for name, data in metadata.items() if not name.startswith('channel_')}
+        
+        if not user_convs:
+            return "No saved conversations."
+        
+        # Sort by index
+        sorted_convs = sorted(user_convs.items(), key=lambda x: x[1]['index'])
+        
+        lines = ["📚 Saved Conversations:"]
+        for name, data in sorted_convs:
+            index = data['index']
+            last_access = time.strftime('%Y-%m-%d %H:%M', time.localtime(data['last_access']))
+            lines.append(f"{index}. {name} (last: {last_access})")
+        
+        return "\n".join(lines)
+    
+    def delete_conversation(self, user_id, identifier):
+        """Delete a conversation by name or index."""
+        metadata = self.load_conversation_metadata(user_id)
+        
+        if not metadata:
+            return False, "No saved conversations found."
+        
+        # Find conversation by name or index
+        conversation_name = None
+        if identifier.isdigit():
+            # Search by index
+            target_index = int(identifier)
+            for name, data in metadata.items():
+                if data['index'] == target_index:
+                    conversation_name = name
+                    break
+        else:
+            # Search by name
+            if identifier in metadata:
+                conversation_name = identifier
+        
+        if not conversation_name:
+            return False, f"Conversation '{identifier}' not found."
+        
+        # Delete conversation file
+        conv_path = os.path.join(self.get_user_conversations_dir(user_id), f"{conversation_name}.json.gz")
+        try:
+            if os.path.exists(conv_path):
+                os.remove(conv_path)
+            
+            # Remove from metadata
+            index = metadata[conversation_name]['index']
+            del metadata[conversation_name]
+            self.save_conversation_metadata(user_id, metadata)
+            
+            logger.info(f"Deleted conversation '{conversation_name}' (index {index}) for {user_id}")
+            return True, f"Deleted conversation '{conversation_name}' (slot {index})"
+        except Exception as e:
+            logger.error(f"Failed to delete conversation: {e}")
+            return False, f"Error deleting conversation: {str(e)}"
+    
+    # ===== Session Management =====
+    
+    def start_session(self, user_id, conversation_name=None, channel_name=None):
+        """Start a new AI session. Sessions can only occur in DMs."""
+        # Sessions are DM-only - this should be enforced by caller
+        # but we'll add a safety check here
+        
+        # Generate name if not provided
+        if not conversation_name:
+            conversation_name = self.generate_conversation_name()
+        
+        # Clear current history for new conversation
+        self.clear_history(user_id)
+        
+        # Try to save as new conversation
+        success, message = self.save_conversation(user_id, conversation_name)
+        
+        if not success:
+            return False, message
+        
+        # Get the index from metadata
+        metadata = self.load_conversation_metadata(user_id)
+        index = metadata[conversation_name]['index']
+        
+        # Create session
+        self.active_sessions[user_id] = {
+            'name': conversation_name,
+            'index': index,
+            'started': time.time(),
+            'last_activity': time.time()
+        }
+        
+        logger.info(f"Started session '{conversation_name}' (slot {index}) for {user_id}")
+        return True, f"🟢 Session started: '{conversation_name}' (slot {index})"
+    
+    def end_session(self, user_id, is_timeout=False):
+        """End the current AI session."""
+        if user_id not in self.active_sessions:
+            return False, "No active session."
+        
+        session = self.active_sessions[user_id]
+        conversation_name = session['name']
+        
+        # Save final state
+        self.save_conversation(user_id, conversation_name)
+        
+        # Remove session
+        del self.active_sessions[user_id]
+        
+        # Prepare message
+        if is_timeout:
+            message = f"⏱️ Session '{conversation_name}' ended (timeout after 5 minutes)."
+        else:
+            message = f"Session '{conversation_name}' ended."
+        
+        logger.info(f"Ended session '{conversation_name}' for {user_id} (timeout={is_timeout})")
+        
+        # Always send notification to user
+        if self.iface:
+            try:
+                self.iface.sendText(message, destinationId=user_id, channelIndex=0)
+            except Exception as e:
+                logger.error(f"Failed to send session end notification: {e}")
+        
+        return True, message
+    
+    def check_session_timeout(self, user_id):
+        """Check if a user's session has timed out."""
+        if user_id not in self.active_sessions:
+            return
+        
+        session = self.active_sessions[user_id]
+        elapsed = time.time() - session['last_activity']
+        
+        if elapsed > SESSION_TIMEOUT:
+            logger.info(f"Session timeout for {user_id} after {elapsed:.0f}s")
+            # End session with timeout flag
+            self.end_session(user_id, is_timeout=True)
+    
+    def update_session_activity(self, user_id):
+        """Update the last activity time for a session."""
+        if user_id in self.active_sessions:
+            self.active_sessions[user_id]['last_activity'] = time.time()
+    
+    def is_in_session(self, user_id):
+        """Check if a user is in an active session."""
+        return user_id in self.active_sessions
+    
+    def get_session_indicator(self, user_id):
+        """Get session indicator string for responses."""
+        if user_id not in self.active_sessions:
+            return ""
+        
+        session = self.active_sessions[user_id]
+        return f"[🟢 {session['name']}] "
+
 
     def load_config(self):
         try:
@@ -301,7 +653,29 @@ class AIResponder:
             if to_node == '^all' and channel not in self.config['allowed_channels']:
                 return
 
-            # Command Processing
+            # Check for session timeout
+            self.check_session_timeout(from_node)
+
+            # Session Mode: If user is in session, treat all messages as AI queries
+            if self.is_in_session(from_node):
+                # Update session activity
+                self.update_session_activity(from_node)
+                
+                # Check if it's a command to end session
+                if message.strip() == '!ai -end':
+                    self.process_command(message, from_node, to_node, channel)
+                # Check if it's any other !ai command
+                elif message.startswith('!ai '):
+                    self.process_command(message, from_node, to_node, channel)
+                else:
+                    # Treat as AI query
+                    session = self.active_sessions[from_node]
+                    threading.Thread(target=self.handle_ai_request, 
+                                   args=(from_node, to_node, channel, message),
+                                   kwargs={'in_session': True}).start()
+                return
+
+            # Command Processing (not in session)
             if message.startswith('!ai '):
                 self.process_command(message, from_node, to_node, channel)
 
@@ -335,28 +709,81 @@ class AIResponder:
         args = message.split()
         if len(args) < 2: 
             return
-
         cmd = args[1]
         
         # !ai -h (Help)
         if cmd == '-h':
-            # Admin Help -> Private
-            if self.is_admin(from_node):
-                help_msg = (
-                    "🤖 Admin Commands:\n"
-                    "!ai <prompt> : Ask AI\n"
-                    "!ai -p [local|online] : Set Provider\n"
-                    "!ai -c [add|rm] : Manage Channels\n"
-                    "!ai -a [add|rm] : Manage Admins\n"
-                    "!ai -m : Memory Status\n"
-                    "!ai -n : New Conversation"
+            is_admin = from_node in self.config.get('admin_nodes', [])
+            is_dm = (to_node != '^all')
+            
+            # Message 1: Basic Commands (for everyone)
+            basic_help = (
+                "🤖 AI Responder - Basic Commands\n\n"
+                "!ai <query> : Ask the AI a question\n"
+                "!ai -m : Show memory & slot usage\n"
+                "!ai -h : Show this help"
+            )
+            self.send_response(basic_help, from_node, to_node, channel, is_admin_cmd=False)
+            time.sleep(2)  # Delay between messages
+            
+            # Message 2: Session Commands (DM only - only show in DMs)
+            if is_dm:
+                session_help = (
+                    "🟢 Session Commands (DM Only)\n\n"
+                    "!ai -n [name] : Start new session\n"
+                    "  • Auto-names if no name given\n"
+                    "  • No !ai prefix needed in session\n"
+                    "  • 5min timeout\n"
+                    "!ai -end : End current session"
                 )
-                self.send_response(help_msg, from_node, to_node, channel, is_admin_cmd=True)
-            # User Help -> Public (if on enabled public channel)
-            # Note: send_response handles 'Private if DM' automatically.
+                self.send_response(session_help, from_node, to_node, channel, is_admin_cmd=False)
+                time.sleep(2)
+            
+            # Message 3: Conversation Management
+            if is_dm:
+                conv_help = (
+                    "📚 Conversation Management\n\n"
+                    "!ai -c : Recall last conversation\n"
+                    "!ai -c <name/slot> : Recall specific\n"
+                    "!ai -c ls : List all (max 10)\n"
+                    "!ai -c rm <name/slot> : Delete one"
+                )
             else:
-                help_msg = "🤖 Usage:\n!ai <question>\n!ai -m : Memory Status\n!ai -n <question>: New Conversation"
-                self.send_response(help_msg, from_node, to_node, channel, is_admin_cmd=False)
+                # Channel mode - show channel-specific help
+                conv_help = (
+                    "📚 Conversation Management\n\n"
+                    "!ai -c : Recall last conversation\n"
+                    "!ai -c <name/slot> : Recall specific\n"
+                    "!ai -c ls : List all (max 10)\n"
+                    "!ai -c rm <name/slot> : Delete one\n\n"
+                    "Channel Mode:\n"
+                    "!ai -n <query> : Clear & ask new"
+                )
+            self.send_response(conv_help, from_node, to_node, channel, is_admin_cmd=False)
+            
+            # Message 4: Admin Commands
+            if is_admin:
+                time.sleep(2)
+                if is_dm:
+                    # Full admin help in DM
+                    admin_help = (
+                        "⚙️ Admin Commands (DM Only)\n\n"
+                        "!ai -p : List providers\n"
+                        "!ai -p <name> : Switch provider\n"
+                        "  • local, gemini, openai, anthropic\n"
+                        "!ai -ch : List channels\n"
+                        "!ai -ch add/rm <id/name>\n"
+                        "!ai -a : List admins\n"
+                        "!ai -a add/rm <node_id>"
+                    )
+                else:
+                    # Hint in channel
+                    admin_help = (
+                        "⚙️ Admin Note\n\n"
+                        "Send !ai -h in DM for admin commands."
+                    )
+                self.send_response(admin_help, from_node, to_node, channel, is_admin_cmd=False)
+            
             return
 
         # !ai -m (Memory Status)
@@ -364,25 +791,63 @@ class AIResponder:
             self.handle_memory_cmd(from_node, to_node, channel)
             return
 
-        # !ai -n (New Conversation)
+        # !ai -n [name] (Start New Session in DM or Clear Channel Conversation)
         if cmd == '-n':
-            prompt = ""
-            if len(args) > 2:
-                prompt = message[7:].strip() # "!ai -n " is 7 chars
+            # Check if this is a DM or channel message
+            is_dm = (to_node != '^all')
             
-            # Flush history
-            self.clear_history(from_node)
-            
-            # Start new request with custom status
-            threading.Thread(target=self.handle_ai_request, 
-                           args=(from_node, to_node, channel, prompt),
-                           kwargs={'initial_msg': "Thinking (New Conversation)... 🤖"}).start()
+            if is_dm:
+                # DM Mode: Start a session
+                conversation_name = None
+                if len(args) > 2:
+                    # Extract conversation name from the rest of the message
+                    conversation_name = ' '.join(args[2:]).strip()
+                
+                success, message = self.start_session(from_node, conversation_name)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            else:
+                # Channel Mode: Clear channel conversation and process query
+                # Get the query (everything after !ai -n)
+                query = ""
+                if len(args) > 2:
+                    query = ' '.join(args[2:]).strip()
+                
+                if not query:
+                    self.send_response("❌ Usage in channel: !ai -n <query>", from_node, to_node, channel, is_admin_cmd=False)
+                    return
+                
+                # Clear the channel-specific conversation
+                channel_conv_name = self.get_channel_conversation_name(channel)
+                self.clear_history(from_node)
+                
+                # Process the query as a new conversation
+                threading.Thread(target=self.handle_ai_request, 
+                               args=(from_node, to_node, channel, query),
+                               kwargs={'initial_msg': "Thinking (New Conversation)... 🤖"}).start()
+            return
+        
+        # !ai -end (End Session - DM only)
+        if cmd == '-end':
+            if to_node != '^all':
+                success, message = self.end_session(from_node)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            else:
+                self.send_response("❌ Sessions are only available in DMs.", from_node, to_node, channel, is_admin_cmd=False)
             return
 
         # Check Admin for ALL other commands (starting with -)
-        if cmd.startswith('-'):
+        # Admin commands: -p, -ch, -a
+        admin_only_commands = ['-p', '-ch', '-a']
+        
+        if cmd in admin_only_commands:
+            # Check if user is admin
             if not self.is_admin(from_node):
                 self.send_response("⛔ Unauthorized: Admin only.", from_node, to_node, channel, is_admin_cmd=True)
+                return
+            
+            # Admin commands are DM only
+            if to_node == '^all':
+                self.send_response("⚙️ Admin commands are DM only. Please send this command in a direct message.", from_node, to_node, channel, is_admin_cmd=True)
                 return
 
         # !ai -p [provider]
@@ -408,8 +873,53 @@ class AIResponder:
                 else:
                     self.send_response("❌ Unknown provider. Use 'local', 'gemini', 'openai', or 'anthropic'.", from_node, to_node, channel, is_admin_cmd=True)
 
-        # !ai -c [-add/-rem]
+        # !ai -c (Conversation Management)
         elif cmd == '-c':
+            if len(args) == 2:
+                # No subcommand - try to recall last conversation
+                metadata = self.load_conversation_metadata(from_node)
+                if not metadata:
+                    self.send_response("No saved conversations.", from_node, to_node, channel, is_admin_cmd=False)
+                    return
+                
+                # Find most recently accessed conversation
+                sorted_convs = sorted(metadata.items(), key=lambda x: x[1]['last_access'], reverse=True)
+                if sorted_convs:
+                    conversation_name = sorted_convs[0][0]
+                    success, message = self.load_conversation(from_node, conversation_name)
+                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                return
+            
+            action = args[2]
+            
+            # !ai -c ls (List conversations)
+            if action == 'ls':
+                message = self.list_conversations(from_node)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                return
+            
+            # !ai -c rm <name/index> (Delete conversation)
+            if action == 'rm':
+                if len(args) < 4:
+                    self.send_response("❌ Usage: !ai -c rm <name/index>", from_node, to_node, channel, is_admin_cmd=False)
+                    return
+                identifier = ' '.join(args[3:]).strip()
+                success, message = self.delete_conversation(from_node, identifier)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                return
+            
+            # !ai -c <name/index> (Recall conversation)
+            identifier = ' '.join(args[2:]).strip()
+            success, message = self.load_conversation(from_node, identifier)
+            self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            return
+
+        # !ai -ch (Channel Management - Admin only)
+        elif cmd == '-ch':
+            if not self.is_admin(from_node):
+                self.send_response("⛔ Unauthorized: Admin only.", from_node, to_node, channel, is_admin_cmd=True)
+                return
+                
             if len(args) == 2:
                 msg = ["Channels:"]
                 if self.iface and self.iface.localNode:
@@ -424,7 +934,7 @@ class AIResponder:
             else:
                 action = args[2]
                 if len(args) < 4:
-                    self.send_response("❌ Usage: !ai -c add|rm <id/name>", from_node, to_node, channel, is_admin_cmd=True)
+                    self.send_response("❌ Usage: !ai -ch add|rm <id/name>", from_node, to_node, channel, is_admin_cmd=True)
                     return
                 target_idx = self.resolve_channel_input(args[3])
                 if target_idx is None:
@@ -503,14 +1013,17 @@ class AIResponder:
         except Exception as e:
             logger.error(f"Failed to send response: {e}")
 
-    def handle_ai_request(self, from_node, to_node, channel, prompt, initial_msg="Thinking... 🤖"):
+    def handle_ai_request(self, from_node, to_node, channel, prompt, initial_msg="Thinking... 🤖", in_session=False):
         target = '^all' if to_node == '^all' else from_node
         logger.info(f"Processing AI request from {from_node} (reply to {target}): {prompt[:50]}...")
+        
+        # Get session indicator if in session
+        session_indicator = self.get_session_indicator(from_node) if in_session else ""
         
         self.update_history(from_node, 'user', prompt)
 
         try:
-            self.iface.sendText(initial_msg, destinationId=target, channelIndex=channel)
+            self.iface.sendText(f"{session_indicator}{initial_msg}", destinationId=target, channelIndex=channel)
             time.sleep(2) # Give the radio time to send the first packet
         except Exception as e:
             logger.error(f"Failed to send acknowledgment: {e}")
@@ -518,6 +1031,16 @@ class AIResponder:
         response_text = self.get_ai_response(prompt, from_node)
         
         self.update_history(from_node, 'assistant', response_text)
+
+        # Save conversation state
+        if in_session and from_node in self.active_sessions:
+            # Session mode: save to session conversation
+            session = self.active_sessions[from_node]
+            self.save_conversation(from_node, session['name'])
+        elif to_node == '^all':
+            # Channel mode: auto-save to channel-specific slot
+            channel_conv_name = self.get_channel_conversation_name(channel)
+            self.save_conversation(from_node, channel_conv_name, is_channel=True)
 
         # Clean up common AI markdown that might be problematic or waste space
         response_text = response_text.replace('**', '')
@@ -538,6 +1061,9 @@ class AIResponder:
                 display_chunk = chunk
                 if total_chunks > 1:
                     display_chunk = f"[{i+1}/{total_chunks}] {chunk}"
+                
+                # Add session indicator to each chunk
+                display_chunk = f"{session_indicator}{display_chunk}"
                 
                 p = self.iface.sendText(display_chunk, destinationId=target, channelIndex=channel)
                 pkt_id = p.get('id') if isinstance(p, dict) else 'unknown'
@@ -574,7 +1100,8 @@ class AIResponder:
     def get_ollama_response(self, prompt, user_id):
         url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
         
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        system_prompt = load_system_prompt('ollama')
+        messages = [{'role': 'system', 'content': system_prompt}]
         if user_id and user_id in self.history:
              # Dynamically limit context based on configuration
              messages.extend(self.history[user_id][-OLLAMA_MAX_MESSAGES:])
@@ -597,6 +1124,7 @@ class AIResponder:
     def get_gemini_response(self, prompt, user_id):
         if not GEMINI_API_KEY: return "Error: Gemini API key missing."
         
+        system_prompt = load_system_prompt('gemini')
         contents = []
         if user_id and user_id in self.history:
              for msg in self.history[user_id]:
@@ -607,9 +1135,9 @@ class AIResponder:
         
         # Inject System Prompt
         if contents and contents[0]['role'] == 'user':
-             contents[0]['parts'][0]['text'] = f"{SYSTEM_PROMPT}\n\n{contents[0]['parts'][0]['text']}"
+             contents[0]['parts'][0]['text'] = f"{system_prompt}\n\n{contents[0]['parts'][0]['text']}"
         elif contents:
-             contents.insert(0, {'role': 'user', 'parts': [{'text': SYSTEM_PROMPT}]})
+             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
 
         models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro', 'gemini-2.0-pro-exp']
         payload = {"contents": contents}
@@ -644,7 +1172,8 @@ class AIResponder:
         if not OPENAI_API_KEY: return "Error: OpenAI API key missing."
         url = 'https://api.openai.com/v1/chat/completions'
         
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        system_prompt = load_system_prompt('openai')
+        messages = [{'role': 'system', 'content': system_prompt}]
         if user_id and user_id in self.history:
             messages.extend(self.history[user_id])
         else:
@@ -675,6 +1204,7 @@ class AIResponder:
         if not ANTHROPIC_API_KEY: return "Error: Anthropic API key missing."
         url = 'https://api.anthropic.com/v1/messages'
         
+        system_prompt = load_system_prompt('anthropic')
         messages = []
         if user_id and user_id in self.history:
             # Anthropic expects list of {role, content} where roles alternate
@@ -685,7 +1215,7 @@ class AIResponder:
         payload = {
             'model': 'claude-3-haiku-20240307',
             'max_tokens': 150,
-            'system': SYSTEM_PROMPT,
+            'system': system_prompt,
             'messages': messages
         }
         headers = {

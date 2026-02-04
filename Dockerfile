@@ -8,8 +8,10 @@ RUN pip install --no-cache-dir \
     requests \
     pypubsub
 
-# Copy script
+# Copy script and system prompts
 COPY ai-responder.py .
+COPY system_prompt_local.txt .
+COPY system_prompt_online.txt .
 
 # Run script
 CMD ["python", "-u", "ai-responder.py"]

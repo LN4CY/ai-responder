@@ -74,17 +74,17 @@ class TestAIResponder(unittest.TestCase):
         self.assertIn("❌ openai", msg)
 
     def test_provider_switching(self):
-        """Test switching providers using commands."""
-        # !ai -p gemini
-        self.responder.process_command("!ai -p gemini", "!admin", "^all", 0)
+        """Test switching providers using commands in DM mode."""
+        # !ai -p gemini (in DM mode - to_node != '^all')
+        self.responder.process_command("!ai -p gemini", "!admin", "!bot", 0)
         self.assertEqual(self.responder.config['current_provider'], 'gemini')
         
         # !ai -p openai
-        self.responder.process_command("!ai -p openai", "!admin", "^all", 0)
+        self.responder.process_command("!ai -p openai", "!admin", "!bot", 0)
         self.assertEqual(self.responder.config['current_provider'], 'openai')
 
         # Invalid provider
-        self.responder.process_command("!ai -p invalid", "!admin", "^all", 0)
+        self.responder.process_command("!ai -p invalid", "!admin", "!bot", 0)
         self.assertEqual(self.responder.config['current_provider'], 'openai') # Should not change
 
     def test_admin_restrictions(self):
@@ -109,18 +109,18 @@ class TestAIResponder(unittest.TestCase):
         self.assertIn("✅ Switched to ONLINE", args.args[0])
 
     def test_admin_broadcast_command(self):
-        """Test admin sending command via Broadcast."""
+        """Test admin sending command via Broadcast - should be rejected."""
         self.responder.save_config = MagicMock()
-        # Do NOT mock send_response
         
-        # !admin sends Broadcast to ^all
+        # !admin sends Broadcast to ^all - admin commands are DM only now
         self.responder.process_command('!ai -p ollama', '!admin', '^all', 0)
         
-        # Even though it was broadcast, admin confirmation should be private
+        # Should get DM-only error message
         args = self.responder.iface.sendText.call_args
         self.assertIsNotNone(args)
+        # Should still reply to admin privately
         self.assertEqual(args.kwargs['destinationId'], '!admin')
-        self.assertIn("✅ Switched to LOCAL", args.args[0])
+        self.assertIn("DM only", args.args[0])
 
     @patch('threading.Thread')
     def test_threading_model(self, mock_thread):
@@ -229,9 +229,9 @@ class TestAIResponder(unittest.TestCase):
             self.responder.on_receive(pkt, None)
             mock_process.assert_called()
         
-        # 2. Disable Channel 0 via Admin command (Call REAL method)
+        # 2. Disable Channel 0 via Admin command (Call REAL method) - now uses -ch
         self.responder.config['admin_nodes'] = ['!admin']
-        self.responder.process_command("!ai -c rm 0", "!admin", "!bot", 3)
+        self.responder.process_command("!ai -ch rm 0", "!admin", "!bot", 3)
         
         # Check config
         self.assertNotIn(0, self.responder.config['allowed_channels'])
@@ -276,7 +276,6 @@ class TestAIResponder(unittest.TestCase):
 
         # Case 2: Channel 0 Enabled -> Should reply Public (User)
         self.responder.config['allowed_channels'] = [0]
-        # self.responder.is_admin is standard logic (default everyone admin? NO, check config)
         self.responder.config['admin_nodes'] = ['!admin'] 
         
         with patch.object(self.responder, 'send_response') as mock_send_pub:
@@ -284,19 +283,19 @@ class TestAIResponder(unittest.TestCase):
             pkt = {'decoded': {'text': '!ai -h'}, 'fromId': '!tester', 'toId': '^all', 'channel': 0}
             self.responder.on_receive(pkt, None)
             mock_send_pub.assert_called()
-            # Check is_admin_cmd=False (Public)
+            # Check is_admin_cmd=False (Public) - all help messages are now public in channels
             kwargs = mock_send_pub.call_args.kwargs
             self.assertFalse(kwargs.get('is_admin_cmd', False), "Help from User on enabled ch should be Public")
 
-        # Case 3: Channel 0 Enabled -> Should reply Private (Admin)
-        with patch.object(self.responder, 'send_response') as mock_send_priv:
-            # Send as Admin (!admin)
+        # Case 3: Admin in Channel -> Should reply Public with hint
+        with patch.object(self.responder, 'send_response') as mock_send_admin_ch:
+            # Send as Admin (!admin) in channel
             pkt = {'decoded': {'text': '!ai -h'}, 'fromId': '!admin', 'toId': '^all', 'channel': 0}
             self.responder.on_receive(pkt, None)
-            mock_send_priv.assert_called()
-            # Check is_admin_cmd=True (Private)
-            kwargs = mock_send_priv.call_args.kwargs
-            self.assertTrue(kwargs.get('is_admin_cmd', False), "Help from Admin should be Private")
+            mock_send_admin_ch.assert_called()
+            # All help messages in channels are now public (is_admin_cmd=False)
+            kwargs = mock_send_admin_ch.call_args.kwargs
+            self.assertFalse(kwargs.get('is_admin_cmd', False), "Help in channel should be Public")
 
     def test_connection_logic(self):
         """Test interface selection logic."""
@@ -351,11 +350,12 @@ class TestAIResponder(unittest.TestCase):
             self.responder.clear_history.assert_called_with('!user')
             mock_thread.assert_called()
 
-    def test_new_conversation_command(self):
-        """Test !ai -n logic: clear history and thread start."""
+    def test_new_conversation_command_channel(self):
+        """Test !ai -n logic in channels: clear history and thread start."""
         self.responder.clear_history = MagicMock()
         
         with patch('threading.Thread') as mock_thread:
+            # In channel mode (to_node == '^all')
             self.responder.process_command('!ai -n why is sky blue?', '!user', '^all', 0)
             
             # Verify history cleared
@@ -366,6 +366,20 @@ class TestAIResponder(unittest.TestCase):
             _, kwargs = mock_thread.call_args
             self.assertEqual(kwargs['kwargs']['initial_msg'], "Thinking (New Conversation)... 🤖")
             self.assertEqual(kwargs['args'][3], "why is sky blue?")
+    
+    def test_new_conversation_command_dm(self):
+        """Test !ai -n logic in DMs: start session."""
+        self.responder.start_session = MagicMock(return_value=(True, "Session started"))
+        self.responder.send_response = MagicMock()
+        
+        # In DM mode (to_node != '^all')
+        self.responder.process_command('!ai -n my_session', '!user', '!bot', 0)
+        
+        # Verify session started with name
+        self.responder.start_session.assert_called_with('!user', 'my_session')
+        
+        # Verify response sent
+        self.responder.send_response.assert_called()
 
 if __name__ == "__main__":
     unittest.main()
