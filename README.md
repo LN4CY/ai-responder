@@ -162,14 +162,21 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
 | `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (e.g. `!1234abcd`) |
 | `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
+| `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
+| `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
+| `OLLAMA_MAX_MESSAGES` | `10` | Max messages sent to Ollama (Context) |
 
 ## Commands
 
 ### User Commands
 -   `!ai <prompt>`: Ask the AI a question.
+-   `!ai -m`: Show memory usage statistics for the user.
+-   `!ai -n <question>`: Start a new conversation (flushes history).
 
 ### Admin Commands
 -   `!ai -h`: Show help menu.
 -   `!ai -p [local|online]`: Switch AI provider.
+-   `!ai -c [add|rm] <index>`: Enable/Disable listening on a channel.
+-   `!ai -a [add|rm] <node_id>`: Add or remove an admin.
 -   `!ai -c [add|rm] <index>`: Enable/Disable listening on a channel.
 -   `!ai -a [add|rm] <node_id>`: Add or remove an admin.
