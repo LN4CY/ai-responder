@@ -779,6 +779,10 @@ class AIResponder:
                     success, message = self.session_manager.end_session(user_id, is_timeout=True)
                     # Note: We can't easily send the message here without knowing channel/to_node
                     # The session manager already handles the notification in check_timeout
+
+                # Heartbeat for Docker healthcheck
+                with open("/tmp/healthy", "w") as f:
+                    f.write(str(time.time()))
                 
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")
