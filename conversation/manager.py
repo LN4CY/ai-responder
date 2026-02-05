@@ -28,13 +28,15 @@ class ConversationManager:
     - Automatic naming for conversations
     """
     
-    def __init__(self, conversations_dir=CONVERSATIONS_DIR):
+    def __init__(self, conversations_dir=None):
         """
         Initialize conversation manager.
         
         Args:
             conversations_dir: Base directory for storing conversations
         """
+        if conversations_dir is None:
+            conversations_dir = CONVERSATIONS_DIR
         self.conversations_dir = conversations_dir
         self._ensure_directory_exists()
     

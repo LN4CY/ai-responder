@@ -72,7 +72,9 @@ def load_system_prompt(provider):
 class Config:
     """Configuration manager for AI Responder."""
     
-    def __init__(self, config_file=CONFIG_FILE):
+    def __init__(self, config_file=None):
+        if config_file is None:
+            config_file = CONFIG_FILE
         self.config_file = config_file
         self.data = self.load()
     
