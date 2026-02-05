@@ -24,7 +24,7 @@ class MeshtasticHandler:
     - ACK waiting for reliable delivery
     """
     
-    def __init__(self, interface_type='tcp', serial_port=None, tcp_host=None, ack_timeout=60):
+    def __init__(self, interface_type='tcp', serial_port=None, tcp_host=None, tcp_port=4403, ack_timeout=60):
         """
         Initialize Meshtastic handler.
         
@@ -32,11 +32,13 @@ class MeshtasticHandler:
             interface_type: 'tcp' or 'serial'
             serial_port: Serial port path (e.g., '/dev/ttyUSB0')
             tcp_host: TCP hostname or IP (e.g., 'meshtastic.local')
+            tcp_port: TCP port (default: 4403)
             ack_timeout: Seconds to wait for message acknowledgment
         """
         self.interface_type = interface_type
         self.serial_port = serial_port
         self.tcp_host = tcp_host
+        self.tcp_port = tcp_port
         self.ack_timeout = ack_timeout
         self.interface = None
         self.running = False
@@ -52,7 +54,6 @@ class MeshtasticHandler:
         Returns:
             bool: True if connection successful
         """
-        """
         max_retries = 5
         retry_delay = 5
         
@@ -62,8 +63,8 @@ class MeshtasticHandler:
                     logger.info(f"Connecting to Meshtastic via Serial: {self.serial_port} (Attempt {attempt+1}/{max_retries})")
                     self.interface = SerialInterface(devPath=self.serial_port)
                 else:  # TCP
-                    logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host} (Attempt {attempt+1}/{max_retries})")
-                    self.interface = TCPInterface(hostname=self.tcp_host)
+                    logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host}:{self.tcp_port} (Attempt {attempt+1}/{max_retries})")
+                    self.interface = TCPInterface(hostname=self.tcp_host, port=self.tcp_port)
                 
                 # Register receive callback if provided
                 if on_receive_callback:

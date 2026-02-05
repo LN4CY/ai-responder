@@ -7,9 +7,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Environment Variables
+# Environment Variables
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
+MESHTASTIC_PORT = int(os.getenv('MESHTASTIC_PORT', '4403'))
 ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
 
 # AI Provider Configuration

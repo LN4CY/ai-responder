@@ -19,7 +19,11 @@ from pubsub import pub
 
 # Import our modular components
 import config
-from config import Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, ENV_ADMIN_NODE_ID
+from config import (
+    Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
+    HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
+    ENV_ADMIN_NODE_ID
+)
 from providers import get_provider
 from conversation import ConversationManager, SessionManager
 from meshtastic_handler import MeshtasticHandler
@@ -52,7 +56,8 @@ class AIResponder:
         self.meshtastic = MeshtasticHandler(
             interface_type=INTERFACE_TYPE,
             serial_port=SERIAL_PORT,
-            tcp_host=MESHTASTIC_HOST
+            tcp_host=MESHTASTIC_HOST,
+            tcp_port=MESHTASTIC_PORT
         )
         self.conversation_manager = ConversationManager()
         self.session_manager = SessionManager(self.conversation_manager)
