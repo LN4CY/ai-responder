@@ -64,7 +64,7 @@ class MeshtasticHandler:
                     self.interface = SerialInterface(devPath=self.serial_port)
                 else:  # TCP
                     logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host}:{self.tcp_port} (Attempt {attempt+1}/{max_retries})")
-                    self.interface = TCPInterface(hostname=self.tcp_host, port=self.tcp_port)
+                    self.interface = TCPInterface(hostname=self.tcp_host, portNumber=self.tcp_port)
                 
                 # Register receive callback if provided
                 if on_receive_callback:
