@@ -12,7 +12,7 @@ import gzip
 import time
 import logging
 from datetime import datetime
-from config import CONVERSATIONS_DIR, MAX_CONVERSATIONS
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class ConversationManager:
             conversations_dir: Base directory for storing conversations
         """
         if conversations_dir is None:
-            conversations_dir = CONVERSATIONS_DIR
+            conversations_dir = config.CONVERSATIONS_DIR
         self.conversations_dir = conversations_dir
         self._ensure_directory_exists()
     
@@ -131,7 +131,7 @@ class ConversationManager:
                      if not name.startswith('channel_')}
         
         # Find first available slot from 1-10
-        for slot in range(1, MAX_CONVERSATIONS + 1):
+        for slot in range(1, config.MAX_CONVERSATIONS + 1):
             if slot not in user_slots:
                 return slot
         return None
@@ -170,8 +170,8 @@ class ConversationManager:
         else:
             # Check if we have space for a new conversation (unless it's a channel)
             is_channel = conversation_name.startswith('channel_')
-            if not is_channel and len([n for n in metadata if not n.startswith('channel_')]) >= MAX_CONVERSATIONS:
-                return False, f"Maximum {MAX_CONVERSATIONS} conversations reached. Delete one first."
+            if not is_channel and len([n for n in metadata if not n.startswith('channel_')]) >= config.MAX_CONVERSATIONS:
+                return False, f"Maximum {config.MAX_CONVERSATIONS} conversations reached. Delete one first."
             
             # Get next available slot (0 for channels, 1-10 for user conversations)
             if is_channel:
