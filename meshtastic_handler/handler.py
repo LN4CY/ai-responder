@@ -52,26 +52,35 @@ class MeshtasticHandler:
         Returns:
             bool: True if connection successful
         """
-        try:
-            if self.interface_type == 'serial':
-                logger.info(f"Connecting to Meshtastic via Serial: {self.serial_port}")
-                self.interface = SerialInterface(devPath=self.serial_port)
-            else:  # TCP
-                logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host}")
-                self.interface = TCPInterface(hostname=self.tcp_host)
-            
-            # Register receive callback if provided
-            if on_receive_callback:
-                self.interface.onReceive = on_receive_callback
-            
-            self.running = True
-            logger.info("✅ Connected to Meshtastic")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to Meshtastic: {e}")
-            self.running = False
-            return False
+        """
+        max_retries = 5
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                if self.interface_type == 'serial':
+                    logger.info(f"Connecting to Meshtastic via Serial: {self.serial_port} (Attempt {attempt+1}/{max_retries})")
+                    self.interface = SerialInterface(devPath=self.serial_port)
+                else:  # TCP
+                    logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host} (Attempt {attempt+1}/{max_retries})")
+                    self.interface = TCPInterface(hostname=self.tcp_host)
+                
+                # Register receive callback if provided
+                if on_receive_callback:
+                    self.interface.onReceive = on_receive_callback
+                
+                self.running = True
+                logger.info("✅ Connected to Meshtastic")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Connection failed (Attempt {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    self.running = False
+                    return False
     
     def disconnect(self):
         """Close the Meshtastic connection."""
