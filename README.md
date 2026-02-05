@@ -118,14 +118,14 @@ $env:MESHTASTIC_HOST="192.168.1.50"
 $env:MESHTASTIC_PORT="4403"
 $env:AI_PROVIDER="gemini"
 $env:GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 
 # Linux/macOS
 export MESHTASTIC_HOST="192.168.1.50"
 export MESHTASTIC_PORT="4403"
 export AI_PROVIDER="gemini"
 export GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 ```
 
 ### 4. Run (Serial / USB)
@@ -138,14 +138,14 @@ $env:INTERFACE_TYPE="serial"
 $env:SERIAL_PORT="COM3"
 $env:AI_PROVIDER="gemini"
 $env:GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 
 # Linux (Raspberry Pi)
 export INTERFACE_TYPE="serial"
 export SERIAL_PORT="/dev/ttyACM0"
 export AI_PROVIDER="gemini"
 export GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 ```
 
 ## Configuration

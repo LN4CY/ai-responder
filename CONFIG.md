@@ -30,10 +30,19 @@ The application is configured primarily via environment variables passed to the 
 
 ### AI Persona / System Prompt
 
-Currently, the system prompt is hardcoded in the `ai-responder.py` file:
-> "Context: Meshtastic network assistant. Concise responses."
+System prompts are loaded from external text files, allowing easy customization without code changes.
 
-*To customize this, you currently need to modify the source code.*
+- **Local Provider (Ollama)**: Loads from `system_prompt_local.txt`
+  - Default: "You are a helpful AI assistant. Keep responses concise (under 200 chars when possible)."
+  
+- **Online Providers**: Loads from `system_prompt_online.txt`
+  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network. Keep responses clear and concise."
+    
+You can mount custom prompt files in Docker:
+```yaml
+volumes:
+  - ./my_custom_prompt.txt:/app/system_prompt_online.txt
+```
 
 ### Access Control & Channels
 
