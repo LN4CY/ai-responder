@@ -9,6 +9,7 @@ import time
 import logging
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
+from meshtastic import mesh_pb2
 from google.protobuf.message import DecodeError
 
 logger = logging.getLogger(__name__)
@@ -16,17 +17,36 @@ logger = logging.getLogger(__name__)
 
 class SafeTCPInterface(TCPInterface):
     """
-    TCPInterface helper that suppresses protobuf DecodeErrors.
-    This is necessary when connecting to some nodes/proxies (like meshmonitor)
-    that may send interleaved or malformed packets which crash the standard library.
+    TCPInterface helper that suppresses protobuf DecodeErrors and manually handles packets.
     """
     def _handleFromRadio(self, fromRadio):
+        # 1. Try standard lib processing first
         try:
             super()._handleFromRadio(fromRadio)
-        except DecodeError as e:
-            logger.debug(f"Input stream error (suppressed): {e}")
+            return  # Success, handled by standard lib
+        except DecodeError:
+            # 2. If it fails, log and try manual salvage
+            logger.debug("Protobuf Decode Error in standard lib. Attempting manual salvage...")
         except Exception as e:
             logger.warning(f"Unexpected stream error: {e}")
+            return
+
+        # 3. Manual Salvage
+        try:
+            decoded = None
+            if isinstance(fromRadio, bytes):
+                decoded = mesh_pb2.FromRadio()
+                decoded.ParseFromString(fromRadio)
+            elif hasattr(fromRadio, 'packet'):  # Already an object
+                decoded = fromRadio
+
+            if decoded and decoded.HasField("packet"):
+                # Manually trigger packet handling since super() failed
+                self._handlePacket(decoded.packet)
+                logger.debug("✅ Packet salvaged manually")
+
+        except Exception as e:
+            logger.debug(f"Manual salvage failed: {e}")
 
 
 class MeshtasticHandler:
