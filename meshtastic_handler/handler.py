@@ -9,8 +9,24 @@ import time
 import logging
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
+from google.protobuf.message import DecodeError
 
 logger = logging.getLogger(__name__)
+
+
+class SafeTCPInterface(TCPInterface):
+    """
+    TCPInterface helper that suppresses protobuf DecodeErrors.
+    This is necessary when connecting to some nodes/proxies (like meshmonitor)
+    that may send interleaved or malformed packets which crash the standard library.
+    """
+    def _handleFromRadio(self, fromRadio):
+        try:
+            super()._handleFromRadio(fromRadio)
+        except DecodeError as e:
+            logger.debug(f"Input stream error (suppressed): {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected stream error: {e}")
 
 
 class MeshtasticHandler:
@@ -64,7 +80,8 @@ class MeshtasticHandler:
                     self.interface = SerialInterface(devPath=self.serial_port)
                 else:  # TCP
                     logger.info(f"Connecting to Meshtastic via TCP: {self.tcp_host}:{self.tcp_port} (Attempt {attempt+1}/{max_retries})")
-                    self.interface = TCPInterface(hostname=self.tcp_host, portNumber=self.tcp_port)
+                    # Use SafeTCPInterface to handle potential stream errors from proxy
+                    self.interface = SafeTCPInterface(hostname=self.tcp_host, portNumber=self.tcp_port)
                 
                 # Register receive callback if provided
                 if on_receive_callback:
