@@ -52,7 +52,7 @@ class TestAIResponder(unittest.TestCase):
         # Initialize responder
         # We need to reload config to pick up patched paths if Config class caches anything, 
         # but Config() loads from file in __init__, so it should be fine.
-        self.responder = AIResponder()
+        self.responder = AIResponder(history_dir=self.mock_history_dir)
         
         # Mock the Meshtastic interface
         self.responder.meshtastic = MagicMock()

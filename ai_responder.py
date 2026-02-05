@@ -18,11 +18,8 @@ import threading
 from pubsub import pub
 
 # Import our modular components
-from config import (
-    Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST,
-    HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
-    ENV_ADMIN_NODE_ID
-)
+import config
+from config import Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, ENV_ADMIN_NODE_ID
 from providers import get_provider
 from conversation import ConversationManager, SessionManager
 from meshtastic_handler import MeshtasticHandler
@@ -43,10 +40,15 @@ class AIResponder:
     and Meshtastic communication.
     """
     
-    def __init__(self):
+    def __init__(self, history_dir=None):
         """Initialize AI Responder with all components."""
         # Core components
         self.config = Config()
+        
+        # Paths
+        if history_dir is None:
+            history_dir = config.HISTORY_DIR
+        self.history_dir = history_dir
         self.meshtastic = MeshtasticHandler(
             interface_type=INTERFACE_TYPE,
             serial_port=SERIAL_PORT,
@@ -66,9 +68,10 @@ class AIResponder:
         self.history = {}
         
         # Ensure history directory exists
-        if not os.path.exists(HISTORY_DIR):
-            os.makedirs(HISTORY_DIR)
-            logger.info(f"Created history directory: {HISTORY_DIR}")
+        # Ensure history directory exists
+        if not os.path.exists(self.history_dir):
+            os.makedirs(self.history_dir)
+            logger.info(f"Created history directory: {self.history_dir}")
         
         # Initialize admin from environment variable
         if ENV_ADMIN_NODE_ID:
@@ -91,7 +94,7 @@ class AIResponder:
         Returns:
             str: Absolute path to history file
         """
-        return os.path.join(HISTORY_DIR, f"{user_id}.json")
+        return os.path.join(self.history_dir, f"{user_id}.json")
     
     def load_history(self, user_id):
         """
@@ -127,9 +130,9 @@ class AIResponder:
         history_path = self._get_history_path(user_id)
         try:
             # Enforce message count limit
-            if len(self.history[user_id]) > HISTORY_MAX_MESSAGES:
-                logger.warning(f"History for {user_id} exceeded {HISTORY_MAX_MESSAGES} messages, trimming...")
-                self.history[user_id] = self.history[user_id][-HISTORY_MAX_MESSAGES:]
+            if len(self.history[user_id]) > config.HISTORY_MAX_MESSAGES:
+                logger.warning(f"History for {user_id} exceeded {config.HISTORY_MAX_MESSAGES} messages, trimming...")
+                self.history[user_id] = self.history[user_id][-config.HISTORY_MAX_MESSAGES:]
             
             # Save to file
             with open(history_path, 'w') as f:
@@ -137,7 +140,7 @@ class AIResponder:
             
             # Check file size and trim if needed
             file_size = os.path.getsize(history_path)
-            if file_size > HISTORY_MAX_BYTES:
+            if file_size > config.HISTORY_MAX_BYTES:
                 logger.warning(f"History file for {user_id} is {file_size} bytes, trimming...")
                 # Remove oldest 20% of messages
                 trim_count = len(self.history[user_id]) // 5
@@ -198,10 +201,10 @@ class AIResponder:
         if os.path.exists(history_path):
             history_size = os.path.getsize(history_path)
             size_kb = history_size / 1024
-            max_kb = HISTORY_MAX_BYTES / 1024
+            max_kb = config.HISTORY_MAX_BYTES / 1024
         else:
             size_kb = 0
-            max_kb = HISTORY_MAX_BYTES / 1024
+            max_kb = config.HISTORY_MAX_BYTES / 1024
         
         # Get conversation slot usage
         metadata = self.conversation_manager._load_metadata(user_id)
@@ -215,7 +218,7 @@ class AIResponder:
         from config import MAX_CONVERSATIONS
         status = (
             f"💾 Memory Status\n"
-            f"Messages: {message_count}/{HISTORY_MAX_MESSAGES}\n"
+            f"Messages: {message_count}/{config.HISTORY_MAX_MESSAGES}\n"
             f"Size: {size_kb:.1f}KB/{max_kb:.0f}KB\n"
             f"Slots: {slot_usage}/{MAX_CONVERSATIONS}\n"
             f"Provider: {provider.upper()}"
