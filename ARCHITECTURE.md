@@ -17,7 +17,9 @@ graph TD
         
         subgraph AI Providers
             Ollama["Ollama (Local)"]
-            Gemini["Google Gemini (Cloud)"]
+            Gemini["Google Gemini"]
+            OpenAI["OpenAI GPT"]
+            Claude["Anthropic Claude"]
         end
     end
 
@@ -25,6 +27,8 @@ graph TD
     MM <-->|TCP :4404| AI
     AI <-->|HTTP API| Ollama
     AI <-->|REST API| Gemini
+    AI <-->|REST API| OpenAI
+    AI <-->|REST API| Claude
     Nodes <--> Radio
 ```
 
@@ -82,7 +86,19 @@ Due to the low bandwidth of LoRa, responses are managed carefully:
 
 ```
 ai-responder/
-├── ai-responder.py    # Main application entry point
+├── ai_responder.py    # Main application entry point
+├── config.py          # Configuration management
+├── providers/         # AI provider implementations
+│   ├── base.py        # Abstract base class
+│   ├── ollama.py      # Local Ollama
+│   ├── gemini.py      # Google Gemini
+│   ├── openai.py      # OpenAI
+│   └── anthropic.py   # Anthropic Claude
+├── conversation/      # Conversation & session management
+│   ├── manager.py     # Persistence & slots
+│   └── session.py     # Session logic
+├── meshtastic_handler/# Meshtastic interface
+│   └── handler.py     # Message sending & rate limiting
 ├── requirements.txt   # Python dependencies
 ├── Dockerfile         # Container definition
 ├── README.md          # User documentation
