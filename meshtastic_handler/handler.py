@@ -193,8 +193,8 @@ class MeshtasticHandler:
         for chunk_index, chunk in enumerate(chunks):
             # Add rate limiting delay between chunks
             if chunk_index > 0:
-                # Dynamic rate limiting: 5s for DM, 15s for broadcast
-                delay_seconds = 15 if destination_id == '^all' else 5
+                # Dynamic rate limiting: 10s for DM (safer), 15s for broadcast
+                delay_seconds = 15 if destination_id == '^all' else 10
                 logger.info(f"Rate limiting: Waiting {delay_seconds}s before chunk {chunk_index + 1}/{total_chunks}")
                 time.sleep(delay_seconds)
             
@@ -208,21 +208,18 @@ class MeshtasticHandler:
                 display_chunk = f"{session_indicator}{display_chunk}"
                 
                 # Send via Meshtastic
+                # Note: TCPInterface in this env returns raw protobufs without wait_for_ack support.
+                # Reliability relies on the increased sleep delay above.
                 packet = self.interface.sendText(
                     display_chunk,
                     destinationId=destination_id,
                     channelIndex=channel_index
                 )
                 
-                packet_id = packet.get('id') if isinstance(packet, dict) else 'unknown'
+                # Get ID safely for logging
+                packet_id = getattr(packet, 'id', 'unknown')
                 logger.info(f"Chunk {chunk_index + 1}/{total_chunks} queued (ID: {packet_id})")
                 
-                # Wait for ACK if not broadcast
-                if destination_id != '^all':
-                    self._wait_for_ack(packet, chunk_index + 1)
-                else:
-                    logger.info("Broadcast sent (no ACK expected)")
-                    
             except Exception as e:
                 logger.error(f"Failed to send chunk {chunk_index + 1}: {e}")
                 return False
@@ -286,10 +283,13 @@ class MeshtasticHandler:
         """
         try:
             if hasattr(packet, 'wait_for_ack'):
+                logger.debug(f"Waiting for ACK on chunk {chunk_number}...")
                 if packet.wait_for_ack(timeout=self.ack_timeout):
                     logger.info(f"✅ Received ACK for chunk {chunk_number}")
                 else:
                     logger.warning(f"⚠️ ACK timeout for chunk {chunk_number} (Queue might be full/congested)")
+            else:
+                logger.warning(f"Packet object {type(packet)} has no 'wait_for_ack' method. Skipping ACK wait.")
         except Exception as ack_error:
             logger.warning(f"Error waiting for ACK: {ack_error}")
     

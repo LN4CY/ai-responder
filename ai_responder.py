@@ -691,6 +691,9 @@ class AIResponder:
     def _process_ai_query_thread(self, query, from_node, to_node, channel):
         """Background thread for processing AI queries."""
         try:
+            # Give the "Thinking..." message time to clear (standard DM rate limit)
+            time.sleep(10)
+
             # Add user message to history
             self.add_to_history(from_node, 'user', query)
             
