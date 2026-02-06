@@ -453,13 +453,13 @@ class AIResponder:
         # Message 3: Conversation Management
         if is_dm:
             conv_help = (
-                "📚 Conversation Management\n\n"
-                "!ai -c : Recall last conversation\n"
-                "!ai -c <name/slot> : Recall specific\n"
-                "!ai -c ls : List all (max 10)\n"
-                "!ai -c rm <name/slot> : Delete one\n\n"
-                "To use in Channels:\n"
-                "!ai -n <query> : Clear & ask new"
+                "📚 Conversations\n"
+                "!ai -c : Resume last\n"
+                "!ai -c <id> : Load specific\n"
+                "!ai -c ls : List saved\n"
+                "!ai -c rm <id> : Delete\n"
+                "In Channels:\n"
+                "!ai -n <msg> : New topic"
             )
         else:
             conv_help = (
@@ -475,14 +475,11 @@ class AIResponder:
             time.sleep(2)
             if is_dm:
                 admin_help = (
-                    "⚙️ Admin Commands (DM Only)\n\n"
-                    "!ai -p : List providers\n"
-                    "!ai -p <name> : Switch provider\n"
-                    "  • local, gemini, openai, anthropic\n"
-                    "!ai -ch : List channels\n"
-                    "!ai -ch add/rm <id/name>\n"
-                    "!ai -a : List admins\n"
-                    "!ai -a add/rm <node_id>"
+                    "⚙️ Admin (DM Only)\n"
+                    "!ai -p [name] : Provider\n"
+                    "  (local/gemini/openai)\n"
+                    "!ai -ch [ls/add/rm] : Channels\n"
+                    "!ai -a [ls/add/rm] : Admins"
                 )
             else:
                 admin_help = (
