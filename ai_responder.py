@@ -499,6 +499,10 @@ class AIResponder:
                 success, message, history = self.conversation_manager.load_conversation(from_node, latest[0])
                 if success and history:
                     self.history[from_node] = history
+                    # If in DM, restart the session so they can continue chatting
+                    if to_node != '^all':
+                        self.session_manager.start_session(from_node)
+                        message += "\n🟢 Session Started"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
@@ -528,6 +532,10 @@ class AIResponder:
             success, message, history = self.conversation_manager.load_conversation(from_node, args)
             if success and history:
                 self.history[from_node] = history
+                # If in DM, restart the session so they can continue chatting
+                if to_node != '^all':
+                    self.session_manager.start_session(from_node)
+                    message += "\n🟢 Session Started"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
