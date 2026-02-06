@@ -433,7 +433,9 @@ class AIResponder:
             "!ai -h : Show this help"
         )
         self.send_response(basic_help, from_node, to_node, channel, is_admin_cmd=False)
-        time.sleep(2)
+        # Increase wait time for broadcasts to ensure delivery
+        wait_time = 2 if is_dm else 5
+        time.sleep(wait_time)
         
         # Message 2: Session Commands (DM only)
         if is_dm:
@@ -455,17 +457,16 @@ class AIResponder:
                 "!ai -c : Recall last conversation\n"
                 "!ai -c <name/slot> : Recall specific\n"
                 "!ai -c ls : List all (max 10)\n"
-                "!ai -c rm <name/slot> : Delete one"
+                "!ai -c rm <name/slot> : Delete one\n\n"
+                "To use in Channels:\n"
+                "!ai -n <query> : Clear & ask new"
             )
         else:
             conv_help = (
-                "📚 Conversation Management\n\n"
-                "!ai -c : Recall last conversation\n"
-                "!ai -c <name/slot> : Recall specific\n"
-                "!ai -c ls : List all (max 10)\n"
-                "!ai -c rm <name/slot> : Delete one\n\n"
-                "Channel Mode:\n"
-                "!ai -n <query> : Clear & ask new"
+                "📚 Conversation Commands\n\n"
+                "!ai -n <query> : Start new topic\n"
+                "!ai -c : Recall your last topic\n"
+                "(DM for advanced management)"
             )
         self.send_response(conv_help, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -737,7 +738,7 @@ class AIResponder:
             if not text:
                 return
             
-            logger.info(f"📨 Message from {from_node} on channel {channel}: {text[:50]}...")
+            logger.info(f"📨 Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
             
             # Check if user is in an active session
             if self.session_manager.is_active(from_node):
