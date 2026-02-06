@@ -7,6 +7,8 @@ including sending messages, managing connections, and processing incoming packet
 
 import time
 import logging
+import sys
+from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
 from meshtastic import mesh_pb2
@@ -20,6 +22,27 @@ class SafeTCPInterface(TCPInterface):
     TCPInterface helper that suppresses protobuf DecodeErrors and manually handles packets.
     """
     def _handleFromRadio(self, fromRadio):
+        """
+        Custom packet handler for safe decoding and debug logging.
+        """
+        # 0. DEBUG: Inspect what we are receiving
+        try:
+            if isinstance(fromRadio, bytes):
+                logger.debug(f"RAW Bytes received: {len(fromRadio)} bytes")
+                # Try to decode just for logging purposes
+                try:
+                    debug_decoded = mesh_pb2.FromRadio()
+                    debug_decoded.ParseFromString(fromRadio)
+                    logger.debug(f"Decoded Fields: {debug_decoded.ListFields()}")
+                    if debug_decoded.HasField("packet"):
+                        logger.debug(f"Content Is: MeshPacket (to: {debug_decoded.packet.to})")
+                    elif debug_decoded.HasField("mqttClientProxyMessage"):
+                        logger.debug(f"Content Is: MQTT Proxy Message (topic: {debug_decoded.mqttClientProxyMessage.topic})")
+                except:
+                    logger.debug("Failed to decode raw bytes for debug log")
+        except Exception as e:
+            logger.error(f"Error in debug logger: {e}")
+
         # 1. Try standard lib processing first
         try:
             super()._handleFromRadio(fromRadio)
@@ -42,8 +65,9 @@ class SafeTCPInterface(TCPInterface):
 
             if decoded and decoded.HasField("packet"):
                 # Manually trigger packet handling since super() failed
-                self._handlePacket(decoded.packet)
-                logger.debug("✅ Packet salvaged manually")
+                # Note: We can't easily call _handlePacket because it might simpler to just publish
+                logger.debug("✅ Packet salvaged manually - Publishing to meshtastic.receive")
+                pub.sendMessage("meshtastic.receive", packet=decoded.packet, interface=self)
 
         except Exception as e:
             logger.debug(f"Manual salvage failed: {e}")
@@ -105,7 +129,14 @@ class MeshtasticHandler:
                 
                 # Register receive callback if provided
                 if on_receive_callback:
-                    self.interface.onReceive = on_receive_callback
+                    # Use pubsub instead of direct assignment for better compatibility
+                    # Unsubscribe first to ensure no duplicates if reconnecting
+                    try:
+                        pub.unsubscribe(on_receive_callback, "meshtastic.receive")
+                    except:
+                        pass
+                    pub.subscribe(on_receive_callback, "meshtastic.receive")
+                    logger.info("✅ Subscribed to meshtastic.receive")
                 
                 self.running = True
                 logger.info("✅ Connected to Meshtastic")
@@ -128,6 +159,9 @@ class MeshtasticHandler:
                 logger.info("Disconnected from Meshtastic")
             except Exception as e:
                 logger.error(f"Error disconnecting: {e}")
+        
+        # We don't unsubscribe here because we don't have the callback reference easily available
+        # But connect() handles cleanup of previous subscriptions
         
         self.running = False
         self.interface = None
