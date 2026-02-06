@@ -8,6 +8,7 @@ including sending messages, managing connections, and processing incoming packet
 import time
 import logging
 import sys
+import threading
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -36,8 +37,30 @@ class SafeTCPInterface(TCPInterface):
                     logger.debug(f"Decoded Fields: {debug_decoded.ListFields()}")
                     if debug_decoded.HasField("packet"):
                         logger.debug(f"Content Is: MeshPacket (to: {debug_decoded.packet.to})")
+                        
+                        # Manual ACK detection for events wrapped in MeshPackets
+                        try:
+                            # 5 is ROUTING_APP
+                            pnum = debug_decoded.packet.decoded.portnum
+                            # logger.debug(f"Inspect PortNum: {pnum} (type: {type(pnum)})")
+                            if pnum == 5:
+                                rid = debug_decoded.packet.decoded.request_id
+                                if rid:
+                                    logger.debug(f"⚡ Found implicit ACK/Routing in MeshPacket for ID {rid} - Forcing event")
+                                    pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+                        except Exception as e:
+                            logger.debug(f"Failed to check for implicit ACK: {e}")
+
                     elif debug_decoded.HasField("mqttClientProxyMessage"):
                         logger.debug(f"Content Is: MQTT Proxy Message (topic: {debug_decoded.mqttClientProxyMessage.topic})")
+                    elif debug_decoded.HasField("routing"):
+                        logger.debug(f"Content Is: Routing/ACK (error_reason: {debug_decoded.routing.error_reason}, request_id: {debug_decoded.routing.request_id})")
+                        # FORCE emit the ACK event because standard lib seems to consume it silently
+                        # This ensures our event-driven waiter gets notified
+                        rid = debug_decoded.routing.request_id
+                        logger.info(f"⚡ forcing manual ACK event for ID {rid}")
+                        pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+
                 except:
                     logger.debug("Failed to decode raw bytes for debug log")
         except Exception as e:
@@ -68,6 +91,18 @@ class SafeTCPInterface(TCPInterface):
                 # Note: We can't easily call _handlePacket because it might simpler to just publish
                 logger.debug("✅ Packet salvaged manually - Publishing to meshtastic.receive")
                 pub.sendMessage("meshtastic.receive", packet=decoded.packet, interface=self)
+            
+            # Use 'getattr' to safely check for 'routing' field, 
+            # as it might not be available in all firmware/protobuf versions
+            elif decoded and decoded.HasField("routing"):
+                 # This block might be redundant now if we force it above, but keeps salvage logic intact
+                 logger.debug("✅ ACK/Routing salvaged manually - Publishing to meshtastic.ack")
+                 # We need to extract the original packet ID this ACK is for.
+                 # Usually routing.request_id matches the sent packet packet.id?
+                 # Actually, meshtastic.ack expects packetId kwarg.
+                 # Let's try to assume request_id is the one.
+                 rid = decoded.routing.request_id
+                 pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
 
         except Exception as e:
             logger.debug(f"Manual salvage failed: {e}")
@@ -138,6 +173,14 @@ class MeshtasticHandler:
                     pub.subscribe(on_receive_callback, "meshtastic.receive")
                     logger.info("✅ Subscribed to meshtastic.receive")
                 
+                # Subscribe to ACKs for reliable sending
+                try:
+                    pub.unsubscribe(self._on_ack, "meshtastic.ack")
+                except:
+                    pass
+                pub.subscribe(self._on_ack, "meshtastic.ack")
+                logger.info("✅ Subscribed to meshtastic.ack")
+
                 self.running = True
                 logger.info("✅ Connected to Meshtastic")
                 return True
@@ -166,6 +209,12 @@ class MeshtasticHandler:
         self.running = False
         self.interface = None
     
+    def _on_ack(self, packetId, interface):
+        """Handle incoming ACK events."""
+        if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
+            logger.info(f"⚡ Event-driven ACK received for ID {packetId}")
+            self.current_ack_event.set()
+
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):
         """
         Send a message via Meshtastic with automatic chunking and rate limiting.
@@ -189,14 +238,12 @@ class MeshtasticHandler:
         # Split message into chunks if needed
         chunks = self._split_message(text)
         total_chunks = len(chunks)
+        is_broadcast = (destination_id == '^all')
         
         for chunk_index, chunk in enumerate(chunks):
-            # Add rate limiting delay between chunks
-            if chunk_index > 0:
-                # Dynamic rate limiting: 10s for DM (safer), 15s for broadcast
-                delay_seconds = 15 if destination_id == '^all' else 10
-                logger.info(f"Rate limiting: Waiting {delay_seconds}s before chunk {chunk_index + 1}/{total_chunks}")
-                time.sleep(delay_seconds)
+            # Init ACK event for this chunk
+            self.current_ack_event = threading.Event() if not is_broadcast else None
+            self.expected_ack_id = None
             
             try:
                 # Format chunk with numbering if multiple chunks
@@ -207,26 +254,63 @@ class MeshtasticHandler:
                 # Add session indicator
                 display_chunk = f"{session_indicator}{display_chunk}"
                 
-                # Send via Meshtastic
-                # Note: TCPInterface in this env returns raw protobufs without wait_for_ack support.
-                # Reliability relies on the increased sleep delay above.
-                packet = self.interface.sendText(
-                    display_chunk,
-                    destinationId=destination_id,
-                    channelIndex=channel_index
-                )
+                # Retry loop
+                max_retries = 3
+                retry_count = 0
+                ack_received = False
                 
-                # Get ID safely for logging
-                packet_id = getattr(packet, 'id', 'unknown')
-                logger.info(f"Chunk {chunk_index + 1}/{total_chunks} queued (ID: {packet_id})")
+                while retry_count < max_retries and not ack_received:
+                    if retry_count > 0:
+                        backoff = 10 * (retry_count + 1)
+                        logger.info(f"♻️ Retrying chunk {chunk_index + 1} (Attempt {retry_count + 1}/{max_retries}) after {backoff}s...")
+                        time.sleep(backoff)
+                        
+                        # Renew event for retry
+                        self.current_ack_event = threading.Event() if not is_broadcast else None
+                        self.expected_ack_id = None
+
+                    # Send via Meshtastic
+                    packet = self.interface.sendText(
+                        display_chunk,
+                        destinationId=destination_id,
+                        channelIndex=channel_index,
+                        wantAck=not is_broadcast
+                    )
+                    
+                    packet_id = getattr(packet, 'id', 'unknown')
+                    self.expected_ack_id = packet_id
+                    logger.info(f"Chunk {chunk_index + 1}/{total_chunks} queued (ID: {packet_id})")
+                    
+                    if not is_broadcast and packet_id != 'unknown':
+                        logger.info(f"Waiting for ACK (event-driven) for ID {packet_id}...")
+                        # Wait up to 30s for ACK
+                        if self.current_ack_event.wait(timeout=30):
+                            logger.info(f"✅ ACK confirmed for chunk {chunk_index + 1}")
+                            ack_received = True
+                        else:
+                            logger.warning(f"⚠️ ACK timeout for chunk {chunk_index + 1}")
+                            retry_count += 1
+                    else:
+                        # Broadcast/unknown -> assume success
+                        ack_received = True
+                        time.sleep(2)
                 
+                if not ack_received:
+                    logger.error(f"❌ Failed to deliver chunk {chunk_index + 1} after {max_retries} retries")
+                    # Optionally return False here to stop sending remaining chunks?
+                    # For now, let's keep trying subsequent chunks but log error.
+
+                    
             except Exception as e:
                 logger.error(f"Failed to send chunk {chunk_index + 1}: {e}")
                 return False
+                
+            # Cleanup event
+            self.current_ack_event = None
         
         return True
     
-    def _split_message(self, text, max_length=200):
+    def _split_message(self, text, max_length=180):
         """
         Split a long message into chunks.
         
@@ -236,9 +320,6 @@ class MeshtasticHandler:
         Args:
             text: Text to split
             max_length: Maximum characters per chunk
-        
-        Returns:
-            list: List of message chunks
         """
         if len(text) <= max_length:
             return [text]
@@ -272,26 +353,6 @@ class MeshtasticHandler:
             remaining_text = remaining_text[split_point:].strip()
         
         return chunks
-    
-    def _wait_for_ack(self, packet, chunk_number):
-        """
-        Wait for message acknowledgment.
-        
-        Args:
-            packet: Packet object returned from sendText
-            chunk_number: Chunk number for logging
-        """
-        try:
-            if hasattr(packet, 'wait_for_ack'):
-                logger.debug(f"Waiting for ACK on chunk {chunk_number}...")
-                if packet.wait_for_ack(timeout=self.ack_timeout):
-                    logger.info(f"✅ Received ACK for chunk {chunk_number}")
-                else:
-                    logger.warning(f"⚠️ ACK timeout for chunk {chunk_number} (Queue might be full/congested)")
-            else:
-                logger.warning(f"Packet object {type(packet)} has no 'wait_for_ack' method. Skipping ACK wait.")
-        except Exception as ack_error:
-            logger.warning(f"Error waiting for ACK: {ack_error}")
     
     def get_node_info(self):
         """
