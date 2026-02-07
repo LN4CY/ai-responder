@@ -80,6 +80,7 @@ class Config:
         if config_file is None:
             config_file = CONFIG_FILE
         self.config_file = config_file
+        self.is_new = not os.path.exists(self.config_file)
         self.data = self.load()
     
     def load(self):

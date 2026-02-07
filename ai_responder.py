@@ -85,12 +85,22 @@ class AIResponder:
         
         # Initialize admin from environment variable
         if ENV_ADMIN_NODE_ID:
-            admin_nodes = self.config.get('admin_nodes', [])
-            if ENV_ADMIN_NODE_ID not in admin_nodes:
-                admin_nodes.append(ENV_ADMIN_NODE_ID)
-                self.config['admin_nodes'] = admin_nodes
-                self.config.save()
-                logger.info(f"Added admin node from environment: {ENV_ADMIN_NODE_ID}")
+            try:
+                # Parse "!abc,!def" string into list and merge with existing
+                new_admins = [n.strip() for n in ENV_ADMIN_NODE_ID.split(',') if n.strip()]
+                if new_admins:
+                    admin_nodes = self.config.get('admin_nodes', [])
+                    updated = False
+                    for node in new_admins:
+                        if node not in admin_nodes:
+                            admin_nodes.append(node)
+                            updated = True
+                    if updated:
+                        self.config['admin_nodes'] = admin_nodes
+                        self.config.save()
+                        logger.info(f"Updated admin nodes from environment: {new_admins}")
+            except Exception as e:
+                logger.warning(f"Failed to parse ADMIN_NODE_ID '{ENV_ADMIN_NODE_ID}': {e}")
         
         # Initialize allowed channels from environment variable
         if ALLOWED_CHANNELS:
@@ -98,21 +108,22 @@ class AIResponder:
                 # Parse "0,1,2" string into [0, 1, 2] list
                 channels = [int(c.strip()) for c in ALLOWED_CHANNELS.split(',') if c.strip().isdigit()]
                 if channels:
-                    current_allowed = self.config.get('allowed_channels', [])
-                    # Update if different (comparing sets to ignore order)
-                    if set(channels) != set(current_allowed):
+                    # Only apply environment variable if config is new/missing this key
+                    # OR if the user explicitly wants to keep them in sync (we assume if it's new it's safe)
+                    if self.config.is_new or 'allowed_channels' not in self.config.data:
                         self.config['allowed_channels'] = channels
                         self.config.save()
-                        logger.info(f"Updated allowed channels from environment: {channels}")
+                        logger.info(f"Initialized allowed channels from environment: {channels}")
             except Exception as e:
                 logger.warning(f"Failed to parse ALLOWED_CHANNELS '{ALLOWED_CHANNELS}': {e}")
         
         # Initialize provider from environment variable
         if AI_PROVIDER:
-            if self.config.get('current_provider') != AI_PROVIDER:
+            # Only apply if config is new/missing key
+            if self.config.is_new or 'current_provider' not in self.config.data:
                 self.config['current_provider'] = AI_PROVIDER
                 self.config.save()
-                logger.info(f"Updated AI provider from environment: {AI_PROVIDER}")
+                logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
     
     # ==================== History Management ====================
     
