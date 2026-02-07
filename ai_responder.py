@@ -894,9 +894,9 @@ class AIResponder:
             # Check if user is in an active session
             if self.session_manager.is_active(from_node):
                 # Check for timeout
-                if self.session_manager.check_timeout(from_node):
+                timed_out, message, session_channel, session_to_node = self.session_manager.check_timeout(from_node)
+                if timed_out:
                     # Session timed out, send notification
-                    success, message, session_channel, session_to_node = self.session_manager.end_session(from_node, is_timeout=True)
                     self.send_response(message, from_node, session_to_node, session_channel, is_admin_cmd=False)
                     # Don't process the message as a session message
                 else:
