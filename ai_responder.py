@@ -127,6 +127,23 @@ class AIResponder:
                 self.config['current_provider'] = AI_PROVIDER
                 self.config.save()
                 logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
+        
+        # Log current AI configuration
+        current_provider = self.config.get('current_provider', 'ollama')
+        logger.info(f"🤖 Active AI Provider: {current_provider.upper()}")
+        
+        if current_provider == 'gemini':
+            from config import GEMINI_MODEL
+            logger.info(f"🧠 Model: {GEMINI_MODEL}")
+        elif current_provider == 'ollama':
+            from config import OLLAMA_MODEL
+            logger.info(f"🦙 Model: {OLLAMA_MODEL}")
+        elif current_provider == 'openai':
+            from config import OPENAI_MODEL
+            logger.info(f"🤖 Model: {OPENAI_MODEL}")
+        elif current_provider == 'anthropic':
+            from config import ANTHROPIC_MODEL
+            logger.info(f"🧠 Model: {ANTHROPIC_MODEL}")
     
     # ==================== History Management ====================
     

@@ -3,7 +3,7 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import ANTHROPIC_API_KEY, load_system_prompt
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class AnthropicProvider(BaseProvider):
             messages.append({'role': 'user', 'content': prompt})
         
         payload = {
-            'model': 'claude-3-haiku-20240307',
+            'model': ANTHROPIC_MODEL,
             'max_tokens': 150,
             'system': system_prompt,
             'messages': messages

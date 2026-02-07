@@ -3,7 +3,7 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import OPENAI_API_KEY, load_system_prompt
+from config import OPENAI_API_KEY, OPENAI_MODEL, load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class OpenAIProvider(BaseProvider):
             messages.append({'role': 'user', 'content': prompt})
         
         payload = {
-            'model': 'gpt-3.5-turbo',
+            'model': OPENAI_MODEL,
             'messages': messages,
             'max_tokens': 150
         }

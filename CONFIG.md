@@ -27,7 +27,9 @@ The application is configured primarily via environment variables passed to the 
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
 | `GEMINI_MODEL` | `gemini-3-flash-preview` | The specific Gemini model version to use. |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
+| `OPENAI_MODEL` | `gpt-3.5-turbo` | The specific OpenAI model to use. |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
+| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic model to use. |
 
 ### AI Persona / System Prompt
 
