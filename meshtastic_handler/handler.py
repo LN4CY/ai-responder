@@ -80,7 +80,7 @@ class SafeTCPInterface(TCPInterface):
                         # FORCE emit the ACK event because standard lib seems to consume it silently
                         # This ensures our event-driven waiter gets notified
                         rid = debug_decoded.routing.request_id
-                        logger.info(f"⚡ forcing manual ACK event for ID {rid}")
+                        logger.debug(f"⚡ forcing manual ACK event for ID {rid}")
                         pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
 
                 except:

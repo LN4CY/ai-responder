@@ -37,8 +37,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger('AI-Responder')
 
-# Force DEBUG for handler to trace ACKs
-logging.getLogger('meshtastic_handler').setLevel(logging.DEBUG)
+# Set logging level for handler based on global log_level
+logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
 
 class AIResponder:
