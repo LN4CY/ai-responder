@@ -22,7 +22,7 @@ import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
     HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
-    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS
+    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -106,6 +106,13 @@ class AIResponder:
                         logger.info(f"Updated allowed channels from environment: {channels}")
             except Exception as e:
                 logger.warning(f"Failed to parse ALLOWED_CHANNELS '{ALLOWED_CHANNELS}': {e}")
+        
+        # Initialize provider from environment variable
+        if AI_PROVIDER:
+            if self.config.get('current_provider') != AI_PROVIDER:
+                self.config['current_provider'] = AI_PROVIDER
+                self.config.save()
+                logger.info(f"Updated AI provider from environment: {AI_PROVIDER}")
     
     # ==================== History Management ====================
     
