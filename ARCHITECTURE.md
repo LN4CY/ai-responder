@@ -17,7 +17,9 @@ graph TD
         
         subgraph AI Providers
             Ollama["Ollama (Local)"]
-            Gemini["Google Gemini (Cloud)"]
+            Gemini["Google Gemini"]
+            OpenAI["OpenAI GPT"]
+            Claude["Anthropic Claude"]
         end
     end
 
@@ -25,24 +27,35 @@ graph TD
     MM <-->|TCP :4404| AI
     AI <-->|HTTP API| Ollama
     AI <-->|REST API| Gemini
+    AI <-->|REST API| OpenAI
+    AI <-->|REST API| Claude
     Nodes <--> Radio
 ```
 
 ## Core Components
 
-### 1. TCP Interface
-The application uses `meshtastic.tcp_interface.TCPInterface` to connect to a running Meshtastic node. In the recommended deployment, this connects to **MeshMonitor's Virtual Node**, allowing the AI bot to share the radio hardware with the monitoring system.
+### 1. Meshtastic Interface (`MeshtasticHandler`)
+The application abstracts the connection to the radio via the `MeshtasticHandler` class. It supports:
+- **TCP Connection**: (Default) Connects to a Meshtastic node or MeshMonitor via network.
+- **Serial Connection**: Connects directly to a radio via USB.
 
-### 2. Event Loop & Packet Processing
+### 2. Conversation & Session Management
+Stateful interactions are managed by two core components:
+- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state.
+- **`ConversationManager`**: Handles long-term persistence. Stores up to 10 conversations per user as compressed JSON files (`.json.gz`), managing slots and metadata.
+
+### 3. AI Provider System
+An abstract base class (`BaseProvider`) defines the interface for all AI models. The factory pattern (`get_provider`) instantiates the configured provider:
+- **Ollama**: Connects to local LLM inference.
+- **Gemini / OpenAI / Anthropic**: Connects to cloud APIs.
+- **Error Handling**: Standardized error reporting across all providers.
+
+### 4. Event Loop & Packet Processing
 The system uses a publish-subscribe model (`pubsub`) to handle incoming mesh packets.
+- **`process_command`**: Main router for `!ai` commands.
+- **`on_receive`**: Callback for incoming packets, filtering allowed channels and dispatching to session logic or command processor.
 
-- **`on_receive`**: The main callback for new packets.
-    - Decodes the packet.
-    - Checks if the channel is allowed.
-    - Filters for commands (starting with `!ai`).
-    - Dispatches to `process_command`.
-
-### 3. Threading Model (Non-Blocking)
+### 5. Threading Model (Non-Blocking)
 To prevent the main network interface from freezing during slow AI operations, all AI generation requests are offloaded to background threads.
 
 ```mermaid
@@ -68,21 +81,33 @@ sequenceDiagram
     end
 ```
 
-### 4. Admin & Security
+### 6. Admin & Security
 - **Admin Allowlist**: Sensitive commands (provider switching, configuration changes) are restricted to a list of trusted Node IDs.
 - **Bootstrap Mode**: If no admins are configured, the system defaults to "Bootstrap Mode" where any user can claim admin status (intended for initial setup).
 
-### 5. Response Management
-Due to the low bandwidth of LoRa, responses are managed carefully:
-- **Chunking**: Large responses are split into segments (default ~200 chars).
-- **Rate Limiting**: A delay (default 30s) is enforced between chunks to avoid flooding the mesh.
-- **Acknowledgments**: The system waits for an acknowledgement (ACK) from the mesh before considering a chunk sent (best-effort).
+### 7. Response Management
+Managed by `MeshtasticHandler`:
+- **Chunking**: Large responses are split at sentence boundaries.
+- **Rate Limiting**: Dynamic delays (5s for DMs, 15s for Broadcasts) to prevent flooding.
+- **Acknowledgments**: Waits for ACK for direct messages to ensure reliability.
 
 ## Directory Structure
 
 ```
 ai-responder/
-├── ai-responder.py    # Main application entry point
+├── ai_responder.py    # Main application entry point
+├── config.py          # Configuration management
+├── providers/         # AI provider implementations
+│   ├── base.py        # Abstract base class
+│   ├── ollama.py      # Local Ollama
+│   ├── gemini.py      # Google Gemini
+│   ├── openai.py      # OpenAI
+│   └── anthropic.py   # Anthropic Claude
+├── conversation/      # Conversation & session management
+│   ├── manager.py     # Persistence & slots
+│   └── session.py     # Session logic
+├── meshtastic_handler/# Meshtastic interface
+│   └── handler.py     # Message sending & rate limiting
 ├── requirements.txt   # Python dependencies
 ├── Dockerfile         # Container definition
 ├── README.md          # User documentation

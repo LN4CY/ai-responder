@@ -8,8 +8,14 @@ RUN pip install --no-cache-dir \
     requests \
     pypubsub
 
-# Copy script
-COPY ai-responder.py .
+# Copy all modules and packages
+COPY config.py .
+COPY providers/ ./providers/
+COPY conversation/ ./conversation/
+COPY meshtastic_handler/ ./meshtastic_handler/
+COPY ai_responder.py .
+COPY system_prompt_local.txt .
+COPY system_prompt_online.txt .
 
-# Run script
-CMD ["python", "-u", "ai-responder.py"]
+# Run the application
+CMD ["python", "-u", "ai_responder.py"]

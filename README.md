@@ -22,6 +22,7 @@ A powerful, plugin-based AI assistant for Meshtastic nodes. It connects to your 
 
 Add to your `docker-compose.yml`:
 
+```yaml
   ai-responder:
     image: ghcr.io/ln4cy/ai-responder:latest
     environment:
@@ -117,14 +118,14 @@ $env:MESHTASTIC_HOST="192.168.1.50"
 $env:MESHTASTIC_PORT="4403"
 $env:AI_PROVIDER="gemini"
 $env:GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 
 # Linux/macOS
 export MESHTASTIC_HOST="192.168.1.50"
 export MESHTASTIC_PORT="4403"
 export AI_PROVIDER="gemini"
 export GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 ```
 
 ### 4. Run (Serial / USB)
@@ -137,14 +138,14 @@ $env:INTERFACE_TYPE="serial"
 $env:SERIAL_PORT="COM3"
 $env:AI_PROVIDER="gemini"
 $env:GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 
 # Linux (Raspberry Pi)
 export INTERFACE_TYPE="serial"
 export SERIAL_PORT="/dev/ttyACM0"
 export AI_PROVIDER="gemini"
 export GEMINI_API_KEY="your_api_key"
-python ai-responder.py
+python ai_responder.py
 ```
 
 ## Configuration
@@ -162,14 +163,243 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
 | `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (e.g. `!1234abcd`) |
 | `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
+| `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
+| `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
+| `OLLAMA_MAX_MESSAGES` | `10` | Max messages sent to Ollama (Context) |
 
-## Commands
+## User Guide
 
-### User Commands
--   `!ai <prompt>`: Ask the AI a question.
+### Basic Usage
 
-### Admin Commands
--   `!ai -h`: Show help menu.
--   `!ai -p [local|online]`: Switch AI provider.
--   `!ai -c [add|rm] <index>`: Enable/Disable listening on a channel.
--   `!ai -a [add|rm] <node_id>`: Add or remove an admin.
+#### Asking Questions
+
+**In Channels:**
+```
+!ai What is the weather like today?
+```
+- Requires `!ai` prefix for every message
+- Conversation history is automatically saved to a channel-specific slot
+- Each channel maintains its own conversation history per user
+
+**In Direct Messages (DMs):**
+```
+!ai How do I configure my radio?
+```
+- Can use `!ai` prefix for one-off questions
+- Or start a session for continuous conversation (see Sessions below)
+
+### Sessions (DM Only)
+
+Sessions allow you to have continuous conversations without typing `!ai` before every message. Sessions are **only available in Direct Messages**.
+
+#### Starting a Session
+
+**With auto-generated name:**
+```
+!ai -n
+```
+Response: `🟢 Session started: 'chat_20260204_183000' (slot 3)`
+
+**With custom name:**
+```
+!ai -n my_project_discussion
+```
+Response: `🟢 Session started: 'my_project_discussion' (slot 3)`
+
+#### During a Session
+
+Once a session is active, all your messages are treated as AI queries:
+```
+What is LoRa?
+[🟢 my_project_discussion] LoRa is a long-range...
+
+Tell me more about mesh networks
+[🟢 my_project_discussion] Mesh networks are...
+```
+
+Notice the `[🟢 session_name]` indicator on all responses.
+
+#### Session Timeout
+
+Sessions automatically end after **5 minutes of inactivity**. You'll receive a notification when this happens:
+
+```
+⏱️ Session 'my_project_discussion' ended (timeout after 5 minutes).
+```
+
+After timeout, you'll need to start a new session or use `!ai` prefix for queries.
+
+#### Ending a Session
+
+```
+!ai -end
+```
+Response: `Session 'my_project_discussion' ended.`
+
+You'll always receive a confirmation message when a session ends, whether manually or by timeout.
+
+### Conversation Management
+
+The AI maintains up to **10 saved conversations** per user, plus automatic channel-specific conversations. All conversation commands are available to **all users** (no admin required).
+
+#### Listing Conversations
+
+```
+!ai -c ls
+```
+Response:
+```
+📚 Saved Conversations:
+1. my_project_discussion (last: 2026-02-04 18:30)
+2. chat_20260203_140522 (last: 2026-02-03 14:15)
+3. troubleshooting_help (last: 2026-02-02 09:22)
+```
+
+#### Recalling a Conversation
+
+**By name:**
+```
+!ai -c my_project_discussion
+```
+
+**By slot number:**
+```
+!ai -c 1
+```
+
+**Most recent conversation:**
+```
+!ai -c
+```
+
+Response: `Loaded conversation 'my_project_discussion' (slot 1)`
+
+After loading, continue the conversation with `!ai <query>` or start a new session.
+
+#### Deleting a Conversation
+
+**By name:**
+```
+!ai -c rm my_project_discussion
+```
+
+**By slot number:**
+```
+!ai -c rm 1
+```
+
+Response: `Deleted conversation 'my_project_discussion' (slot 1)`
+
+### Channel vs DM Behavior
+
+#### Channel Mode
+- **Every message needs `!ai` prefix**
+- `!ai <query>` - Ask a question, auto-saves to channel slot
+- `!ai -n <query>` - Clear channel history and ask a new question
+- No sessions available
+- Each channel maintains separate history per user
+- Channel conversations don't count against your 10-slot limit
+
+#### DM Mode
+- `!ai <query>` - One-off question
+- `!ai -n [name]` - Start a session (continuous conversation)
+- `!ai -end` - End current session
+- During session: no `!ai` prefix needed
+- Sessions use one of your 10 conversation slots
+
+### Memory Status
+
+Check your conversation history usage:
+```
+!ai -m
+```
+Response:
+```
+🧠 Context (Ollama): 8/10 (| History: 24) | 💾 Storage: 0.15/2.00 MB (7.5%) | 📚 Slots: 3/10
+```
+
+This shows:
+- **Context**: Messages sent to AI (limited by provider)
+- **History**: Total messages stored
+- **Storage**: Disk space used for your conversations
+- **Slots**: Conversation slots used out of 10 available
+
+### New Conversation (Channel Mode)
+
+In channels, use `!ai -n` to clear the channel's conversation history:
+```
+!ai -n What is Meshtastic?
+```
+This clears previous channel context and starts fresh with your new query.
+
+## Admin Commands
+
+Admin commands require your node ID to be configured as an admin (see [CONFIG.md](CONFIG.md)).
+
+### Help Menu
+```
+!ai -h
+```
+Shows all available commands based on your permission level.
+
+### Provider Management (Admin Only)
+
+**List providers:**
+```
+!ai -p
+```
+
+**Switch provider:**
+```
+!ai -p local      # Switch to Ollama
+!ai -p gemini     # Switch to Google Gemini
+!ai -p openai     # Switch to OpenAI
+!ai -p anthropic  # Switch to Anthropic Claude
+```
+
+### Channel Management (Admin Only)
+
+**List channels:**
+```
+!ai -ch
+```
+
+**Enable a channel:**
+```
+!ai -ch add 2
+!ai -ch add LongFast
+```
+
+**Disable a channel:**
+```
+!ai -ch rm 2
+!ai -ch rm LongFast
+```
+
+### Admin Management (Admin Only)
+
+**List admins:**
+```
+!ai -a
+```
+
+**Add admin:**
+```
+!ai -a add !1234abcd
+!ai -a add me
+```
+
+**Remove admin:**
+```
+!ai -a rm !1234abcd
+```
+
+## Tips & Best Practices
+
+1. **Use sessions in DMs** for back-and-forth conversations to save typing
+2. **Name your sessions** descriptively for easy recall later
+3. **Delete old conversations** when you hit the 10-slot limit
+4. **Use `!ai -n` in channels** when you want to start a fresh topic
+5. **Check `!ai -m`** periodically to monitor storage usage
+6. **Sessions timeout after 5 minutes** - you'll see the session indicator disappear from responses
+

@@ -30,10 +30,19 @@ The application is configured primarily via environment variables passed to the 
 
 ### AI Persona / System Prompt
 
-Currently, the system prompt is hardcoded in the `ai-responder.py` file:
-> "Context: Meshtastic network assistant. Concise responses."
+System prompts are loaded from external text files, allowing easy customization without code changes.
 
-*To customize this, you currently need to modify the source code.*
+- **Local Provider (Ollama)**: Loads from `system_prompt_local.txt`
+  - Default: "You are a helpful AI assistant. Keep responses concise (under 200 chars when possible)."
+  
+- **Online Providers**: Loads from `system_prompt_online.txt`
+  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network. Keep responses clear and concise."
+    
+You can mount custom prompt files in Docker:
+```yaml
+volumes:
+  - ./my_custom_prompt.txt:/app/system_prompt_online.txt
+```
 
 ### Access Control & Channels
 
@@ -41,6 +50,19 @@ Currently, the system prompt is hardcoded in the `ai-responder.py` file:
 |----------|---------|-------------|
 | `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd`). |
 | `ALLOWED_CHANNELS` | `0,3` | Comma-separated list of channel indices the bot listens on. |
+
+### Memory Limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HISTORY_MAX_MESSAGES` | `1000` | Maximum number of messages to keep in history per user (Storage). |
+| `HISTORY_MAX_BYTES` | `2097152` | Maximum size in bytes for the history file per user (default 2MB). |
+| `OLLAMA_MAX_MESSAGES` | `10` | Maximum number of messages sent to Ollama (Local) for context window. |
+
+> [!NOTE]
+> **Behavior**:
+> - **Message Limit**: Acts as a **rolling buffer**. When the limit (1000) is reached, the oldest message is dropped to make room for the new one.
+> - **Storage Limit**: If the file size exceeds 2MB, the system automatically prunes the oldest 50% of messages to recover space.
 
 ## Configuration File
 
