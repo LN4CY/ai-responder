@@ -15,30 +15,29 @@ class GeminiProvider(BaseProvider):
     def name(self):
         return "Gemini"
     
-    def get_response(self, prompt, history=None):
+    def get_response(self, prompt, history=None, context_id=None):
         """Get response from Gemini."""
         if not GEMINI_API_KEY:
             return "Error: Gemini API key missing."
         
-        system_prompt = load_system_prompt('gemini')
+        system_prompt = load_system_prompt('gemini', context_id=context_id)
         contents = []
         
         if history:
             for msg in history:
                 role = 'model' if msg['role'] == 'assistant' else 'user'
                 contents.append({'role': role, 'parts': [{'text': msg['content']}]})
-        else:
-            contents.append({'role': 'user', 'parts': [{'text': prompt}]})
+        
+        # Always append current prompt
+        contents.append({'role': 'user', 'parts': [{'text': prompt}]})
         
         # Inject System Prompt
-        if contents and contents[0]['role'] == 'user':
+        if contents[0]['role'] == 'user':
             contents[0]['parts'][0]['text'] = f"{system_prompt}\n\n{contents[0]['parts'][0]['text']}"
-        elif contents:
+        else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        # Use single preferred model to avoid wasting quota
-        # gemini-3-flash-preview: Latest model (Dec 2025), no deprecation date
-        # Alternative: gemini-2.5-flash (stable, but shutting down June 2026)
+        # Use Gemini 3 Flash Preview as requested
         model = 'gemini-3-flash-preview'
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": contents}

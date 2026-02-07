@@ -20,7 +20,7 @@ ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
 OLLAMA_PORT = os.getenv('OLLAMA_PORT', '11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
-OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '10'))
+OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
@@ -28,7 +28,7 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 
 # History and Storage Configuration
 HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
-HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '50'))
+HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '100'))
 HISTORY_MAX_BYTES = int(os.getenv('HISTORY_MAX_BYTES', '2097152'))  # 2MB
 
 # Conversation Configuration
@@ -43,14 +43,24 @@ SYSTEM_PROMPT_LOCAL_FILE = os.getenv('SYSTEM_PROMPT_LOCAL_FILE', 'system_prompt_
 SYSTEM_PROMPT_ONLINE_FILE = os.getenv('SYSTEM_PROMPT_ONLINE_FILE', 'system_prompt_online.txt')
 
 DEFAULT_SYSTEM_PROMPT_LOCAL = "You are a helpful AI assistant. Keep responses concise (under 200 chars when possible)."
-DEFAULT_SYSTEM_PROMPT_ONLINE = "You are a helpful AI assistant communicating via Meshtastic mesh network. Keep responses clear and concise."
+DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
+CONTEXT ISOLATION:
+- You are strictly limited to the history provided in this specific conversation.
+- Each device and conversation is a separate sandbox. Never leak data between them.
+- Current Context ID: {context_id}
+
+USER METADATA:
+- User messages are prefixed with [Node !hexid]. This identifies the sender's device.
+- In DMs, you may see (Location: lat, lon, Battery: %, Temp: C, Pressure: hPa); use this to answer local-aware questions.
+- Address the user naturally; only reference their technical metadata if they ask (e.g., "What is the weather here?").
+- Keep responses concise (under 200 chars) for mesh efficiency."""
 
 # Meshtastic Configuration
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 
 
-def load_system_prompt(provider):
+def load_system_prompt(provider, context_id="Unknown"):
     """Load system prompt from file based on provider type."""
     if provider in ['ollama', 'local']:
         prompt_file = SYSTEM_PROMPT_LOCAL_FILE
@@ -65,12 +75,15 @@ def load_system_prompt(provider):
                 prompt = f.read().strip()
                 if prompt:
                     logger.info(f"Loaded system prompt from {prompt_file}")
-                    return prompt
+                    return prompt.format(context_id=context_id)
     except Exception as e:
         logger.warning(f"Failed to load system prompt from {prompt_file}: {e}")
     
     logger.info(f"Using default system prompt for {provider}")
-    return default
+    try:
+        return default.format(context_id=context_id)
+    except:
+        return default
 
 
 class Config:

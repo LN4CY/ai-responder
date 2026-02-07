@@ -15,14 +15,14 @@ class AnthropicProvider(BaseProvider):
     def name(self):
         return "Anthropic"
     
-    def get_response(self, prompt, history=None):
+    def get_response(self, prompt, history=None, context_id=None):
         """Get response from Anthropic."""
         if not ANTHROPIC_API_KEY:
             return "Error: Anthropic API key missing."
         
         url = 'https://api.anthropic.com/v1/messages'
         
-        system_prompt = load_system_prompt('anthropic')
+        system_prompt = load_system_prompt('anthropic', context_id=context_id)
         messages = []
         
         if history:

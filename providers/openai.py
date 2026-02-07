@@ -15,14 +15,14 @@ class OpenAIProvider(BaseProvider):
     def name(self):
         return "OpenAI"
     
-    def get_response(self, prompt, history=None):
+    def get_response(self, prompt, history=None, context_id=None):
         """Get response from OpenAI."""
         if not OPENAI_API_KEY:
             return "Error: OpenAI API key missing."
         
         url = 'https://api.openai.com/v1/chat/completions'
         
-        system_prompt = load_system_prompt('openai')
+        system_prompt = load_system_prompt('openai', context_id=context_id)
         messages = [{'role': 'system', 'content': system_prompt}]
         
         if history:
