@@ -25,7 +25,8 @@ from config import (
     ENV_ADMIN_NODE_ID
 )
 from providers import get_provider
-from conversation import ConversationManager, SessionManager
+from conversation.manager import ConversationManager
+from conversation.session import SessionManager
 from meshtastic_handler import MeshtasticHandler
 
 # Logging setup
@@ -499,13 +500,13 @@ class AIResponder:
             if metadata:
                 # Find most recent
                 latest = max(metadata.items(), key=lambda x: x[1]['last_access'])
-                success, message, history = self.conversation_manager.load_conversation(from_node, latest[0])
+                success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, latest[0])
                 if success and history:
                     self.history[from_node] = history
                     # If in DM, restart the session so they can continue chatting
                     if to_node != '^all':
-                        self.session_manager.start_session(from_node)
-                        message += "\n🟢 Session Started"
+                        self.session_manager.start_session(from_node, conversation_name)
+                        message += "\n🟢 Session Resumed"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
@@ -532,13 +533,13 @@ class AIResponder:
         
         else:
             # Load specific conversation
-            success, message, history = self.conversation_manager.load_conversation(from_node, args)
+            success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, args)
             if success and history:
                 self.history[from_node] = history
                 # If in DM, restart the session so they can continue chatting
                 if to_node != '^all':
-                    self.session_manager.start_session(from_node)
-                    message += "\n🟢 Session Started"
+                    self.session_manager.start_session(from_node, conversation_name)
+                    message += "\n🟢 Session Resumed"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)

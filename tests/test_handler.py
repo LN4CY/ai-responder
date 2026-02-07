@@ -1,0 +1,141 @@
+import unittest
+from unittest.mock import MagicMock, patch, ANY
+import sys
+import os
+import time
+import threading
+
+# Add parent directory to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from meshtastic_handler.handler import MeshtasticHandler, SafeTCPInterface, MessageQueue
+from meshtastic import mesh_pb2
+
+class TestSafeTCPInterface(unittest.TestCase):
+    def setUp(self):
+        # Patch pubsub to verify messages
+        self.patcher_pub = patch('meshtastic_handler.handler.pub')
+        self.mock_pub = self.patcher_pub.start()
+        
+        # Mock socket to prevent actual connection attempt during init
+        with patch('socket.socket'):
+            self.interface = SafeTCPInterface(hostname='localhost', connectNow=False)
+            
+        # Mock myNodeInfo/myNodeNum
+        self.interface.myNodeNum = 123456789
+
+    def tearDown(self):
+        self.patcher_pub.stop()
+
+    def test_implicit_ack_standard(self):
+        """Test implicit ACK with valid sender and ID."""
+        # Construct a fake routing packet
+        # Use kwargs for 'from' because it's a reserved keyword
+        packet = mesh_pb2.MeshPacket(**{'from': 987654321})
+        packet.decoded.portnum = 5  # ROUTING_APP
+        packet.decoded.request_id = 999
+        
+        from_radio = mesh_pb2.FromRadio()
+        from_radio.packet.CopyFrom(packet)
+        
+        # Call handler with BYTES (simulating TCP stream)
+        self.interface._handleFromRadio(from_radio.SerializeToString())
+        
+        # Verify ACK event fired
+        self.mock_pub.sendMessage.assert_any_call("meshtastic.ack", packetId=999, interface=self.interface)
+
+    def test_implicit_ack_error(self):
+        """Test implicit ACK with error (should be ignored)."""
+        # Mock the entire structure to avoid protobuf woes
+        with patch('meshtastic_handler.handler.mesh_pb2.FromRadio') as MockFromRadio:
+            mock_pkt = MagicMock()
+            MockFromRadio.return_value = mock_pkt
+            
+            mock_pkt.HasField.return_value = True
+            mock_pkt.packet.decoded.portnum = 5
+            mock_pkt.packet.decoded.request_id = 888
+            mock_pkt.packet.decoded.error_reason = 8 # Non-zero error
+            
+            # Reset mocks
+            self.interface._handleFromRadio(b'rawbytes')
+            
+            # Should NOT fire ACK
+            self.mock_pub.sendMessage.assert_not_called()
+
+    def test_implicit_ack_echo_self(self):
+        """Test implicit ACK from self (should be ignored)."""
+        packet = mesh_pb2.MeshPacket(**{'from': 123456789}) # Matches myNodeNum
+        packet.decoded.portnum = 5
+        packet.decoded.request_id = 777
+        
+        from_radio = mesh_pb2.FromRadio()
+        from_radio.packet.CopyFrom(packet)
+
+        self.interface._handleFromRadio(from_radio.SerializeToString())
+        
+        # Verify NO ACK event
+        self.mock_pub.sendMessage.assert_not_called()
+
+    def test_implicit_ack_none_sender(self):
+        """Test implicit ACK with None sender (should be ACCEPTED per fix)."""
+        packet = mesh_pb2.MeshPacket(**{'from': 0}) # 0/None
+        packet.decoded.portnum = 5
+        packet.decoded.request_id = 666
+        
+        from_radio = mesh_pb2.FromRadio()
+        from_radio.packet.CopyFrom(packet)
+        
+        self.interface._handleFromRadio(from_radio.SerializeToString())
+        
+        # Verify ACK event FIRED
+        self.mock_pub.sendMessage.assert_any_call("meshtastic.ack", packetId=666, interface=self.interface)
+
+
+class TestMessageQueue(unittest.TestCase):
+    def setUp(self):
+        self.mock_handler = MagicMock()
+        self.mock_handler.running = True
+        self.mock_handler.interface = MagicMock()
+        # Mock _split_message since it's a helper
+        self.mock_handler._split_message.return_value = ["chunk1", "chunk2"]
+        
+        # We need _send_chunk_reliable to return True instantly to test queue processing flow
+        # But MessageQueue calls the REAL _send_chunk_reliable if we pass a mock handler?
+        # No, it calls self.handler._send_chunk_reliable.
+        # If self.handler is a Mock, it calls the Mock.
+        # THE ISSUE: In previous run, logs showed it running REAL code.
+        # This means I must have imported MessageQueue incorrectly or modified it?
+        # Ah! MessageQueue._send_item calls self.handler._send_chunk_reliable?
+        # NO! In handler.py, it calls self._send_chunk_reliable (its own method).
+        # And that method calls self.handler.interface.sendText.
+        
+        self.queue = MessageQueue(self.mock_handler)
+        self.queue.processing = False
+        if self.queue.thread:
+            self.queue.thread.join(timeout=1)
+
+    def tearDown(self):
+        self.queue.processing = False
+
+    def test_enqueue_and_process(self):
+        """Test enqueuing and processing logic."""
+        self.queue.enqueue("test msg", "!dest", 0, "")
+        
+        self.assertEqual(len(self.queue.queue), 1)
+        
+        # Manually trigger process one item
+        item = self.queue.queue.pop(0)
+        
+        # Mock the internal _send_chunk_reliable to avoid waiting for ACKs/timeouts
+        # We patch the method on the INSTANCE of the queue
+        with patch.object(self.queue, '_send_chunk_reliable', return_value=True) as mock_send:
+            self.queue._send_item(item)
+            
+            # Verify split called on handler
+            self.mock_handler._split_message.assert_called_with("test msg")
+            
+            # Verify send called 2 times (for 2 chunks)
+            self.assertEqual(mock_send.call_count, 2)
+
+if __name__ == "__main__":
+    unittest.main()

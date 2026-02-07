@@ -42,6 +42,6 @@ class BaseProvider(ABC):
         elif status_code == 401 or status_code == 403:
             return "🔒 API key issue. Contact admin."
         elif status_code == 500 or status_code == 503:
-            return f"🔧 {self.name} service temporarily unavailable. Try again."
+            return f"🔧 {self.name} service error ({status_code}): {error_msg}"
         else:
             return f"❌ {self.name} error ({status_code}): {error_msg[:100]}"

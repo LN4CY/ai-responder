@@ -25,6 +25,14 @@ class SafeTCPInterface(TCPInterface):
     def _handleFromRadio(self, fromRadio):
         """
         Custom packet handler for safe decoding and debug logging.
+        
+        Detailed features:
+        - Logs raw packet contents for debugging.
+        - Detects "Implicit ACKs" (ROUTING_APP packets) to support reliable messaging.
+        - Filters out false positives:
+          - Errors (error_reason != 0)
+          - Self-echoes (sender == myNodeNum)
+        - Accepts "Ghost ACKs" (sender is None/0) as valid confirmations.
         """
         # 0. DEBUG: Inspect what we are receiving
         try:
@@ -44,10 +52,24 @@ class SafeTCPInterface(TCPInterface):
                             pnum = debug_decoded.packet.decoded.portnum
                             # logger.debug(f"Inspect PortNum: {pnum} (type: {type(pnum)})")
                             if pnum == 5:
-                                rid = debug_decoded.packet.decoded.request_id
+                                routing = debug_decoded.packet.decoded
+                                rid = routing.request_id
+                                error = getattr(routing, 'error_reason', 0)
+                                sender = getattr(debug_decoded.packet, 'from', None)
+                                
+                                # Get own ID
+                                my_id = getattr(self, 'myNodeNum', None)
+                                
                                 if rid:
-                                    logger.debug(f"⚡ Found implicit ACK/Routing in MeshPacket for ID {rid} - Forcing event")
-                                    pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+                                    # Ignore echoes (only if sender matches my_id explicitly)
+                                    # We MUST accept sender=None because legitimate ACKs are arriving without source ID
+                                    if my_id and sender and sender == my_id:
+                                         logger.debug(f"⚡ Ignored implicit ACK for ID {rid} (Source: {sender} - is self)")
+                                    elif error == 0:
+                                        logger.debug(f"⚡ Found implicit ACK/Routing in MeshPacket for ID {rid} from {sender} - Forcing event")
+                                        pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+                                    else:
+                                        logger.warning(f"⚠️ Ignored implicit ACK for ID {rid} because error_reason={error}")
                         except Exception as e:
                             logger.debug(f"Failed to check for implicit ACK: {e}")
 
@@ -212,105 +234,37 @@ class MeshtasticHandler:
     def _on_ack(self, packetId, interface):
         """Handle incoming ACK events."""
         if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
-            logger.info(f"⚡ Event-driven ACK received for ID {packetId}")
+            logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
             self.current_ack_event.set()
 
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):
         """
-        Send a message via Meshtastic with automatic chunking and rate limiting.
+        Queue a message to be sent via Meshtastic.
         
-        Long messages are automatically split into chunks to fit Meshtastic's
-        message size limits. Rate limiting prevents flooding the mesh network.
+        This method is non-blocking. It adds the message to a background queue
+        and returns immediately.
         
         Args:
             text: Message text to send
             destination_id: Target node ID (e.g., '!abc123') or '^all' for broadcast
             channel_index: Meshtastic channel index (default: 0)
-            session_indicator: Optional prefix for session messages (e.g., '[🟢 session] ')
+            session_indicator: Optional prefix for session messages
         
         Returns:
-            bool: True if message sent successfully
+            bool: True if queued successfully
         """
         if not self.interface:
             logger.error("Cannot send message: Not connected to Meshtastic")
             return False
-        
-        # Split message into chunks if needed
-        chunks = self._split_message(text)
-        total_chunks = len(chunks)
-        is_broadcast = (destination_id == '^all')
-        
-        for chunk_index, chunk in enumerate(chunks):
-            # Init ACK event for this chunk
-            self.current_ack_event = threading.Event() if not is_broadcast else None
-            self.expected_ack_id = None
             
-            try:
-                # Format chunk with numbering if multiple chunks
-                display_chunk = chunk
-                if total_chunks > 1:
-                    display_chunk = f"[{chunk_index + 1}/{total_chunks}] {chunk}"
-                
-                # Add session indicator
-                display_chunk = f"{session_indicator}{display_chunk}"
-                
-                # Retry loop
-                max_retries = 3
-                retry_count = 0
-                ack_received = False
-                
-                while retry_count < max_retries and not ack_received:
-                    if retry_count > 0:
-                        backoff = 10 * (retry_count + 1)
-                        logger.info(f"♻️ Retrying chunk {chunk_index + 1} (Attempt {retry_count + 1}/{max_retries}) after {backoff}s...")
-                        time.sleep(backoff)
-                        
-                        # Renew event for retry
-                        self.current_ack_event = threading.Event() if not is_broadcast else None
-                        self.expected_ack_id = None
-
-                    # Send via Meshtastic
-                    packet = self.interface.sendText(
-                        display_chunk,
-                        destinationId=destination_id,
-                        channelIndex=channel_index,
-                        wantAck=not is_broadcast
-                    )
-                    
-                    packet_id = getattr(packet, 'id', 'unknown')
-                    self.expected_ack_id = packet_id
-                    logger.info(f"Chunk {chunk_index + 1}/{total_chunks} queued (ID: {packet_id})")
-                    
-                    if not is_broadcast and packet_id != 'unknown':
-                        logger.info(f"Waiting for ACK (event-driven) for ID {packet_id}...")
-                        # Wait up to 30s for ACK
-                        if self.current_ack_event.wait(timeout=30):
-                            logger.info(f"✅ ACK confirmed for chunk {chunk_index + 1}")
-                            ack_received = True
-                        else:
-                            logger.warning(f"⚠️ ACK timeout for chunk {chunk_index + 1}")
-                            retry_count += 1
-                    else:
-                        # Broadcast/unknown -> assume success
-                        ack_received = True
-                        time.sleep(2)
-                
-                if not ack_received:
-                    logger.error(f"❌ Failed to deliver chunk {chunk_index + 1} after {max_retries} retries")
-                    # Optionally return False here to stop sending remaining chunks?
-                    # For now, let's keep trying subsequent chunks but log error.
-
-                    
-            except Exception as e:
-                logger.error(f"Failed to send chunk {chunk_index + 1}: {e}")
-                return False
-                
-            # Cleanup event
-            self.current_ack_event = None
-        
+        # Initialize queue if needed
+        if not hasattr(self, '_message_queue'):
+            self._message_queue = MessageQueue(self)
+            
+        self._message_queue.enqueue(text, destination_id, channel_index, session_indicator)
         return True
-    
-    def _split_message(self, text, max_length=180):
+
+    def _split_message(self, text, max_length=200):
         """
         Split a long message into chunks.
         
@@ -378,3 +332,136 @@ class MeshtasticHandler:
             bool: True if connected
         """
         return self.interface is not None and self.running
+
+
+class MessageQueue:
+    """
+    Background message queue processor for reliable sending.
+    
+    Features:
+    - Thread-safe queueing
+    - Handling of long messages (chunking)
+    - Rate limiting between chunks
+    - Reliable delivery with ACK confirmation and retries
+    - Fallback for broadcast messages (no ACK)
+    """
+    def __init__(self, handler):
+        self.handler = handler
+        self.queue = []
+        self.lock = threading.Lock()
+        self.processing = False
+        self.thread = None
+        
+        # Start background thread
+        self.start()
+    
+    def start(self):
+        """Start the processing thread."""
+        if self.thread and self.thread.is_alive():
+            return
+            
+        self.processing = True
+        self.thread = threading.Thread(target=self._process_loop, daemon=True)
+        self.thread.start()
+        logger.info("MessageQueue processor started")
+        
+    def enqueue(self, text, destination_id, channel_index, session_indicator):
+        """Add a message to the queue."""
+        with self.lock:
+            self.queue.append({
+                'text': text,
+                'dest': destination_id,
+                'chan': channel_index,
+                'sess': session_indicator,
+                'time': time.time()
+            })
+            logger.debug(f"Message queued for {destination_id} (Queue size: {len(self.queue)})")
+            
+    def _process_loop(self):
+        """Main processing loop."""
+        while self.processing and self.handler.running:
+            item = None
+            with self.lock:
+                if self.queue:
+                    item = self.queue.pop(0)
+            
+            if item:
+                self._send_item(item)
+            else:
+                time.sleep(0.5)
+                
+    def _send_item(self, item):
+        """Process a single queue item (splits and sends chunks)."""
+        text = item['text']
+        dest = item['dest']
+        chan = item['chan']
+        sess = item['sess']
+        
+        # Split message
+        chunks = self.handler._split_message(text)
+        total_chunks = len(chunks)
+        is_broadcast = (dest == '^all')
+        
+        for i, chunk in enumerate(chunks):
+            # 1. Format Payload
+            payload = chunk
+            if total_chunks > 1:
+                payload = f"[{i+1}/{total_chunks}] {chunk}"
+            payload = f"{sess}{payload}"
+            
+            # 2. Send with retries
+            success = self._send_chunk_reliable(payload, dest, chan, is_broadcast, i+1, total_chunks)
+            if not success:
+                logger.error(f"Message delivery failed for chunk {i+1}/{total_chunks}. Dropping remaining chunks.")
+                break
+                
+            # 3. Rate limiting/Pacing between chunks
+            if i < total_chunks - 1:
+                time.sleep(2)  # Small delay between chunks
+                
+    def _send_chunk_reliable(self, payload, dest, chan, is_broadcast, chunk_num, total_chunks):
+        """Send a single chunk with retries."""
+        max_retries = 3
+        retry_delay = 10
+        
+        for attempt in range(max_retries):
+            # Prepare ACK event
+            self.handler.current_ack_event = threading.Event() if not is_broadcast else None
+            self.handler.expected_ack_id = None
+            
+            try:
+                # Send
+                packet = self.handler.interface.sendText(
+                    payload,
+                    destinationId=dest,
+                    channelIndex=chan,
+                    wantAck=not is_broadcast
+                )
+                
+                pkt_id = getattr(packet, 'id', 'unknown')
+                self.handler.expected_ack_id = pkt_id
+                
+                logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1})")
+                
+                # Check ACK
+                if not is_broadcast and pkt_id != 'unknown':
+                    # Wait for ACK
+                    if self.handler.current_ack_event.wait(timeout=20):  # 20s timeout
+                        logger.info(f"✅ ACK received for chunk {chunk_num}")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ ACK timeout for chunk {chunk_num} (ID: {pkt_id})")
+                else:
+                    # Broadcast or unknown ID -> assume success
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"Error sending chunk {chunk_num}: {e}")
+            
+            # If not successful, wait before retry
+            if attempt < max_retries - 1:
+                backoff = retry_delay * (attempt + 1)
+                logger.info(f"Retrying chunk {chunk_num} in {backoff}s...")
+                time.sleep(backoff)
+                
+        return False

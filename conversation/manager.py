@@ -215,7 +215,7 @@ class ConversationManager:
         metadata = self._load_metadata(user_id)
         
         if not metadata:
-            return False, "No saved conversations found.", None
+            return False, "No saved conversations found.", None, None
         
         # Find conversation by name or index
         conversation_name = None
@@ -232,7 +232,7 @@ class ConversationManager:
                 conversation_name = identifier
         
         if not conversation_name:
-            return False, f"Conversation '{identifier}' not found.", None
+            return False, f"Conversation '{identifier}' not found.", None, None
         
         # Load conversation history
         conv_path = os.path.join(self._get_user_dir(user_id), f"{conversation_name}.json.gz")
@@ -246,10 +246,10 @@ class ConversationManager:
             
             slot_index = metadata[conversation_name]['index']
             logger.info(f"Loaded conversation '{conversation_name}' for {user_id}")
-            return True, f"Loaded conversation '{conversation_name}' (slot {slot_index})", history
+            return True, f"Loaded conversation '{conversation_name}' (slot {slot_index})", history, conversation_name
         except Exception as e:
             logger.error(f"Failed to load conversation: {e}")
-            return False, f"Failed to load: {str(e)}", None
+            return False, f"Failed to load: {str(e)}", None, None
     
     def list_conversations(self, user_id, include_channels=False):
         """
