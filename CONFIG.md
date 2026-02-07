@@ -25,6 +25,7 @@ The application is configured primarily via environment variables passed to the 
 | `OLLAMA_PORT` | `11434` | Port of the Ollama service. |
 | `OLLAMA_MODEL` | `llama3.2:1b` | The specific model to use with Ollama. |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | The specific Gemini model version to use. |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
 

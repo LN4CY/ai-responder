@@ -199,21 +199,23 @@ class TestAIResponder(unittest.TestCase):
         self.responder.config['current_provider'] = 'gemini'
         self.responder.config.save()
         
-        # Patch API key
+        # Patch API key and Model
         with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
-            }
-            mock_post.return_value = mock_response
+            with patch('providers.gemini.GEMINI_MODEL', 'gemini-test-model'):
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = {
+                    "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
+                }
+                mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi", "test_gemini")
-            self.assertEqual(response, "Gemini says hi")
-            
-            # Check URL
-            args, _ = mock_post.call_args
-            self.assertIn('googleapis.com', args[0])
+                response = self.responder.get_ai_response("hi", "test_gemini")
+                self.assertEqual(response, "Gemini says hi")
+                
+                # Check URL uses configured model
+                args, _ = mock_post.call_args
+                self.assertIn('gemini-test-model', args[0])
+                self.assertIn('googleapis.com', args[0])
 
     @patch('requests.post')
     def test_openai_provider(self, mock_post):

@@ -3,7 +3,7 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import GEMINI_API_KEY, load_system_prompt
+from config import GEMINI_API_KEY, GEMINI_MODEL, load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        # Use Gemini 3 Flash Preview as requested
-        model = 'gemini-3-flash-preview'
+        # Use configured Gemini model
+        model = GEMINI_MODEL
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         payload = {"contents": contents}
         
