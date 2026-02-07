@@ -22,7 +22,7 @@ import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
     HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
-    ENV_ADMIN_NODE_ID
+    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -91,6 +91,21 @@ class AIResponder:
                 self.config['admin_nodes'] = admin_nodes
                 self.config.save()
                 logger.info(f"Added admin node from environment: {ENV_ADMIN_NODE_ID}")
+        
+        # Initialize allowed channels from environment variable
+        if ALLOWED_CHANNELS:
+            try:
+                # Parse "0,1,2" string into [0, 1, 2] list
+                channels = [int(c.strip()) for c in ALLOWED_CHANNELS.split(',') if c.strip().isdigit()]
+                if channels:
+                    current_allowed = self.config.get('allowed_channels', [])
+                    # Update if different (comparing sets to ignore order)
+                    if set(channels) != set(current_allowed):
+                        self.config['allowed_channels'] = channels
+                        self.config.save()
+                        logger.info(f"Updated allowed channels from environment: {channels}")
+            except Exception as e:
+                logger.warning(f"Failed to parse ALLOWED_CHANNELS '{ALLOWED_CHANNELS}': {e}")
     
     # ==================== History Management ====================
     

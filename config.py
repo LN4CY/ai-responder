@@ -13,6 +13,7 @@ SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
 MESHTASTIC_PORT = int(os.getenv('MESHTASTIC_PORT', '4403'))
 ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
+ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
