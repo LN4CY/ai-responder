@@ -6,6 +6,7 @@ import threading
 import time
 import json
 import shutil
+import requests # Added by instruction
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -17,6 +18,7 @@ import providers.ollama
 import providers.gemini
 import providers.openai
 import providers.anthropic
+from conversation.session import SessionManager
 
 class TestAIResponder(unittest.TestCase):
     def setUp(self):
@@ -183,8 +185,8 @@ class TestAIResponder(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        # We call get_ai_response directly
-        response = self.responder.get_ai_response("hi")
+        # We call get_ai_response with history key
+        response = self.responder.get_ai_response("hi", "test_ollama")
         self.assertEqual(response, "Ollama says hi")
         
         # Check URL (default localhost)
@@ -198,21 +200,23 @@ class TestAIResponder(unittest.TestCase):
         self.responder.config['current_provider'] = 'gemini'
         self.responder.config.save()
         
-        # Patch API key
+        # Patch API key and Model
         with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
-            }
-            mock_post.return_value = mock_response
+            with patch('providers.gemini.GEMINI_MODEL', 'gemini-test-model'):
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = {
+                    "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
+                }
+                mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
-            self.assertEqual(response, "Gemini says hi")
-            
-            # Check URL
-            args, _ = mock_post.call_args
-            self.assertIn('googleapis.com', args[0])
+                response = self.responder.get_ai_response("hi", "test_gemini")
+                self.assertEqual(response, "Gemini says hi")
+                
+                # Check URL uses configured model
+                args, _ = mock_post.call_args
+                self.assertIn('gemini-test-model', args[0])
+                self.assertIn('googleapis.com', args[0])
 
     @patch('requests.post')
     def test_openai_provider(self, mock_post):
@@ -228,7 +232,7 @@ class TestAIResponder(unittest.TestCase):
             }
             mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
+            response = self.responder.get_ai_response("hi", "test_openai")
             self.assertEqual(response, "OpenAI says hi")
             
             args, _ = mock_post.call_args
@@ -248,7 +252,7 @@ class TestAIResponder(unittest.TestCase):
             }
             mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
+            response = self.responder.get_ai_response("hi", "test_anthropic")
             self.assertEqual(response, "Claude says hi")
             
             args, _ = mock_post.call_args
@@ -303,34 +307,351 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
-    def test_new_conversation_command_channel(self):
-        """Test !ai -n logic in channels: clear history and thread start."""
-        self.responder.clear_history = MagicMock()
-        self.responder.send_response = MagicMock()
+    def test_history_key_isolation(self):
+        """Test that history keys are isolated by channel and node."""
+        # 1. Channel Isolation
+        key1 = self.responder._get_history_key("!user1", 0, False)
+        key2 = self.responder._get_history_key("!user1", 3, False)
+        self.assertNotEqual(key1, key2)
+        self.assertIn("0:!user1", key1)
+        self.assertIn("3:!user1", key2)
+
+        # 2. DM Isolation
+        key3 = self.responder._get_history_key("!user1", 0, True)
+        self.assertEqual(key3, "DM:!user1")
+
+        # 3. Session Isolation
+        self.responder.session_manager.start_session("!user1", "Chat99")
+        key4 = self.responder._get_history_key("!user1", 0, True)
+        self.assertEqual(key4, "Chat99")
+
+    def test_message_labeling_and_metadata(self):
+        """Test that user messages are prefixed with Node ID and include metadata."""
+        key = "test_label"
+        self.responder.add_to_history(key, 'user', "Hello", node_id="!abcd", metadata="(Battery: 10%)")
         
-        with patch('threading.Thread') as mock_thread:
-            # In channel mode (to_node == '^all')
-            self.responder.process_command('!ai -n why is sky blue?', '!user', '^all', 0)
+        history = self.responder.history[key]
+        self.assertEqual(len(history), 1)
+        self.assertIn("[!abcd]", history[0]['content'])
+        self.assertIn("(Battery: 10%)", history[0]['content'])
+        self.assertIn("Hello", history[0]['content'])
+
+    def test_context_window_tuning(self):
+        """Test that Channel queries use minimal context while sessions use full context."""
+        key = "test_window"
+        # Add 5 messages
+        for i in range(5):
+            self.responder.add_to_history(key, 'user', f"msg {i}")
+
+        with patch('ai_responder.get_provider') as mock_get:
+            mock_provider = MagicMock()
+            mock_get.return_value = mock_provider
             
-            # Verify history cleared
-            self.responder.clear_history.assert_called_with('!user')
+            # 1. Non-session -> Minimal context (last 2)
+            self.responder.get_ai_response("latest", key, is_session=False)
+            history_sent = mock_provider.get_response.call_args[0][1]
+            self.assertEqual(len(history_sent), 2)
+            self.assertEqual(history_sent[-1]['content'], "msg 4")
+
+            # 2. Session -> Full context (all 5)
+            self.responder.get_ai_response("latest", key, is_session=True)
+            history_sent = mock_provider.get_response.call_args[0][1]
+            self.assertEqual(len(history_sent), 5)
+
+    def test_system_prompt_grounding(self):
+        """Test that system prompt contains the context ID."""
+        with patch('config.SYSTEM_PROMPT_ONLINE_FILE', '/nonexistent'):
+            prompt = config.load_system_prompt('gemini', context_id="Channel:0:!test")
+            self.assertIn("Channel:0:!test", prompt)
+            self.assertIn("CONTEXT ISOLATION", prompt)
+
+    @patch('time.sleep', return_value=None)
+    def test_metadata_injection_logic(self, _):
+        """Test that metadata is injected only in DMs and once/refresh."""
+        from_node = "!u1"
+        to_node = "!bot"
+        channel = 0
+        
+        # Mock metadata
+        self.responder.meshtastic.get_node_metadata.return_value = "(Loc: 1, 2)"
+        
+        # Mock get_ai_response to avoid actual provider calls
+        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+            # 1. First DM -> SHould inject
+            self.responder._process_ai_query_thread("hi", from_node, to_node, channel, is_dm=True)
+            history_key = "DM:!u1"
+            self.assertIn("(Loc: 1, 2)", self.responder.history[history_key][0]['content'])
             
-            # Verify thread started
-            mock_thread.assert_called_once()
+            # 2. Second DM -> Should NOT inject again
+            self.responder.meshtastic.get_node_metadata.reset_mock()
+            self.responder._process_ai_query_thread("again", from_node, to_node, channel, is_dm=True)
+            self.responder.meshtastic.get_node_metadata.assert_not_called()
+            
+            # 3. Forced refresh -> Should inject
+            self.responder._refresh_metadata_nodes.add(from_node)
+            self.responder._process_ai_query_thread("refreshed", from_node, to_node, channel, is_dm=True)
+            # Metadata should be in the latest user message
+            self.assertIn("(Loc: 1, 2)", self.responder.history[history_key][4]['content'])
+
+    def test_provider_context_id_passing(self):
+        """Test that context_id is passed to the provider."""
+        with patch('ai_responder.get_provider') as mock_get:
+            mock_provider = MagicMock()
+            mock_get.return_value = mock_provider
+            
+            self.responder.get_ai_response("hi", "MyContextID")
+            mock_provider.get_response.assert_called_with(ANY, ANY, context_id="MyContextID")
+
+class TestSessionNotifications(unittest.TestCase):
+    def setUp(self):
+        # Create temp dir for this test class
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.mock_config_dir = os.path.join(self.test_dir, 'mock_data')
+        os.makedirs(self.mock_config_dir, exist_ok=True)
+        
+        self.config_file = os.path.join(self.mock_config_dir, 'config.json')
+        
+        # Patch config constants
+        self.config_patcher = patch.multiple('config', 
+            CONFIG_FILE=self.config_file,
+            CONVERSATIONS_DIR=os.path.join(self.mock_config_dir, 'conversations'),
+            HISTORY_DIR=os.path.join(self.mock_config_dir, 'history')
+        )
+        self.config_patcher.start()
+        
+        self.config = config.Config()
+        self.conv_manager = MagicMock()
+        self.session_manager = SessionManager(self.conv_manager, session_timeout=1) # 1 sec timeout
+        
+        # Patch AIResponder's session_manager
+        with patch('ai_responder.Config', return_value=self.config):
+            with patch('ai_responder.MeshtasticHandler'):
+                with patch('ai_responder.ConversationManager'):
+                    self.responder = AIResponder()
+                    self.responder.session_manager = self.session_manager
+
+    def tearDown(self):
+        self.config_patcher.stop()
+        if os.path.exists(self.mock_config_dir):
+            shutil.rmtree(self.mock_config_dir)
     
-    def test_new_conversation_command_dm(self):
-        """Test !ai -n logic in DMs: start session."""
-        self.responder.session_manager.start_session = MagicMock(return_value=(True, "Session started", "chat_1"))
-        self.responder.send_response = MagicMock()
+    def test_session_metadata_persistence(self):
+        """Test that session manager stores and returns routing metadata."""
+        user_id = "!user123"
+        channel = 3
+        to_node = "!bot"
         
-        # In DM mode (to_node != '^all')
-        self.responder.process_command('!ai -n my_session', '!user', '!bot', 0)
+        self.session_manager.start_session(user_id, "TestConv", channel, to_node)
         
-        # Verify session started with name
-        self.responder.session_manager.start_session.assert_called_with('!user', 'my_session')
+        # Check internal storage
+        session = self.session_manager.active_sessions[user_id]
+        self.assertEqual(session['channel'], channel)
+        self.assertEqual(session['to_node'], to_node)
         
-        # Verify response sent
-        self.responder.send_response.assert_called()
+        # Check end_session returns it
+        _, _, ret_channel, ret_to_node = self.session_manager.end_session(user_id)
+        self.assertEqual(ret_channel, channel)
+        self.assertEqual(ret_to_node, to_node)
+
+    def test_timeout_notification_data(self):
+        """Test that check_all_timeouts returns full routing info."""
+        user_id = "!user_timeout"
+        self.session_manager.start_session(user_id, "SoonGone", channel=7, to_node="!gateway")
+        
+        # Mock time to be in the future
+        with patch('time.time', return_value=time.time() + 10):
+            timeouts = self.session_manager.check_all_timeouts()
+            
+            self.assertEqual(len(timeouts), 1)
+            self.assertEqual(timeouts[0]['user_id'], user_id)
+            self.assertEqual(timeouts[0]['channel'], 7)
+            self.assertEqual(timeouts[0]['to_node'], "!gateway")
+            self.assertIn("timeout", timeouts[0]['message'])
+
+    def test_end_session_command_unpacking(self):
+        """Test that !ai -end correctly unpacks the 4 values from end_session."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 5
+        
+        # Mock end_session to return 4 values
+        with patch.object(self.session_manager, 'end_session') as mock_end:
+            mock_end.return_value = (True, "Session ended", 0, "!bot")
+            
+            with patch.object(self.responder, 'send_response') as mock_send:
+                # Send !ai -end command in DM
+                self.responder.process_command("!ai -end", from_node, to_node, 0)
+                
+                mock_send.assert_called_once()
+                self.assertIn("Session ended", mock_send.call_args[0][0])
+
+    def test_location_query_injects_metadata(self):
+        """Test that location-related queries trigger metadata injection."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 0
+        
+        # Mock session active to bypass initial session creation logic
+        self.responder.session_manager.active_sessions = {from_node: {'name': 'test'}}
+        # Mock history exists so we don't trigger "fresh session" injection
+        self.responder.history = {f"DM:{from_node}": [{'role': 'user', 'content': 'hi'}]}
+        
+        with patch.object(self.responder.meshtastic, 'get_node_metadata') as mock_meta:
+            mock_meta.return_value = "(Location: 40.7, -74.0)"
+            
+            with patch.object(self.responder, 'get_ai_response') as mock_ai:
+                mock_ai.return_value = "You are at 40.7, -74.0"
+                
+                # run _process_ai_query_thread directly to avoid threading
+                self.responder._process_ai_query_thread("Where am I?", from_node, to_node, channel, is_dm=True)
+                
+                # Should have called get_node_metadata because of "Where am I?"
+                mock_meta.assert_called_with(from_node)
+                
+                # Test Battery Query
+                mock_meta.reset_mock()
+                self.responder._process_ai_query_thread("How is my battery?", from_node, to_node, channel, is_dm=True)
+                mock_meta.assert_called_once_with(from_node)
+
+    def test_responder_passes_metadata(self):
+        """Test that AIResponder passes channel/to_node to session manager."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 5
+        
+        with patch.object(self.session_manager, 'start_session') as mock_start:
+            mock_start.return_value = (True, "Started", "NewSession")
+            # Send !ai -n command in DM
+            self.responder.process_command("!ai -n NewSession", from_node, to_node, channel)
+            
+            mock_start.assert_called_once_with(from_node, "NewSession", channel, to_node)
+    
+    def test_check_timeout_integration(self):
+        """Test that check_timeout return value is correctly evaluated (tuple vs bool)."""
+        from_node = "!sender"
+        # Mock session active
+        self.responder.session_manager.active_sessions = {from_node: {'name': 'test'}}
+        
+        # 1. Test NO TIMEOUT (returns tuple (False, ...))
+        # The bug was: if check_timeout(...): which is True for a non-empty tuple
+        # We want to ensure it uses the first element (boolean)
+        with patch.object(self.session_manager, 'check_timeout') as mock_check:
+            mock_check.return_value = (False, None, 0, None)
+            
+            # Send normal message
+            # We mock handle_ai_query to avoid actual processing, we just want to check timeout logic
+            with patch.object(self.responder, '_handle_ai_query'):
+                with patch.object(self.responder, 'send_response') as mock_send:
+                    self.responder.on_receive({
+                        'fromId': from_node,
+                        'toId': '!me',
+                        'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': 'hello'}
+                    }, None)
+                    
+                    # Should NOT send timeout message
+                    mock_send.assert_not_called()
+
+        # 2. Test ACTUAL TIMEOUT
+        with patch.object(self.session_manager, 'check_timeout') as mock_check:
+            mock_check.return_value = (True, "Timed out", 0, "!me")
+            
+            with patch.object(self.responder, 'send_response') as mock_send:
+                self.responder.on_receive({
+                    'fromId': from_node,
+                    'toId': '!me',
+                    'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': 'hello'}
+                }, None)
+                
+                # Should send timeout message
+                mock_send.assert_called_once()
+                self.assertIn("Timed out", mock_send.call_args[0][0])
+
+                # Should send timeout message
+                mock_send.assert_called_once()
+                self.assertIn("Timed out", mock_send.call_args[0][0])
+
+class TestAIProviders(unittest.TestCase):
+    """Test AI Provider error handling and edge cases."""
+    
+    def setUp(self):
+        self.config = config.Config()
+        
+    @patch('requests.post')
+    def test_anthropic_error_handling(self, mock_post):
+        """Test Anthropic provider error scenarios."""
+        from providers.anthropic import AnthropicProvider
+        provider = AnthropicProvider(self.config)
+        
+        # 1. API Error (HTTP 400)
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {"error": {"message": "Invalid request"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Invalid request", response)
+            
+        # 2. Timeout
+        mock_post.side_effect = requests.exceptions.Timeout()
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("timed out", response)
+
+        # 3. Connection Error
+        mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Connection failed", response)
+
+    @patch('requests.post')
+    def test_openai_error_handling(self, mock_post):
+        """Test OpenAI provider error scenarios."""
+        from providers.openai import OpenAIProvider
+        provider = OpenAIProvider(self.config)
+        
+        # 1. API Error (HTTP 401)
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"error": {"message": "Invalid API Key"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.openai.OPENAI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("API key issue", response)
+            
+        # 2. Timeout
+        mock_post.side_effect = requests.exceptions.Timeout()
+        with patch('providers.openai.OPENAI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("timed out", response)
+
+    @patch('requests.post')
+    def test_gemini_error_handling(self, mock_post):
+        """Test Gemini provider error scenarios."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # 1. API Error (HTTP 500)
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"error": {"message": "Internal Server Error"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Internal Server Error", response)
+
+    @patch('requests.post')
+    def test_ollama_error_handling(self, mock_post):
+        """Test Ollama provider error scenarios."""
+        from providers.ollama import OllamaProvider
+        provider = OllamaProvider(self.config)
+        
+        # 1. Connection Error (Ollama down)
+        mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+        response = provider.get_response("test")
+        self.assertIn("Is it running?", response)
 
 if __name__ == "__main__":
     unittest.main()

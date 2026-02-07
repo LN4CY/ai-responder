@@ -3,7 +3,7 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import OPENAI_API_KEY, load_system_prompt
+from config import OPENAI_API_KEY, OPENAI_MODEL, load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +15,14 @@ class OpenAIProvider(BaseProvider):
     def name(self):
         return "OpenAI"
     
-    def get_response(self, prompt, history=None):
+    def get_response(self, prompt, history=None, context_id=None):
         """Get response from OpenAI."""
         if not OPENAI_API_KEY:
             return "Error: OpenAI API key missing."
         
         url = 'https://api.openai.com/v1/chat/completions'
         
-        system_prompt = load_system_prompt('openai')
+        system_prompt = load_system_prompt('openai', context_id=context_id)
         messages = [{'role': 'system', 'content': system_prompt}]
         
         if history:
@@ -31,7 +31,7 @@ class OpenAIProvider(BaseProvider):
             messages.append({'role': 'user', 'content': prompt})
         
         payload = {
-            'model': 'gpt-3.5-turbo',
+            'model': OPENAI_MODEL,
             'messages': messages,
             'max_tokens': 150
         }

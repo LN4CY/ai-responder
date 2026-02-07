@@ -14,13 +14,14 @@ class BaseProvider(ABC):
         self.config = config
     
     @abstractmethod
-    def get_response(self, prompt, history=None):
+    def get_response(self, prompt, history=None, context_id=None):
         """
         Get AI response for the given prompt.
         
         Args:
             prompt: User's input text
             history: List of previous messages [{'role': 'user/assistant', 'content': '...'}]
+            context_id: Unique identifier for the conversation context
         
         Returns:
             str: AI response text or error message

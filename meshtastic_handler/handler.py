@@ -308,6 +308,71 @@ class MeshtasticHandler:
         
         return chunks
     
+    def get_node_metadata(self, node_id):
+        """
+        Get metadata (location, battery, environment) for a node.
+        
+        Args:
+            node_id: Node ID (e.g., '!1234abcd')
+            
+        Returns:
+            str: Formatted metadata string or None
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+            
+        try:
+            # Convert node_id string to int if needed (meshtastic nodes use integers)
+            node_int = node_id
+            if isinstance(node_id, str):
+                if node_id.startswith('!'):
+                    node_int = int(node_id[1:], 16)
+                elif node_id.isdigit():
+                    node_int = int(node_id)
+            
+            node_info = self.interface.nodes.get(node_int)
+            if not node_info:
+                return None
+                
+            metadata_parts = []
+            
+            # 1. Location
+            pos = node_info.get('position', {})
+            lat = pos.get('latitude')
+            lon = pos.get('longitude')
+            if lat is not None and lon is not None:
+                metadata_parts.append(f"Location: {lat:.4f}, {lon:.4f}")
+            
+            # 2. Device Metrics (Battery)
+            metrics = node_info.get('deviceMetrics', {})
+            battery = metrics.get('batteryLevel')
+            voltage = metrics.get('voltage')
+            if battery is not None:
+                metadata_parts.append(f"Battery: {battery}%")
+            elif voltage is not None:
+                metadata_parts.append(f"Voltage: {voltage:.2f}V")
+                
+            # 3. Environment Metrics (Temp, Pressure, Humidity)
+            env = node_info.get('environmentMetrics', {})
+            temp = env.get('temperature')
+            press = env.get('barometricPressure')
+            hum = env.get('relativeHumidity')
+            if temp is not None:
+                metadata_parts.append(f"Temp: {temp:.1f}C")
+            if press is not None:
+                metadata_parts.append(f"Pressure: {press:.1f}hPa")
+            if hum is not None:
+                metadata_parts.append(f"Humidity: {hum:.1f}%")
+                
+            if not metadata_parts:
+                return None
+                
+            return "(" + ", ".join(metadata_parts) + ")"
+            
+        except Exception as e:
+            logger.debug(f"Failed to get metadata for {node_id}: {e}")
+            return None
+
     def get_node_info(self):
         """
         Get information about the local Meshtastic node.
@@ -323,7 +388,7 @@ class MeshtasticHandler:
         except Exception as e:
             logger.error(f"Failed to get node info: {e}")
             return None
-    
+
     def is_connected(self):
         """
         Check if currently connected to Meshtastic.

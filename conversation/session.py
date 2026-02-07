@@ -36,13 +36,15 @@ class SessionManager:
         self.session_timeout = session_timeout
         self.active_sessions = {}  # {user_id: session_data}
     
-    def start_session(self, user_id, conversation_name=None):
+    def start_session(self, user_id, conversation_name=None, channel=0, to_node=None):
         """
         Start a new AI session for a user.
         
         Args:
             user_id: Unique identifier for the user
             conversation_name: Optional name for the session conversation
+            channel: Channel index for notifications
+            to_node: Target node ID for notifications
             
         Returns:
             tuple: (success: bool, message: str, conversation_name: str)
@@ -56,7 +58,9 @@ class SessionManager:
         session_data = {
             'name': conversation_name,
             'started': current_time,
-            'last_activity': current_time
+            'last_activity': current_time,
+            'channel': channel,
+            'to_node': to_node
         }
         
         # Store session
@@ -74,13 +78,15 @@ class SessionManager:
             is_timeout: Whether session ended due to timeout
             
         Returns:
-            tuple: (success: bool, message: str)
+            tuple: (success: bool, message: str, channel: int, to_node: str)
         """
         if user_id not in self.active_sessions:
-            return False, "No active session."
+            return False, "No active session.", 0, None
         
         session_data = self.active_sessions[user_id]
         conversation_name = session_data['name']
+        channel = session_data.get('channel', 0)
+        to_node = session_data.get('to_node', None)
         
         # Remove session
         del self.active_sessions[user_id]
@@ -92,7 +98,7 @@ class SessionManager:
             message = f"Session '{conversation_name}' ended."
         
         logger.info(f"Ended session '{conversation_name}' for {user_id} (timeout={is_timeout})")
-        return True, message
+        return True, message, channel, to_node
     
     def is_active(self, user_id):
         """
@@ -137,10 +143,9 @@ class SessionManager:
         
         if elapsed_time > self.session_timeout:
             logger.info(f"Session timeout for {user_id} after {elapsed_time:.0f}s")
-            self.end_session(user_id, is_timeout=True)
-            return True
+            return self.end_session(user_id, is_timeout=True)
         
-        return False
+        return False, None, 0, None
     
     def get_session_indicator(self, user_id):
         """
@@ -180,16 +185,22 @@ class SessionManager:
         This should be called periodically to clean up expired sessions.
         
         Returns:
-            list: User IDs of sessions that were timed out
+            list: List of dicts with {user_id, message, channel, to_node}
         """
-        timed_out_users = []
+        timed_out_data = []
         
         # Create a copy of keys to avoid modification during iteration
         for user_id in list(self.active_sessions.keys()):
-            if self.check_timeout(user_id):
-                timed_out_users.append(user_id)
+            timed_out, message, channel, to_node = self.check_timeout(user_id)
+            if timed_out:
+                timed_out_data.append({
+                    'user_id': user_id,
+                    'message': message,
+                    'channel': channel,
+                    'to_node': to_node
+                })
         
-        if timed_out_users:
-            logger.info(f"Timed out {len(timed_out_users)} sessions")
+        if timed_out_data:
+            logger.info(f"Timed out {len(timed_out_data)} sessions")
         
-        return timed_out_users
+        return timed_out_data
