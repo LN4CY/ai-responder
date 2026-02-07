@@ -401,6 +401,21 @@ class TestAIResponder(unittest.TestCase):
 
 class TestSessionNotifications(unittest.TestCase):
     def setUp(self):
+        # Create temp dir for this test class
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.mock_config_dir = os.path.join(self.test_dir, 'mock_data')
+        os.makedirs(self.mock_config_dir, exist_ok=True)
+        
+        self.config_file = os.path.join(self.mock_config_dir, 'config.json')
+        
+        # Patch config constants
+        self.config_patcher = patch.multiple('config', 
+            CONFIG_FILE=self.config_file,
+            CONVERSATIONS_DIR=os.path.join(self.mock_config_dir, 'conversations'),
+            HISTORY_DIR=os.path.join(self.mock_config_dir, 'history')
+        )
+        self.config_patcher.start()
+        
         self.config = config.Config()
         self.conv_manager = MagicMock()
         self.session_manager = SessionManager(self.conv_manager, session_timeout=1) # 1 sec timeout
@@ -411,6 +426,11 @@ class TestSessionNotifications(unittest.TestCase):
                 with patch('ai_responder.ConversationManager'):
                     self.responder = AIResponder()
                     self.responder.session_manager = self.session_manager
+
+    def tearDown(self):
+        self.config_patcher.stop()
+        if os.path.exists(self.mock_config_dir):
+            shutil.rmtree(self.mock_config_dir)
     
     def test_session_metadata_persistence(self):
         """Test that session manager stores and returns routing metadata."""
