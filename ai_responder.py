@@ -464,7 +464,7 @@ class AIResponder:
         
         if cmd == '-end':
             if is_dm:
-                success, message = self.session_manager.end_session(from_node)
+                success, message, _, _ = self.session_manager.end_session(from_node)
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 self.send_response("⚠️ Sessions are DM-only. Use !ai -n in channels to clear history.", 

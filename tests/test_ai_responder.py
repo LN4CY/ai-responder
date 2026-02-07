@@ -468,6 +468,23 @@ class TestSessionNotifications(unittest.TestCase):
             self.assertEqual(timeouts[0]['to_node'], "!gateway")
             self.assertIn("timeout", timeouts[0]['message'])
 
+    def test_end_session_command_unpacking(self):
+        """Test that !ai -end correctly unpacks the 4 values from end_session."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 5
+        
+        # Mock end_session to return 4 values
+        with patch.object(self.session_manager, 'end_session') as mock_end:
+            mock_end.return_value = (True, "Session ended", 0, "!bot")
+            
+            with patch.object(self.responder, 'send_response') as mock_send:
+                # Send !ai -end command in DM
+                self.responder.process_command("!ai -end", from_node, to_node, 0)
+                
+                mock_send.assert_called_once()
+                self.assertIn("Session ended", mock_send.call_args[0][0])
+
     def test_responder_passes_metadata(self):
         """Test that AIResponder passes channel/to_node to session manager."""
         from_node = "!sender"
