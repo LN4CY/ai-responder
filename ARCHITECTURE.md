@@ -41,7 +41,7 @@ The application abstracts the connection to the radio via the `MeshtasticHandler
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:
-- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state.
+- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state. Now includes **Routing Memory** to persist channel and node ID for proactive timeout notifications.
 - **`ConversationManager`**: Handles long-term persistence. Stores up to 10 conversations per user as compressed JSON files (`.json.gz`), managing slots and metadata.
 
 ### 3. AI Provider System

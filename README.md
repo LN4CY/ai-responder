@@ -8,7 +8,10 @@ A powerful, plugin-based AI assistant for Meshtastic nodes. It connects to your 
 -   **Admin Controls**: Restrict sensitive commands (changing providers, managing channels) to specific node IDs.
 -   **Channel Management**: Configure which channels the bot listens on.
 -   **Smart Rate Limiting**: Splits long responses into chunks and waits (30s) between sends to prevent mesh congestion.
--   **Reliability**: Retries connections and verifies message acknowledgments.
+-   **Context Isolation**: Robustly separates conversation history by Node ID and Channel to prevent data leaks.
+-   **Situational Awareness**: Injects user metadata (Location, Battery, etc.) into DM sessions for context-aware responses.
+-   **Proactive Notifications**: Alerts users when their DM session times out, ensuring they know when context is reset.
+-   **Reliability**: Retries connections, verifying message acknowledgments, and implementing exponential backoff.
 -   **Architecture**: [See ARCHITECTURE.md](ARCHITECTURE.md) for design details.
 
 ## Quick Start
@@ -221,13 +224,13 @@ Notice the `[🟢 session_name]` indicator on all responses.
 
 #### Session Timeout
 
-Sessions automatically end after **5 minutes of inactivity**. You'll receive a notification when this happens:
+Sessions automatically end after **5 minutes of inactivity**. You'll receive a proactive notification when this happens:
 
 ```
 ⏱️ Session 'my_project_discussion' ended (timeout after 5 minutes).
 ```
 
-After timeout, you'll need to start a new session or use `!ai` prefix for queries.
+The AI remembers your routing information to send this alert even if you've stopped chatting. After timeout, existing context is cleared to protect privacy.
 
 #### Ending a Session
 

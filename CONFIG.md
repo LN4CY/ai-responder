@@ -36,8 +36,9 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant. Keep responses concise (under 200 chars when possible)."
   
 - **Online Providers**: Loads from `system_prompt_online.txt`
-  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network. Keep responses clear and concise."
-    
+  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
+  - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
+
 You can mount custom prompt files in Docker:
 ```yaml
 volumes:
