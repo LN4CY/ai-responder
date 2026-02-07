@@ -87,8 +87,41 @@ class TestSafeTCPInterface(unittest.TestCase):
         
         self.interface._handleFromRadio(from_radio.SerializeToString())
         
-        # Verify ACK event FIRED
+    # Verify ACK event FIRED
         self.mock_pub.sendMessage.assert_any_call("meshtastic.ack", packetId=666, interface=self.interface)
+
+class TestHandlerMetadata(unittest.TestCase):
+    def setUp(self):
+        self.handler = MeshtasticHandler()
+        self.handler.interface = MagicMock()
+
+    def test_get_node_metadata(self):
+        """Test extraction of node metadata (telemetry, location, battery)."""
+        node_id = "!1234abcd"
+        node_int = int("1234abcd", 16)
+        self.handler.interface.nodes = {
+            node_int: {
+                'num': node_int,
+                'position': {'latitude': 40.7, 'longitude': -74.0},
+                'deviceMetrics': {'batteryLevel': 85},
+                'environmentMetrics': {'temperature': 22.5, 'barometricPressure': 1013.2}
+            }
+        }
+        
+        metadata = self.handler.get_node_metadata(node_id)
+        self.assertIsNotNone(metadata)
+        self.assertIn("Location: 40.7000, -74.0000", metadata)
+        self.assertIn("Battery: 85%", metadata)
+        self.assertIn("Temp: 22.5C", metadata)
+        self.assertIn("Pressure: 1013.2hPa", metadata)
+
+    def test_get_node_metadata_missing(self):
+        """Test metadata extraction with missing fields."""
+        node_id = "!missing"
+        self.handler.interface.nodes = {node_id: {'num': 999}}
+        
+        metadata = self.handler.get_node_metadata(node_id)
+        self.assertIsNone(metadata)
 
 
 class TestMessageQueue(unittest.TestCase):

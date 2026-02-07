@@ -183,8 +183,8 @@ class TestAIResponder(unittest.TestCase):
         }
         mock_post.return_value = mock_response
 
-        # We call get_ai_response directly
-        response = self.responder.get_ai_response("hi")
+        # We call get_ai_response with history key
+        response = self.responder.get_ai_response("hi", "test_ollama")
         self.assertEqual(response, "Ollama says hi")
         
         # Check URL (default localhost)
@@ -207,7 +207,7 @@ class TestAIResponder(unittest.TestCase):
             }
             mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
+            response = self.responder.get_ai_response("hi", "test_gemini")
             self.assertEqual(response, "Gemini says hi")
             
             # Check URL
@@ -228,7 +228,7 @@ class TestAIResponder(unittest.TestCase):
             }
             mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
+            response = self.responder.get_ai_response("hi", "test_openai")
             self.assertEqual(response, "OpenAI says hi")
             
             args, _ = mock_post.call_args
@@ -248,7 +248,7 @@ class TestAIResponder(unittest.TestCase):
             }
             mock_post.return_value = mock_response
 
-            response = self.responder.get_ai_response("hi")
+            response = self.responder.get_ai_response("hi", "test_anthropic")
             self.assertEqual(response, "Claude says hi")
             
             args, _ = mock_post.call_args
@@ -303,34 +303,100 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
-    def test_new_conversation_command_channel(self):
-        """Test !ai -n logic in channels: clear history and thread start."""
-        self.responder.clear_history = MagicMock()
-        self.responder.send_response = MagicMock()
+    def test_history_key_isolation(self):
+        """Test that history keys are isolated by channel and node."""
+        # 1. Channel Isolation
+        key1 = self.responder._get_history_key("!user1", 0, False)
+        key2 = self.responder._get_history_key("!user1", 3, False)
+        self.assertNotEqual(key1, key2)
+        self.assertIn("0:!user1", key1)
+        self.assertIn("3:!user1", key2)
+
+        # 2. DM Isolation
+        key3 = self.responder._get_history_key("!user1", 0, True)
+        self.assertEqual(key3, "DM:!user1")
+
+        # 3. Session Isolation
+        self.responder.session_manager.start_session("!user1", "Chat99")
+        key4 = self.responder._get_history_key("!user1", 0, True)
+        self.assertEqual(key4, "Chat99")
+
+    def test_message_labeling_and_metadata(self):
+        """Test that user messages are prefixed with Node ID and include metadata."""
+        key = "test_label"
+        self.responder.add_to_history(key, 'user', "Hello", node_id="!abcd", metadata="(Battery: 10%)")
         
-        with patch('threading.Thread') as mock_thread:
-            # In channel mode (to_node == '^all')
-            self.responder.process_command('!ai -n why is sky blue?', '!user', '^all', 0)
+        history = self.responder.history[key]
+        self.assertEqual(len(history), 1)
+        self.assertIn("[!abcd]", history[0]['content'])
+        self.assertIn("(Battery: 10%)", history[0]['content'])
+        self.assertIn("Hello", history[0]['content'])
+
+    def test_context_window_tuning(self):
+        """Test that Channel queries use minimal context while sessions use full context."""
+        key = "test_window"
+        # Add 5 messages
+        for i in range(5):
+            self.responder.add_to_history(key, 'user', f"msg {i}")
+
+        with patch('ai_responder.get_provider') as mock_get:
+            mock_provider = MagicMock()
+            mock_get.return_value = mock_provider
             
-            # Verify history cleared
-            self.responder.clear_history.assert_called_with('!user')
+            # 1. Non-session -> Minimal context (last 2)
+            self.responder.get_ai_response("latest", key, is_session=False)
+            history_sent = mock_provider.get_response.call_args[0][1]
+            self.assertEqual(len(history_sent), 2)
+            self.assertEqual(history_sent[-1]['content'], "msg 4")
+
+            # 2. Session -> Full context (all 5)
+            self.responder.get_ai_response("latest", key, is_session=True)
+            history_sent = mock_provider.get_response.call_args[0][1]
+            self.assertEqual(len(history_sent), 5)
+
+    def test_system_prompt_grounding(self):
+        """Test that system prompt contains the context ID."""
+        with patch('config.SYSTEM_PROMPT_ONLINE_FILE', '/nonexistent'):
+            prompt = config.load_system_prompt('gemini', context_id="Channel:0:!test")
+            self.assertIn("Channel:0:!test", prompt)
+            self.assertIn("CONTEXT ISOLATION", prompt)
+
+    @patch('time.sleep', return_value=None)
+    def test_metadata_injection_logic(self, _):
+        """Test that metadata is injected only in DMs and once/refresh."""
+        from_node = "!u1"
+        to_node = "!bot"
+        channel = 0
+        
+        # Mock metadata
+        self.responder.meshtastic.get_node_metadata.return_value = "(Loc: 1, 2)"
+        
+        # Mock get_ai_response to avoid actual provider calls
+        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+            # 1. First DM -> SHould inject
+            self.responder._process_ai_query_thread("hi", from_node, to_node, channel, is_dm=True)
+            history_key = "DM:!u1"
+            self.assertIn("(Loc: 1, 2)", self.responder.history[history_key][0]['content'])
             
-            # Verify thread started
-            mock_thread.assert_called_once()
-    
-    def test_new_conversation_command_dm(self):
-        """Test !ai -n logic in DMs: start session."""
-        self.responder.session_manager.start_session = MagicMock(return_value=(True, "Session started", "chat_1"))
-        self.responder.send_response = MagicMock()
-        
-        # In DM mode (to_node != '^all')
-        self.responder.process_command('!ai -n my_session', '!user', '!bot', 0)
-        
-        # Verify session started with name
-        self.responder.session_manager.start_session.assert_called_with('!user', 'my_session')
-        
-        # Verify response sent
-        self.responder.send_response.assert_called()
+            # 2. Second DM -> Should NOT inject again
+            self.responder.meshtastic.get_node_metadata.reset_mock()
+            self.responder._process_ai_query_thread("again", from_node, to_node, channel, is_dm=True)
+            self.responder.meshtastic.get_node_metadata.assert_not_called()
+            
+            # 3. Forced refresh -> Should inject
+            self.responder._refresh_metadata_nodes.add(from_node)
+            self.responder._process_ai_query_thread("refreshed", from_node, to_node, channel, is_dm=True)
+            # Metadata should be in the latest user message
+            self.assertIn("(Loc: 1, 2)", self.responder.history[history_key][4]['content'])
+
+    def test_provider_context_id_passing(self):
+        """Test that context_id is passed to the provider."""
+        with patch('ai_responder.get_provider') as mock_get:
+            mock_provider = MagicMock()
+            mock_get.return_value = mock_provider
+            
+            self.responder.get_ai_response("hi", "MyContextID")
+            mock_provider.get_response.assert_called_with(ANY, ANY, context_id="MyContextID")
 
 if __name__ == "__main__":
     unittest.main()
