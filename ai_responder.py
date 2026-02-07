@@ -128,22 +128,7 @@ class AIResponder:
                 self.config.save()
                 logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
         
-        # Log current AI configuration
-        current_provider = self.config.get('current_provider', 'ollama')
-        logger.info(f"🤖 Active AI Provider: {current_provider.upper()}")
-        
-        if current_provider == 'gemini':
-            from config import GEMINI_MODEL
-            logger.info(f"🧠 Model: {GEMINI_MODEL}")
-        elif current_provider == 'ollama':
-            from config import OLLAMA_MODEL
-            logger.info(f"🦙 Model: {OLLAMA_MODEL}")
-        elif current_provider == 'openai':
-            from config import OPENAI_MODEL
-            logger.info(f"🤖 Model: {OPENAI_MODEL}")
-        elif current_provider == 'anthropic':
-            from config import ANTHROPIC_MODEL
-            logger.info(f"🧠 Model: {ANTHROPIC_MODEL}")
+        # Provider logging moved to connect()
     
     # ==================== History Management ====================
     
@@ -919,6 +904,9 @@ class AIResponder:
         """Connect to Meshtastic and start the main loop."""
         logger.info("🚀 Starting AI Responder...")
         
+        # Log AI Provider info at startup
+        self._log_provider_info()
+        
         # Connect to Meshtastic
         if not self.meshtastic.connect(on_receive_callback=self.on_receive):
             logger.error("Failed to connect to Meshtastic. Exiting.")
@@ -942,7 +930,7 @@ class AIResponder:
                         data['channel'], 
                         is_admin_cmd=False
                     )
-
+                    
                 # Heartbeat for Docker healthcheck
                 with open("/tmp/healthy", "w") as f:
                     f.write(str(time.time()))
@@ -952,6 +940,25 @@ class AIResponder:
         finally:
             self.meshtastic.disconnect()
             logger.info("✅ AI Responder stopped.")
+
+
+    def _log_provider_info(self):
+        """Log the current AI provider and model."""
+        current_provider = self.config.get('current_provider', 'ollama')
+        logger.info(f"🤖 Active AI Provider: {current_provider.upper()}")
+        
+        if current_provider == 'gemini':
+            from config import GEMINI_MODEL
+            logger.info(f"🧠 Model: {GEMINI_MODEL}")
+        elif current_provider == 'ollama':
+            from config import OLLAMA_MODEL
+            logger.info(f"🦙 Model: {OLLAMA_MODEL}")
+        elif current_provider == 'openai':
+            from config import OPENAI_MODEL
+            logger.info(f"🤖 Model: {OPENAI_MODEL}")
+        elif current_provider == 'anthropic':
+            from config import ANTHROPIC_MODEL
+            logger.info(f"🧠 Model: {ANTHROPIC_MODEL}")
 
 
 if __name__ == "__main__":
