@@ -6,6 +6,7 @@ import threading
 import time
 import json
 import shutil
+import requests # Added by instruction
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -479,6 +480,133 @@ class TestSessionNotifications(unittest.TestCase):
             self.responder.process_command("!ai -n NewSession", from_node, to_node, channel)
             
             mock_start.assert_called_once_with(from_node, "NewSession", channel, to_node)
+    
+    def test_check_timeout_integration(self):
+        """Test that check_timeout return value is correctly evaluated (tuple vs bool)."""
+        from_node = "!sender"
+        # Mock session active
+        self.responder.session_manager.active_sessions = {from_node: {'name': 'test'}}
+        
+        # 1. Test NO TIMEOUT (returns tuple (False, ...))
+        # The bug was: if check_timeout(...): which is True for a non-empty tuple
+        # We want to ensure it uses the first element (boolean)
+        with patch.object(self.session_manager, 'check_timeout') as mock_check:
+            mock_check.return_value = (False, None, 0, None)
+            
+            # Send normal message
+            # We mock handle_ai_query to avoid actual processing, we just want to check timeout logic
+            with patch.object(self.responder, '_handle_ai_query'):
+                with patch.object(self.responder, 'send_response') as mock_send:
+                    self.responder.on_receive({
+                        'fromId': from_node,
+                        'toId': '!me',
+                        'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': 'hello'}
+                    }, None)
+                    
+                    # Should NOT send timeout message
+                    mock_send.assert_not_called()
+
+        # 2. Test ACTUAL TIMEOUT
+        with patch.object(self.session_manager, 'check_timeout') as mock_check:
+            mock_check.return_value = (True, "Timed out", 0, "!me")
+            
+            with patch.object(self.responder, 'send_response') as mock_send:
+                self.responder.on_receive({
+                    'fromId': from_node,
+                    'toId': '!me',
+                    'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': 'hello'}
+                }, None)
+                
+                # Should send timeout message
+                mock_send.assert_called_once()
+                self.assertIn("Timed out", mock_send.call_args[0][0])
+
+                # Should send timeout message
+                mock_send.assert_called_once()
+                self.assertIn("Timed out", mock_send.call_args[0][0])
+
+class TestAIProviders(unittest.TestCase):
+    """Test AI Provider error handling and edge cases."""
+    
+    def setUp(self):
+        self.config = config.Config()
+        
+    @patch('requests.post')
+    def test_anthropic_error_handling(self, mock_post):
+        """Test Anthropic provider error scenarios."""
+        from providers.anthropic import AnthropicProvider
+        provider = AnthropicProvider(self.config)
+        
+        # 1. API Error (HTTP 400)
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {"error": {"message": "Invalid request"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Invalid request", response)
+            
+        # 2. Timeout
+        mock_post.side_effect = requests.exceptions.Timeout()
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("timed out", response)
+
+        # 3. Connection Error
+        mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+        with patch('providers.anthropic.ANTHROPIC_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Connection failed", response)
+
+    @patch('requests.post')
+    def test_openai_error_handling(self, mock_post):
+        """Test OpenAI provider error scenarios."""
+        from providers.openai import OpenAIProvider
+        provider = OpenAIProvider(self.config)
+        
+        # 1. API Error (HTTP 401)
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"error": {"message": "Invalid API Key"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.openai.OPENAI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("API key issue", response)
+            
+        # 2. Timeout
+        mock_post.side_effect = requests.exceptions.Timeout()
+        with patch('providers.openai.OPENAI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("timed out", response)
+
+    @patch('requests.post')
+    def test_gemini_error_handling(self, mock_post):
+        """Test Gemini provider error scenarios."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # 1. API Error (HTTP 500)
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"error": {"message": "Internal Server Error"}}
+        mock_post.return_value = mock_response
+        
+        with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            self.assertIn("Internal Server Error", response)
+
+    @patch('requests.post')
+    def test_ollama_error_handling(self, mock_post):
+        """Test Ollama provider error scenarios."""
+        from providers.ollama import OllamaProvider
+        provider = OllamaProvider(self.config)
+        
+        # 1. Connection Error (Ollama down)
+        mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+        response = provider.get_response("test")
+        self.assertIn("Is it running?", response)
 
 if __name__ == "__main__":
     unittest.main()
