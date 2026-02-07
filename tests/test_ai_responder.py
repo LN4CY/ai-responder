@@ -17,6 +17,7 @@ import providers.ollama
 import providers.gemini
 import providers.openai
 import providers.anthropic
+from conversation.session import SessionManager
 
 class TestAIResponder(unittest.TestCase):
     def setUp(self):
@@ -397,6 +398,65 @@ class TestAIResponder(unittest.TestCase):
             
             self.responder.get_ai_response("hi", "MyContextID")
             mock_provider.get_response.assert_called_with(ANY, ANY, context_id="MyContextID")
+
+class TestSessionNotifications(unittest.TestCase):
+    def setUp(self):
+        self.config = config.Config()
+        self.conv_manager = MagicMock()
+        self.session_manager = SessionManager(self.conv_manager, session_timeout=1) # 1 sec timeout
+        
+        # Patch AIResponder's session_manager
+        with patch('ai_responder.Config', return_value=self.config):
+            with patch('ai_responder.MeshtasticHandler'):
+                with patch('ai_responder.ConversationManager'):
+                    self.responder = AIResponder()
+                    self.responder.session_manager = self.session_manager
+    
+    def test_session_metadata_persistence(self):
+        """Test that session manager stores and returns routing metadata."""
+        user_id = "!user123"
+        channel = 3
+        to_node = "!bot"
+        
+        self.session_manager.start_session(user_id, "TestConv", channel, to_node)
+        
+        # Check internal storage
+        session = self.session_manager.active_sessions[user_id]
+        self.assertEqual(session['channel'], channel)
+        self.assertEqual(session['to_node'], to_node)
+        
+        # Check end_session returns it
+        _, _, ret_channel, ret_to_node = self.session_manager.end_session(user_id)
+        self.assertEqual(ret_channel, channel)
+        self.assertEqual(ret_to_node, to_node)
+
+    def test_timeout_notification_data(self):
+        """Test that check_all_timeouts returns full routing info."""
+        user_id = "!user_timeout"
+        self.session_manager.start_session(user_id, "SoonGone", channel=7, to_node="!gateway")
+        
+        # Mock time to be in the future
+        with patch('time.time', return_value=time.time() + 10):
+            timeouts = self.session_manager.check_all_timeouts()
+            
+            self.assertEqual(len(timeouts), 1)
+            self.assertEqual(timeouts[0]['user_id'], user_id)
+            self.assertEqual(timeouts[0]['channel'], 7)
+            self.assertEqual(timeouts[0]['to_node'], "!gateway")
+            self.assertIn("timeout", timeouts[0]['message'])
+
+    def test_responder_passes_metadata(self):
+        """Test that AIResponder passes channel/to_node to session manager."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 5
+        
+        with patch.object(self.session_manager, 'start_session') as mock_start:
+            mock_start.return_value = (True, "Started", "NewSession")
+            # Send !ai -n command in DM
+            self.responder.process_command("!ai -n NewSession", from_node, to_node, channel)
+            
+            mock_start.assert_called_once_with(from_node, "NewSession", channel, to_node)
 
 if __name__ == "__main__":
     unittest.main()

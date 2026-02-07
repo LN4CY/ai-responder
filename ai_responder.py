@@ -450,7 +450,7 @@ class AIResponder:
             if is_dm:
                 # Start session
                 session_name = args if args else None
-                success, message, conv_name = self.session_manager.start_session(from_node, session_name)
+                success, message, conv_name = self.session_manager.start_session(from_node, session_name, channel, to_node)
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 # In channel: clear history and start new conversation
@@ -582,7 +582,7 @@ class AIResponder:
                     self._refresh_metadata_nodes.add(from_node)
                     # If in DM, restart the session so they can continue chatting
                     if to_node != '^all':
-                        self.session_manager.start_session(from_node, conversation_name)
+                        self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                         message += "\n🟢 Session Resumed"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
@@ -618,7 +618,7 @@ class AIResponder:
                 self._refresh_metadata_nodes.add(from_node)
                 # If in DM, restart the session so they can continue chatting
                 if to_node != '^all':
-                    self.session_manager.start_session(from_node, conversation_name)
+                    self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                     message += "\n🟢 Session Resumed"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
@@ -915,12 +915,16 @@ class AIResponder:
                 time.sleep(1)
                 
                 # Periodic session timeout check
-                timed_out_users = self.session_manager.check_all_timeouts()
-                for user_id in timed_out_users:
-                    # Send timeout notification
-                    success, message = self.session_manager.end_session(user_id, is_timeout=True)
-                    # Note: We can't easily send the message here without knowing channel/to_node
-                    # The session manager already handles the notification in check_timeout
+                timed_out_data = self.session_manager.check_all_timeouts()
+                for data in timed_out_data:
+                    # Send timeout notification proactively
+                    self.send_response(
+                        data['message'], 
+                        data['user_id'], 
+                        data['to_node'], 
+                        data['channel'], 
+                        is_admin_cmd=False
+                    )
 
                 # Heartbeat for Docker healthcheck
                 with open("/tmp/healthy", "w") as f:
