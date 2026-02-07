@@ -809,6 +809,16 @@ class AIResponder:
                     if getattr(self, '_refresh_metadata_nodes', set()) and from_node in self._refresh_metadata_nodes:
                         inject_metadata = True
                         self._refresh_metadata_nodes.discard(from_node)
+                    
+                    # Check for context-related queries (location, battery, environment)
+                    context_keywords = [
+                        'location', 'where am i', 'gps', 'coords', 'coordinates', 'position', 'map',
+                        'battery', 'voltage', 'power',
+                        'temp', 'temperature', 'humidity', 'pressure', 'air', 'env'
+                    ]
+                    if any(k in query.lower() for k in context_keywords):
+                        logger.info(f"📍 Context query detected from {from_node}, injecting metadata.")
+                        inject_metadata = True
                 
                 if inject_metadata:
                     metadata = self.meshtastic.get_node_metadata(from_node)

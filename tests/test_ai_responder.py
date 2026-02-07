@@ -485,6 +485,34 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Session ended", mock_send.call_args[0][0])
 
+    def test_location_query_injects_metadata(self):
+        """Test that location-related queries trigger metadata injection."""
+        from_node = "!sender"
+        to_node = "!bot"
+        channel = 0
+        
+        # Mock session active to bypass initial session creation logic
+        self.responder.session_manager.active_sessions = {from_node: {'name': 'test'}}
+        # Mock history exists so we don't trigger "fresh session" injection
+        self.responder.history = {f"DM:{from_node}": [{'role': 'user', 'content': 'hi'}]}
+        
+        with patch.object(self.responder.meshtastic, 'get_node_metadata') as mock_meta:
+            mock_meta.return_value = "(Location: 40.7, -74.0)"
+            
+            with patch.object(self.responder, 'get_ai_response') as mock_ai:
+                mock_ai.return_value = "You are at 40.7, -74.0"
+                
+                # run _process_ai_query_thread directly to avoid threading
+                self.responder._process_ai_query_thread("Where am I?", from_node, to_node, channel, is_dm=True)
+                
+                # Should have called get_node_metadata because of "Where am I?"
+                mock_meta.assert_called_with(from_node)
+                
+                # Test Battery Query
+                mock_meta.reset_mock()
+                self.responder._process_ai_query_thread("How is my battery?", from_node, to_node, channel, is_dm=True)
+                mock_meta.assert_called_once_with(from_node)
+
     def test_responder_passes_metadata(self):
         """Test that AIResponder passes channel/to_node to session manager."""
         from_node = "!sender"
