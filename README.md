@@ -170,6 +170,25 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
 | `OLLAMA_MAX_MESSAGES` | `10` | Max messages sent to Ollama (Context) |
 
+
+## Customizing System Prompts
+
+The AI Responder comes with built-in system prompts that handle context isolation and metadata injection. If you wish to customize these prompts, you can mount your own text files into the container.
+
+**Create your custom prompt file (e.g., `my_prompt.txt`):**
+```text
+You are a helpful assistant.
+Context: {context_id}
+```
+
+**Mount it in Docker Compose:**
+```yaml
+    volumes:
+      - ai-data:/app/data
+      - ./my_prompt.txt:/app/system_prompt_local.txt # For Ollama
+      # - ./my_online_prompt.txt:/app/system_prompt_online.txt # For Gemini/OpenAI/Anthropic
+```
+
 ## User Guide
 
 ### Basic Usage

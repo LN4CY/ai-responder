@@ -68,7 +68,19 @@ volumes:
 > - **Message Limit**: Acts as a **rolling buffer**. When the limit (1000) is reached, the oldest message is dropped to make room for the new one.
 > - **Storage Limit**: If the file size exceeds 2MB, the system automatically prunes the oldest 50% of messages to recover space.
 
-## Configuration File
+
+### System Prompts (Advanced)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SYSTEM_PROMPT_LOCAL_FILE` | `system_prompt_local.txt` | Path to custom prompt for Ollama/Local |
+| `SYSTEM_PROMPT_ONLINE_FILE` | `system_prompt_online.txt` | Path to custom prompt for Online providers |
+
+To use a custom prompt:
+1. Create a text file with your prompt (use `{context_id}` placeholder).
+2. Mount it to the container at `/app/system_prompt_local.txt` (or change the ENV to point to your mounted path).
+
+## Configuration Files
 
 The application also persists runtime configuration changes (like allowed channels or provider switches) to a JSON file.
 
