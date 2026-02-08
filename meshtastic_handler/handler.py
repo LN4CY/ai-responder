@@ -322,15 +322,51 @@ class MeshtasticHandler:
             return None
             
         try:
-            # Convert node_id string to int if needed (meshtastic nodes use integers)
-            node_int = node_id
-            if isinstance(node_id, str):
-                if node_id.startswith('!'):
-                    node_int = int(node_id[1:], 16)
-                elif node_id.isdigit():
-                    node_int = int(node_id)
+            # Check if requesting local node
+            my_info = self.get_node_info()
+            if my_info:
+                my_id_str = my_info.get('user', {}).get('id')
+                my_id_int = my_info.get('num')
+                
+                is_local = False
+                if isinstance(node_id, str) and node_id == my_id_str:
+                    is_local = True
+                elif isinstance(node_id, int) and node_id == my_id_int:
+                    is_local = True
+                elif isinstance(node_id, str) and node_id.isdigit() and int(node_id) == my_id_int:
+                    is_local = True
+                    
+                if is_local:
+                    node_info = my_info
+                else:
+                    # Try direct lookup first
+                    node_info = self.interface.nodes.get(node_id)
             
-            node_info = self.interface.nodes.get(node_int)
+            if not node_info:
+                # Try looking up by converted types
+                node_int = None
+                node_str = None
+                
+                if isinstance(node_id, str):
+                    if node_id.startswith('!'):
+                        try:
+                            node_int = int(node_id[1:], 16)
+                        except: pass
+                    elif node_id.isdigit():
+                        node_int = int(node_id)
+                        node_str = f"!{node_int:08x}"
+                elif isinstance(node_id, int):
+                    node_int = node_id
+                    node_str = f"!{node_int:08x}"
+                
+                # Try int key
+                if node_int is not None:
+                    node_info = self.interface.nodes.get(node_int)
+                
+                # If still not found, try str key
+                if not node_info and node_str is not None:
+                    node_info = self.interface.nodes.get(node_str)
+            
             if not node_info:
                 return None
                 
@@ -343,26 +379,67 @@ class MeshtasticHandler:
             if lat is not None and lon is not None:
                 metadata_parts.append(f"Location: {lat:.4f}, {lon:.4f}")
             
-            # 2. Device Metrics (Battery)
+            # 2. Device Metrics
             metrics = node_info.get('deviceMetrics', {})
             battery = metrics.get('batteryLevel')
             voltage = metrics.get('voltage')
+            chan_util = metrics.get('channelUtilization')
+            air_util = metrics.get('airUtilTx')
+            uptime = metrics.get('uptimeSeconds')
+            
             if battery is not None:
                 metadata_parts.append(f"Battery: {battery}%")
-            elif voltage is not None:
+            if voltage is not None:
                 metadata_parts.append(f"Voltage: {voltage:.2f}V")
-                
-            # 3. Environment Metrics (Temp, Pressure, Humidity)
+            if chan_util is not None:
+                metadata_parts.append(f"ChUtil: {chan_util:.1f}%")
+            if air_util is not None:
+                metadata_parts.append(f"AirUtil: {air_util:.1f}%")
+            if uptime is not None:
+                # Convert seconds to simpler format if needed, but seconds is fine for AI
+                metadata_parts.append(f"Uptime: {uptime}s")
+
+            # 3. Environment Metrics
             env = node_info.get('environmentMetrics', {})
-            temp = env.get('temperature')
-            press = env.get('barometricPressure')
-            hum = env.get('relativeHumidity')
-            if temp is not None:
-                metadata_parts.append(f"Temp: {temp:.1f}C")
-            if press is not None:
-                metadata_parts.append(f"Pressure: {press:.1f}hPa")
-            if hum is not None:
-                metadata_parts.append(f"Humidity: {hum:.1f}%")
+            # Map API keys to Display labels
+            env_map = {
+                'temperature': 'Temp',
+                'relativeHumidity': 'Hum',
+                'barometricPressure': 'Press',
+                'lux': 'Lux',
+                'white_lux': 'WhiteLux',
+                'ir_lux': 'IRLux',
+                'gas_resistance': 'Gas',
+                'iaq': 'IAQ',
+                'distance': 'Dist',
+                'wind_speed': 'Wind',
+                'wind_gust': 'Gust',
+                'wind_direction': 'WindDir',
+                'rainfall_1h': 'Rain1h',
+                'rainfall_24h': 'Rain24h',
+                'soil_moisture': 'SoilMoist',
+                'soil_temperature': 'SoilTemp'
+            }
+            
+            for key, label in env_map.items():
+                val = env.get(key)
+                if val is not None:
+                    # Format floats to 1 or 2 decimal places
+                    if isinstance(val, float):
+                         if key in ['lux', 'white_lux', 'ir_lux', 'gas_resistance']:
+                             val_str = f"{val:.1f}"
+                         elif key == 'barometricPressure':
+                             val_str = f"{val:.1f}hPa"
+                         elif key == 'temperature' or key == 'soil_temperature':
+                             val_str = f"{val:.1f}C"
+                         elif key == 'relativeHumidity' or key == 'soil_moisture':
+                             val_str = f"{val:.1f}%"
+                         else:
+                             val_str = f"{val:.2f}"
+                    else:
+                        val_str = str(val)
+                    
+                    metadata_parts.append(f"{label}: {val_str}")
                 
             if not metadata_parts:
                 return None

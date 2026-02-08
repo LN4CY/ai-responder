@@ -826,6 +826,14 @@ class AIResponder:
             # 3. Add user message to history
             self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=metadata)
             
+            # Log what we are sending
+            if metadata:
+                logger.info(f"💾 Metadata Injected: {metadata}")
+            
+            current_session = self.session_manager.get_session_name(from_node)
+            msgs_count = len(self.history.get(history_key, []))
+            logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
+
             # 4. Get AI response with tuned context
             response = self.get_ai_response(query, history_key, is_session=is_session)
             
