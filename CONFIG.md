@@ -25,8 +25,13 @@ The application is configured primarily via environment variables passed to the 
 | `OLLAMA_PORT` | `11434` | Port of the Ollama service. |
 | `OLLAMA_MODEL` | `llama3.2:1b` | The specific model to use with Ollama. |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | The specific Gemini model version to use. |
+| `GEMINI_SEARCH_GROUNDING` | `false` | Enable Google Search grounding for real-time info. |
+| `GEMINI_MAPS_GROUNDING` | `false` | Enable Google Maps grounding for location-based info. |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
+| `OPENAI_MODEL` | `gpt-3.5-turbo` | The specific OpenAI model to use. |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
+| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic model to use. |
 
 ### AI Persona / System Prompt
 
@@ -36,8 +41,17 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant. Keep responses concise (under 200 chars when possible)."
   
 - **Online Providers**: Loads from `system_prompt_online.txt`
-  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network. Keep responses clear and concise."
-    
+  - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
+  - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
+
+### Situational Awareness (Metadata)
+
+The responder automatically injects helpful metadata into the AI's context for direct messages and context-relevant broadcast queries:
+- **Location**: Injected as GPS coordinates (latitude, longitude).
+- **Battery**: Node battery level and voltage.
+- **Environment**: Temperature, Humidity, Barometric Pressure, and Air Quality (IAQ).
+- **On-Demand Requests**: When a session starts or an environmental query is detected, the bot proactively sends an asynchronous telemetry request to the user's node to ensure and cache fresh data for subsequent messages.
+
 You can mount custom prompt files in Docker:
 ```yaml
 volumes:
@@ -64,7 +78,19 @@ volumes:
 > - **Message Limit**: Acts as a **rolling buffer**. When the limit (1000) is reached, the oldest message is dropped to make room for the new one.
 > - **Storage Limit**: If the file size exceeds 2MB, the system automatically prunes the oldest 50% of messages to recover space.
 
-## Configuration File
+
+### System Prompts (Advanced)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `SYSTEM_PROMPT_LOCAL_FILE` | `system_prompt_local.txt` | Path to custom prompt for Ollama/Local |
+| `SYSTEM_PROMPT_ONLINE_FILE` | `system_prompt_online.txt` | Path to custom prompt for Online providers |
+
+To use a custom prompt:
+1. Create a text file with your prompt (use `{context_id}` placeholder).
+2. Mount it to the container at `/app/system_prompt_local.txt` (or change the ENV to point to your mounted path).
+
+## Configuration Files
 
 The application also persists runtime configuration changes (like allowed channels or provider switches) to a JSON file.
 

@@ -36,12 +36,13 @@ graph TD
 
 ### 1. Meshtastic Interface (`MeshtasticHandler`)
 The application abstracts the connection to the radio via the `MeshtasticHandler` class. It supports:
-- **TCP Connection**: (Default) Connects to a Meshtastic node or MeshMonitor via network.
 - **Serial Connection**: Connects directly to a radio via USB.
+- **Telemetry Caching**: Subscribes to telemetry events to cache environmental metrics (Temp, Humidity, etc.) from remote nodes.
+- **On-Demand Request**: Proactively triggers empty telemetry packets with `wantResponse=True` to fetch fresh data for context awareness.
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:
-- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state.
+- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state. Now includes **Routing Memory** to persist channel and node ID for proactive timeout notifications.
 - **`ConversationManager`**: Handles long-term persistence. Stores up to 10 conversations per user as compressed JSON files (`.json.gz`), managing slots and metadata.
 
 ### 3. AI Provider System

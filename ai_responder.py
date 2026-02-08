@@ -67,6 +67,9 @@ class AIResponder:
         self.conversation_manager = ConversationManager()
         self.session_manager = SessionManager(self.conversation_manager)
         
+        # Track nodes that need a metadata refresh in their next message
+        self._refresh_metadata_nodes = set()
+        
         # State management
         self.running = True
         self.last_activity = time.time()
@@ -124,20 +127,45 @@ class AIResponder:
                 self.config['current_provider'] = AI_PROVIDER
                 self.config.save()
                 logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
+        
+        # Provider logging moved to connect()
     
     # ==================== History Management ====================
     
-    def _get_history_path(self, user_id):
+    def _get_history_key(self, from_node, channel, is_dm):
         """
-        Get the file path for a user's history.
+        Generate a unique key for history isolation.
         
         Args:
-            user_id: Unique identifier for the user
+            from_node: Source node ID
+            channel: Channel index
+            is_dm: Whether it's a DM
+            
+        Returns:
+            str: Unique key for history
+        """
+        session_name = self.session_manager.get_session_name(from_node)
+        if session_name:
+            return session_name
+            
+        if is_dm:
+            return f"DM:{from_node}"
+        else:
+            return f"Channel:{channel}:{from_node}"
+
+    def _get_history_path(self, key):
+        """
+        Get the file path for a specific history key.
+        
+        Args:
+            key: History key (Node ID, Channel:Node, etc.)
             
         Returns:
             str: Absolute path to history file
         """
-        return os.path.join(self.history_dir, f"{user_id}.json")
+        # Sanitize key for filesystem
+        safe_key = key.replace(':', '_').replace('^', 'B')
+        return os.path.join(self.history_dir, f"{safe_key}.json")
     
     def load_history(self, user_id):
         """
@@ -206,20 +234,49 @@ class AIResponder:
         self.save_history(user_id)
         logger.info(f"Cleared history for {user_id}")
     
-    def add_to_history(self, user_id, role, content):
+    def _format_dual_metadata(self, local_metadata, remote_metadata):
         """
-        Add a message to conversation history.
+        Format dual metadata with clear labels for AI context.
         
         Args:
-            user_id: Unique identifier for the user
+            local_metadata: Bot's own status metadata
+            remote_metadata: User's environmental metadata
+            
+        Returns:
+            str: Combined metadata string or None
+        """
+        parts = []
+        if remote_metadata:
+            parts.append(f"[User: {remote_metadata}]")
+        if local_metadata:
+            parts.append(f"[Bot: {local_metadata}]")
+        
+        return " ".join(parts) if parts else None
+    
+    def add_to_history(self, history_key, role, content, node_id=None, metadata=None):
+        """
+        Add a message to conversation history with optional metadata.
+        
+        Args:
+            history_key: Unique identifier for the history (from _get_history_key)
             role: 'user' or 'assistant'
             content: Message content
+            node_id: Optional Node ID for labeling 'user' messages
+            metadata: Optional metadata string (e.g., location/battery)
         """
-        if user_id not in self.history:
-            self.load_history(user_id)
+        if history_key not in self.history:
+            self.load_history(history_key)
         
-        self.history[user_id].append({'role': role, 'content': content})
-        self.save_history(user_id)
+        formatted_content = content
+        if role == 'user' and node_id:
+            # Tag with Node ID
+            label = f"[{node_id}]"
+            if metadata:
+                label += f" {metadata}"
+            formatted_content = f"{label}: {content}"
+            
+        self.history[history_key].append({'role': role, 'content': formatted_content})
+        self.save_history(history_key)
     
     # ==================== Memory Status ====================
     
@@ -297,13 +354,14 @@ class AIResponder:
     
     # ==================== AI Provider Interface ====================
     
-    def get_ai_response(self, prompt, user_id=None):
+    def get_ai_response(self, prompt, history_key, is_session=False):
         """
-        Get AI response using the configured provider.
+        Get AI response using the configured provider with tuned context.
         
         Args:
             prompt: User's input text
-            user_id: Optional user ID for history context
+            history_key: Key for history context
+            is_session: Whether this is an active continuous session
             
         Returns:
             str: AI response or error message
@@ -316,11 +374,15 @@ class AIResponder:
             
             # Get history for context
             history = None
-            if user_id and user_id in self.history:
-                history = self.history[user_id]
+            if history_key and history_key in self.history:
+                # Context Tuning:
+                # - Sessions get full context (e.g., 30 messages)
+                # - Channel/Quick queries get minimal context (e.g., 2 messages)
+                limit = 30 if is_session else 2
+                history = self.history[history_key][-limit:]
             
             # Get response
-            response = provider.get_response(prompt, history)
+            response = provider.get_response(prompt, history, context_id=history_key)
             return response
             
         except ValueError as e:
@@ -390,7 +452,7 @@ class AIResponder:
         cmd = parts[1].lower() if len(parts) > 1 else ''
         args = parts[2] if len(parts) > 2 else ''
         
-        is_dm = (to_node != '^all')
+        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
         is_admin = self.is_admin(from_node)
         
         # ===== Help Command =====
@@ -409,7 +471,7 @@ class AIResponder:
             if is_dm:
                 # Start session
                 session_name = args if args else None
-                success, message, conv_name = self.session_manager.start_session(from_node, session_name)
+                success, message, conv_name = self.session_manager.start_session(from_node, session_name, channel, to_node)
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 # In channel: clear history and start new conversation
@@ -421,7 +483,7 @@ class AIResponder:
         
         if cmd == '-end':
             if is_dm:
-                success, message = self.session_manager.end_session(from_node)
+                success, message, _, _ = self.session_manager.end_session(from_node)
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
                 self.send_response("⚠️ Sessions are DM-only. Use !ai -n in channels to clear history.", 
@@ -535,10 +597,13 @@ class AIResponder:
                 latest = max(metadata.items(), key=lambda x: x[1]['last_access'])
                 success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, latest[0])
                 if success and history:
-                    self.history[from_node] = history
+                    # Use conversation name as history key
+                    self.history[conversation_name] = history
+                    # Mark for metadata refresh
+                    self._refresh_metadata_nodes.add(from_node)
                     # If in DM, restart the session so they can continue chatting
                     if to_node != '^all':
-                        self.session_manager.start_session(from_node, conversation_name)
+                        self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                         message += "\n🟢 Session Resumed"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
@@ -568,10 +633,13 @@ class AIResponder:
             # Load specific conversation
             success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, args)
             if success and history:
-                self.history[from_node] = history
+                # Use conversation name as history key
+                self.history[conversation_name] = history
+                # Mark for metadata refresh
+                self._refresh_metadata_nodes.add(from_node)
                 # If in DM, restart the session so they can continue chatting
                 if to_node != '^all':
-                    self.session_manager.start_session(from_node, conversation_name)
+                    self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                     message += "\n🟢 Session Resumed"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
             else:
@@ -714,39 +782,108 @@ class AIResponder:
             channel: Channel index
             initial_msg: Initial "thinking" message to send
         """
+        # Determine if this is a DM interaction
+        # to_node == my node ID or is not a channel packet
+        is_dm = (to_node != "^all" and channel == 0) # Simplification, improved in process_command
+        
         # Send initial acknowledgment
-        self.send_response(initial_msg, from_node, to_node, channel, is_admin_cmd=False)
+        if initial_msg:
+            self.send_response(initial_msg, from_node, to_node, channel, is_admin_cmd=False)
         
         # Process in background thread
         thread = threading.Thread(
             target=self._process_ai_query_thread,
-            args=(query, from_node, to_node, channel)
+            args=(query, from_node, to_node, channel, is_dm)
         )
         thread.daemon = True
         thread.start()
     
-    def _process_ai_query_thread(self, query, from_node, to_node, channel):
+    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False):
         """Background thread for processing AI queries."""
         try:
-            # Give the "Thinking..." message time to clear (standard DM rate limit)
-            time.sleep(10)
+            # Short sleep to allow "Thinking..." message to clear if needed
+            time.sleep(2)
 
-            # Add user message to history
-            self.add_to_history(from_node, 'user', query)
+            # 1. Get History Key and Session Status
+            is_session = self.session_manager.is_active(from_node)
+            history_key = self._get_history_key(from_node, channel, is_dm)
             
-            # Get AI response
-            response = self.get_ai_response(query, from_node)
+            # 2. Dual Metadata Injection Logic
+            local_metadata = None  # Bot's own status
+            remote_metadata = None  # User's environmental data
             
-            # Add assistant response to history
-            self.add_to_history(from_node, 'assistant', response)
+            if is_dm:
+                history_exists = history_key in self.history and len(self.history[history_key]) > 0
+                
+                # Fetch LOCAL node metadata (bot's own status) on session start
+                if not history_exists or (is_session and not history_exists):
+                    try:
+                        my_node_info = self.meshtastic.get_node_info()
+                        if my_node_info:
+                            my_node_id = my_node_info.get('user', {}).get('id')
+                            if my_node_id:
+                                local_metadata = self.meshtastic.get_node_metadata(my_node_id)
+                                if local_metadata:
+                                    logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch local node metadata: {e}")
+                
+                # Determine if we should inject REMOTE metadata (user's data)
+                inject_remote_metadata = False
+                if not history_exists:
+                    inject_remote_metadata = True
+                else:
+                    # Check if specifically indicated for refresh
+                    if getattr(self, '_refresh_metadata_nodes', set()) and from_node in self._refresh_metadata_nodes:
+                        inject_remote_metadata = True
+                        self._refresh_metadata_nodes.discard(from_node)
+                    
+                    # Check for context-related queries (location, battery, environment)
+                    context_keywords = [
+                        'location', 'where am i', 'gps', 'coords', 'coordinates', 'position', 'map',
+                        'battery', 'voltage', 'power',
+                        'temp', 'temperature', 'humidity', 'pressure', 'air', 'env',
+                        'lux', 'light', 'brightness'
+                    ]
+                    if any(k in query.lower() for k in context_keywords):
+                        logger.info(f"📍 Context query detected from {from_node}, injecting remote metadata.")
+                        inject_remote_metadata = True
+                
+                # Fetch REMOTE node metadata (user's environmental data)
+                if inject_remote_metadata:
+                    # Trigger an asynchronous telemetry request to refresh our cache
+                    # for future messages, while still fetching whatever we have now.
+                    self.meshtastic.request_telemetry(from_node)
+                    
+                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
             
-            # Save to conversation if in session
+            # Combine metadata with clear labels
+            metadata = self._format_dual_metadata(local_metadata, remote_metadata)
+
+            # 3. Add user message to history
+            self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=metadata)
+            
+            # Log what we are sending
+            if metadata:
+                logger.info(f"💾 Metadata Injected: {metadata}")
+            
+            current_session = self.session_manager.get_session_name(from_node)
+            msgs_count = len(self.history.get(history_key, []))
+            logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
+
+            # 4. Get AI response with tuned context
+            response = self.get_ai_response(query, history_key, is_session=is_session)
+            
+            # 5. Add assistant response to history
+            self.add_to_history(history_key, 'assistant', response)
+            
+            # 6. Save to conversation if in session
             session_name = self.session_manager.get_session_name(from_node)
             if session_name:
-                self.conversation_manager.save_conversation(from_node, session_name, self.history[from_node])
+                self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                 self.session_manager.update_activity(from_node)
             
-            # Send response
+            # 7. Send response
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False)
             
         except Exception as e:
@@ -785,17 +922,27 @@ class AIResponder:
             
             logger.info(f"📨 Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
             
+            # Determine DM status
+            my_node_info = self.meshtastic.get_node_info()
+            my_id = my_node_info.get('noId', '') if my_node_info else ''
+            # In MeshPacket, 'toId' is our ID for DMs.
+            # But sometimes ACKs/Routing packets confuse this. 
+            # For TEXT_MESSAGE_APP:
+            # if to_node == my_id or it's a DM session:
+            is_dm = (to_node == my_id or (to_node != "^all" and channel == 0))
+
             # Check if user is in an active session
             if self.session_manager.is_active(from_node):
                 # Check for timeout
-                if self.session_manager.check_timeout(from_node):
+                timed_out, message, session_channel, session_to_node = self.session_manager.check_timeout(from_node)
+                if timed_out:
                     # Session timed out, send notification
-                    success, message = self.session_manager.end_session(from_node, is_timeout=True)
-                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                    self.send_response(message, from_node, session_to_node, session_channel, is_admin_cmd=False)
                     # Don't process the message as a session message
                 else:
-                    # Active session - process as AI query without !ai prefix
+                    # Active session - process as AI query without !ai prefix (DMs only)
                     if not text.startswith('!ai'):
+                        # Pass TRUE for is_dm because sessions are DM only
                         self._handle_ai_query(text, from_node, to_node, channel)
                         return
             
@@ -812,6 +959,9 @@ class AIResponder:
         """Connect to Meshtastic and start the main loop."""
         logger.info("🚀 Starting AI Responder...")
         
+        # Log AI Provider info at startup
+        self._log_provider_info()
+        
         # Connect to Meshtastic
         if not self.meshtastic.connect(on_receive_callback=self.on_receive):
             logger.error("Failed to connect to Meshtastic. Exiting.")
@@ -825,13 +975,17 @@ class AIResponder:
                 time.sleep(1)
                 
                 # Periodic session timeout check
-                timed_out_users = self.session_manager.check_all_timeouts()
-                for user_id in timed_out_users:
-                    # Send timeout notification
-                    success, message = self.session_manager.end_session(user_id, is_timeout=True)
-                    # Note: We can't easily send the message here without knowing channel/to_node
-                    # The session manager already handles the notification in check_timeout
-
+                timed_out_data = self.session_manager.check_all_timeouts()
+                for data in timed_out_data:
+                    # Send timeout notification proactively
+                    self.send_response(
+                        data['message'], 
+                        data['user_id'], 
+                        data['to_node'], 
+                        data['channel'], 
+                        is_admin_cmd=False
+                    )
+                    
                 # Heartbeat for Docker healthcheck
                 with open("/tmp/healthy", "w") as f:
                     f.write(str(time.time()))
@@ -841,6 +995,25 @@ class AIResponder:
         finally:
             self.meshtastic.disconnect()
             logger.info("✅ AI Responder stopped.")
+
+
+    def _log_provider_info(self):
+        """Log the current AI provider and model."""
+        current_provider = self.config.get('current_provider', 'ollama')
+        logger.info(f"🤖 Active AI Provider: {current_provider.upper()}")
+        
+        if current_provider == 'gemini':
+            from config import GEMINI_MODEL
+            logger.info(f"🧠 Model: {GEMINI_MODEL}")
+        elif current_provider == 'ollama':
+            from config import OLLAMA_MODEL
+            logger.info(f"🦙 Model: {OLLAMA_MODEL}")
+        elif current_provider == 'openai':
+            from config import OPENAI_MODEL
+            logger.info(f"🤖 Model: {OPENAI_MODEL}")
+        elif current_provider == 'anthropic':
+            from config import ANTHROPIC_MODEL
+            logger.info(f"🧠 Model: {ANTHROPIC_MODEL}")
 
 
 if __name__ == "__main__":

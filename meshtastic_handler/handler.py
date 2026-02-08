@@ -12,7 +12,8 @@ import threading
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
-from meshtastic import mesh_pb2
+from meshtastic import mesh_pb2, portnums_pb2
+from meshtastic.protobuf import telemetry_pb2
 from google.protobuf.message import DecodeError
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class MeshtasticHandler:
         self.ack_timeout = ack_timeout
         self.interface = None
         self.running = False
+        
+        # Cache for environmental telemetry from remote nodes
+        self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
     
     def connect(self, on_receive_callback=None):
         """
@@ -194,6 +198,14 @@ class MeshtasticHandler:
                         pass
                     pub.subscribe(on_receive_callback, "meshtastic.receive")
                     logger.info("✅ Subscribed to meshtastic.receive")
+                
+                # Subscribe to telemetry specifically to populate our internal cache
+                try:
+                    pub.unsubscribe(self._on_telemetry, "meshtastic.receive.telemetry")
+                except:
+                    pass
+                pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
+                logger.debug("✅ Subscribed to meshtastic.receive.telemetry for caching")
                 
                 # Subscribe to ACKs for reliable sending
                 try:
@@ -236,6 +248,64 @@ class MeshtasticHandler:
         if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
             logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
             self.current_ack_event.set()
+
+    def _on_telemetry(self, packet, interface):
+        """Handle incoming telemetry packets specifically to populate the cache."""
+        try:
+            from_id_raw = packet.get('fromId')
+            # Handle int/str mix
+            from_id = from_id_raw
+            if isinstance(from_id_raw, int):
+                from_id = f"!{from_id_raw:08x}"
+                
+            decoded = packet.get('decoded', {})
+            
+            # telemetry data is usually inside 'telemetry' key in decoded dictionary
+            telemetry = decoded.get('telemetry', {})
+            env_data = telemetry.get('environmentMetrics')
+            
+            if env_data and from_id:
+                self.env_telemetry_cache[from_id] = env_data
+                logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+        except Exception as e:
+            logger.warning(f"Error caching telemetry: {e}")
+
+    def request_telemetry(self, destination_id):
+        """
+        Request telemetry from a specific node.
+        
+        This sends an empty telemetry packet with wantResponse=True
+        to trigger an asynchronous update from the remote node.
+        """
+        if not self.interface or not self.running:
+            logger.warning(f"Cannot request telemetry: Not connected")
+            return False
+            
+        try:
+            # Create an empty environmental telemetry packet
+            # MeshMonitor uses an empty EnvironmentMetrics packet to request a refresh
+            env_metrics = telemetry_pb2.EnvironmentMetrics()
+            telemetry = telemetry_pb2.Telemetry()
+            telemetry.environment_metrics.CopyFrom(env_metrics)
+            
+            payload = telemetry.SerializeToString()
+            
+            # destination_id can be node ID string like "!12345678" or integer
+            dest = destination_id
+            if isinstance(destination_id, str) and destination_id.startswith('!'):
+                dest = int(destination_id[1:], 16)
+            
+            logger.info(f"📊 Requesting environmental telemetry from {destination_id} ({dest})")
+            self.interface.sendData(
+                payload,
+                destinationId=dest,
+                portNum=portnums_pb2.PortNum.TELEMETRY_APP,
+                wantResponse=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to request telemetry from {destination_id}: {e}")
+            return False
 
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):
         """
@@ -308,6 +378,156 @@ class MeshtasticHandler:
         
         return chunks
     
+    def get_node_metadata(self, node_id):
+        """
+        Get metadata (location, battery, environment) for a node.
+        
+        Args:
+            node_id: Node ID (e.g., '!1234abcd')
+            
+        Returns:
+            str: Formatted metadata string or None
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+            
+        try:
+            # Check if requesting local node
+            my_info = self.get_node_info()
+            if my_info:
+                my_id_str = my_info.get('user', {}).get('id')
+                my_id_int = my_info.get('num')
+                
+                is_local = False
+                if isinstance(node_id, str) and node_id == my_id_str:
+                    is_local = True
+                elif isinstance(node_id, int) and node_id == my_id_int:
+                    is_local = True
+                elif isinstance(node_id, str) and node_id.isdigit() and int(node_id) == my_id_int:
+                    is_local = True
+                    
+                if is_local:
+                    node_info = my_info
+                else:
+                    # Try direct lookup first
+                    node_info = self.interface.nodes.get(node_id)
+            
+            if not node_info:
+                # Try looking up by converted types
+                node_int = None
+                node_str = None
+                
+                if isinstance(node_id, str):
+                    if node_id.startswith('!'):
+                        try:
+                            node_int = int(node_id[1:], 16)
+                        except: pass
+                    elif node_id.isdigit():
+                        node_int = int(node_id)
+                        node_str = f"!{node_int:08x}"
+                elif isinstance(node_id, int):
+                    node_int = node_id
+                    node_str = f"!{node_int:08x}"
+                
+                # Try int key
+                if node_int is not None:
+                    node_info = self.interface.nodes.get(node_int)
+                
+                # If still not found, try str key
+                if not node_info and node_str is not None:
+                    node_info = self.interface.nodes.get(node_str)
+            
+            if not node_info:
+                return None
+            
+            # DEBUG: Log raw node structure to diagnose missing environmentMetrics
+            logger.debug(f"Raw node_info for {node_id}: deviceMetrics={node_info.get('deviceMetrics')}, environmentMetrics={node_info.get('environmentMetrics')}")
+                
+            metadata_parts = []
+            
+            # 1. Location
+            pos = node_info.get('position', {})
+            lat = pos.get('latitude')
+            lon = pos.get('longitude')
+            if lat is not None and lon is not None:
+                metadata_parts.append(f"Location: {lat:.4f}, {lon:.4f}")
+            
+            # 2. Device Metrics
+            metrics = node_info.get('deviceMetrics', {})
+            battery = metrics.get('batteryLevel')
+            voltage = metrics.get('voltage')
+            chan_util = metrics.get('channelUtilization')
+            air_util = metrics.get('airUtilTx')
+            uptime = metrics.get('uptimeSeconds')
+            
+            if battery is not None:
+                metadata_parts.append(f"Battery: {battery}%")
+            if voltage is not None:
+                metadata_parts.append(f"Voltage: {voltage:.2f}V")
+            if chan_util is not None:
+                metadata_parts.append(f"ChUtil: {chan_util:.1f}%")
+            if air_util is not None:
+                metadata_parts.append(f"AirUtil: {air_util:.1f}%")
+            if uptime is not None:
+                # Convert seconds to simpler format if needed, but seconds is fine for AI
+                metadata_parts.append(f"Uptime: {uptime}s")
+
+            # 3. Environment Metrics
+            # First check direct node info, then fall back to our internal cache
+            env = node_info.get('environmentMetrics', {})
+            if not env and node_id in self.env_telemetry_cache:
+                env = self.env_telemetry_cache[node_id]
+                logger.debug(f"Using cached telemetry for {node_id}")
+
+            # Map API keys to Display labels
+            env_map = {
+                'temperature': 'Temp',
+                'relativeHumidity': 'Hum',
+                'barometricPressure': 'Press',
+                'lux': 'Lux',
+                'white_lux': 'WhiteLux',
+                'ir_lux': 'IRLux',
+                'gas_resistance': 'Gas',
+                'iaq': 'IAQ',
+                'distance': 'Dist',
+                'wind_speed': 'Wind',
+                'wind_gust': 'Gust',
+                'wind_direction': 'WindDir',
+                'rainfall_1h': 'Rain1h',
+                'rainfall_24h': 'Rain24h',
+                'soil_moisture': 'SoilMoist',
+                'soil_temperature': 'SoilTemp'
+            }
+            
+            for key, label in env_map.items():
+                val = env.get(key)
+                if val is not None:
+                    # Format floats to 1 or 2 decimal places
+                    if isinstance(val, float):
+                         if key in ['lux', 'white_lux', 'ir_lux', 'gas_resistance']:
+                             val_str = f"{val:.1f}"
+                         elif key == 'barometricPressure':
+                             val_str = f"{val:.1f}hPa"
+                         elif key == 'temperature' or key == 'soil_temperature':
+                             val_str = f"{val:.1f}C"
+                         elif key == 'relativeHumidity' or key == 'soil_moisture':
+                             val_str = f"{val:.1f}%"
+                         else:
+                             val_str = f"{val:.2f}"
+                    else:
+                        val_str = str(val)
+                    
+                    metadata_parts.append(f"{label}: {val_str}")
+                
+            if not metadata_parts:
+                return None
+                
+            return "(" + ", ".join(metadata_parts) + ")"
+            
+        except Exception as e:
+            logger.debug(f"Failed to get metadata for {node_id}: {e}")
+            return None
+
     def get_node_info(self):
         """
         Get information about the local Meshtastic node.
@@ -323,7 +543,7 @@ class MeshtasticHandler:
         except Exception as e:
             logger.error(f"Failed to get node info: {e}")
             return None
-    
+
     def is_connected(self):
         """
         Check if currently connected to Meshtastic.
