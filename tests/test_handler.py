@@ -113,7 +113,7 @@ class TestHandlerMetadata(unittest.TestCase):
         self.assertIn("Location: 40.7000, -74.0000", metadata)
         self.assertIn("Battery: 85%", metadata)
         self.assertIn("Temp: 22.5C", metadata)
-        self.assertIn("Pressure: 1013.2hPa", metadata)
+        self.assertIn("Press: 1013.2hPa", metadata)
 
     def test_get_node_metadata_missing(self):
         """Test metadata extraction with missing fields."""
