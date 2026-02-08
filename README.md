@@ -10,6 +10,7 @@ A powerful, plugin-based AI assistant for Meshtastic nodes. It connects to your 
 -   **Smart Rate Limiting**: Splits long responses into chunks and waits (30s) between sends to prevent mesh congestion.
 -   **Context Isolation**: Robustly separates conversation history by Node ID and Channel to prevent data leaks.
 -   **Situational Awareness**: Injects user metadata (Location, Battery, Environmental data, etc.) into sessions for context-aware responses.
+-   **Gemini Grounding**: Optional Google Search and Google Maps grounding for real-time and location-based information.
 -   **On-Demand Telemetry**: Proactively requests fresh environmental metrics from remote nodes on session start or specific queries.
 -   **Proactive Notifications**: Alerts users when their DM session times out, ensuring they know when context is reset.
 -   **Reliability**: Retries connections, verifying message acknowledgments, and implementing exponential backoff.

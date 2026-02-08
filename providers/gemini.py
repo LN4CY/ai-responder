@@ -3,7 +3,7 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import GEMINI_API_KEY, GEMINI_MODEL, load_system_prompt
+from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SEARCH_GROUNDING, GEMINI_MAPS_GROUNDING, load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,18 @@ class GeminiProvider(BaseProvider):
         # Use configured Gemini model
         model = GEMINI_MODEL
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        
+        # Grounding tools
+        tools = []
+        if GEMINI_SEARCH_GROUNDING:
+            tools.append({"googleSearch": {}})
+        if GEMINI_MAPS_GROUNDING:
+            tools.append({"googleMaps": {}})
+            
         payload = {"contents": contents}
+        if tools:
+            payload["tools"] = tools
+            logger.info(f"Enabling Gemini grounding: {[list(t.keys())[0] for t in tools]}")
         
         try:
             logger.info(f"Calling Gemini model: {model}")

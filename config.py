@@ -24,6 +24,8 @@ OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')
+GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
+GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
