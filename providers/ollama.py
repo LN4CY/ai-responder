@@ -19,8 +19,8 @@ class OllamaProvider(BaseProvider):
     def name(self):
         return "Ollama"
     
-    def get_response(self, prompt, history=None, context_id=None):
-        """Get response from Ollama."""
+    def get_response(self, prompt, history=None, context_id=None, location=None):
+        """Get response from Ollama. Note: location is currently unused."""
         url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
         
         system_prompt = load_system_prompt('ollama', context_id=context_id)

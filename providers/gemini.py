@@ -7,7 +7,8 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SEARCH_GROUNDING, GEMINI_MAPS_GROUNDING, load_system_prompt
+import config
+from config import load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,13 @@ class GeminiProvider(BaseProvider):
     def name(self):
         return "Gemini"
     
-    def get_response(self, prompt, history=None, context_id=None):
-        """Get response from Gemini."""
-        if not GEMINI_API_KEY:
+    def _make_request(self, url, payload):
+        """Make internal HTTP request to Gemini API."""
+        return requests.post(url, json=payload, timeout=30)
+
+    def get_response(self, prompt, history=None, context_id=None, location=None):
+        """Get response from Gemini with grounding tools and optional fallback."""
+        if not config.GEMINI_API_KEY:
             return "Error: Gemini API key missing."
         
         system_prompt = load_system_prompt('gemini', context_id=context_id)
@@ -41,59 +46,91 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        # Use configured Gemini model
-        model = GEMINI_MODEL
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        model = config.GEMINI_MODEL
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={config.GEMINI_API_KEY}"
         
-        # Grounding tools
+        # 1. Prepare Grounding Payload
         tools = []
-        if GEMINI_SEARCH_GROUNDING:
-            tools.append({"googleSearch": {}})
-        if GEMINI_MAPS_GROUNDING:
-            tools.append({"googleMaps": {}})
+        if config.GEMINI_SEARCH_GROUNDING:
+            tools.append({"google_search": {}})
+        if config.GEMINI_MAPS_GROUNDING:
+            tools.append({"google_maps": {}})
             
         payload = {"contents": contents}
         if tools:
             payload["tools"] = tools
-            logger.info(f"Enabling Gemini grounding: {[list(t.keys())[0] for t in tools]}")
-        
+            tool_config = {}
+            if config.GEMINI_MAPS_GROUNDING and location and 'latitude' in location and 'longitude' in location:
+                tool_config["retrieval_config"] = {
+                    "lat_lng": {
+                        "latitude": location['latitude'],
+                        "longitude": location['longitude']
+                    }
+                }
+            if tool_config:
+                payload["tool_config"] = tool_config
+
+        # 2. Execute Request with Fallback
         try:
-            logger.info(f"Calling Gemini model: {model}")
-            response = requests.post(url, json=payload, timeout=30)
+            logger.info(f"Calling Gemini model: {model} (Grounding: {bool(tools)})")
+            response = self._make_request(url, payload)
             
+            # 3. Handle Unsupported Tool Fallback (Surgical Degraded Service)
+            if response.status_code == 400 and tools:
+                error_data = response.json()
+                error_msg = error_data.get('error', {}).get('message', '').lower()
+                logger.warning(f"⚠️ Grounding issue detected: {error_msg}")
+
+                # Case A: Google Maps is specifically unsupported
+                if "google maps tool is not enabled" in error_msg or "google_maps" in error_msg:
+                    logger.warning(f"📍 Model {model} rejects Google Maps. Retrying with Search only.")
+                    new_tools = [t for t in tools if "google_maps" not in t]
+                    if new_tools:
+                        # Copy payload to avoid mutating the original object (preserves mock history)
+                        payload = payload.copy()
+                        payload["tools"] = new_tools
+                        # Remove Maps-specific config if it exists
+                        payload.pop("tool_config", None) 
+                        response = self._make_request(url, payload)
+                    else:
+                        # No other tools left, drop all
+                        payload = payload.copy()
+                        payload.pop("tools", None)
+                        payload.pop("tool_config", None)
+                        response = self._make_request(url, payload)
+
+                # Case B: General tool rejection or config rejection
+                elif any(kw in error_msg for kw in ["tool is not supported", "unknown name", "google_search_retrieval"]):
+                    logger.warning(f"⚠️ Model {model} rejects grounding configuration. Falling back to standard chat.")
+                    payload = payload.copy()
+                    payload.pop("tools", None)
+                    payload.pop("tool_config", None)
+                    response = self._make_request(url, payload)
+
             if response.status_code == 200:
                 data = response.json()
                 candidates = data.get('candidates', [])
                 if not candidates:
-                    logger.error(f"Gemini returned 200 but no candidates: {data}")
-                    # Check for safety filters or other blocks
-                    if 'promptFeedback' in data:
-                        feedback = data['promptFeedback']
-                        if 'blockReason' in feedback:
-                            return f"⚠️ Content blocked: {feedback['blockReason']}"
                     return "⚠️ No response generated (possibly filtered)"
+                
                 text = candidates[0]['content']['parts'][0]['text'].strip()
+                
+                # Check for grounding feedback
+                grounding = candidates[0].get('groundingMetadata', {})
+                if grounding and (grounding.get('webSearchQueries') or grounding.get('groundingChunks')):
+                    logger.info(f"Gemini used search grounding")
+                    text = f"🌐 {text}"
+                
                 return text
             else:
-                # Parse error details
                 try:
-                    error_data = response.json()
-                    error_info = error_data.get('error', {})
+                    error_info = response.json().get('error', {})
                     error_msg = error_info.get('message', 'Unknown error')
-                    error_code = error_info.get('code', response.status_code)
-                    
-                    user_msg = self.format_error(response.status_code, error_msg)
                     logger.error(f"Gemini API error ({response.status_code}): {error_msg}")
-                    return user_msg
+                    return self.format_error(response.status_code, error_msg)
                 except:
-                    logger.error(f"Gemini HTTP {response.status_code}: {response.text[:200]}")
-                    return f"❌ HTTP {response.status_code} error. Check logs."
-        except requests.exceptions.Timeout:
-            logger.error("Gemini request timed out after 30s")
-            return "⏱️ Request timed out (30s). Try a shorter message or try again."
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Gemini connection error: {e}")
-            return "🌐 Connection failed. Check internet connection."
+                    return f"❌ HTTP {response.status_code} error."
+
         except Exception as e:
             logger.error(f"Gemini request failed: {e}")
             return f"❌ Unexpected error: {str(e)[:100]}"

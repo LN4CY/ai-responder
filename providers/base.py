@@ -18,7 +18,7 @@ class BaseProvider(ABC):
         self.config = config
     
     @abstractmethod
-    def get_response(self, prompt, history=None, context_id=None):
+    def get_response(self, prompt, history=None, context_id=None, location=None):
         """
         Get AI response for the given prompt.
         

@@ -357,7 +357,7 @@ class AIResponder:
     
     # ==================== AI Provider Interface ====================
     
-    def get_ai_response(self, prompt, history_key, is_session=False):
+    def get_ai_response(self, prompt, history_key, is_session=False, location=None):
         """
         Get AI response using the configured provider with tuned context.
         
@@ -365,6 +365,7 @@ class AIResponder:
             prompt: User's input text
             history_key: Key for history context
             is_session: Whether this is an active continuous session
+            location: Optional location dict {'latitude': float, 'longitude': float}
             
         Returns:
             str: AI response or error message
@@ -385,7 +386,7 @@ class AIResponder:
                 history = self.history[history_key][-limit:]
             
             # Get response
-            response = provider.get_response(prompt, history, context_id=history_key)
+            response = provider.get_response(prompt, history, context_id=history_key, location=location)
             return response
             
         except ValueError as e:
@@ -874,8 +875,22 @@ class AIResponder:
             msgs_count = len(self.history.get(history_key, []))
             logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
 
-            # 4. Get AI response with tuned context
-            response = self.get_ai_response(query, history_key, is_session=is_session)
+            # 4. Extract Location for Grounding if available
+            location = None
+            try:
+                node_info = self.meshtastic.interface.nodes.get(from_node)
+                if node_info:
+                    pos = node_info.get('position', {})
+                    lat = pos.get('latitude')
+                    lon = pos.get('longitude')
+                    if lat is not None and lon is not None:
+                        location = {'latitude': lat, 'longitude': lon}
+                        logger.info(f"📍 Location identified for grounding: {lat}, {lon}")
+            except Exception as e:
+                logger.debug(f"Could not extract direct location for grounding: {e}")
+
+            # 5. Get AI response with tuned context
+            response = self.get_ai_response(query, history_key, is_session=is_session, location=location)
             
             # 5. Add assistant response to history
             self.add_to_history(history_key, 'assistant', response)
