@@ -12,7 +12,8 @@ import threading
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
-from meshtastic import mesh_pb2
+from meshtastic import mesh_pb2, portnums_pb2
+from meshtastic.protobuf import telemetry_pb2
 from google.protobuf.message import DecodeError
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class MeshtasticHandler:
         self.ack_timeout = ack_timeout
         self.interface = None
         self.running = False
+        
+        # Cache for environmental telemetry from remote nodes
+        self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
     
     def connect(self, on_receive_callback=None):
         """
@@ -194,6 +198,14 @@ class MeshtasticHandler:
                         pass
                     pub.subscribe(on_receive_callback, "meshtastic.receive")
                     logger.info("✅ Subscribed to meshtastic.receive")
+                
+                # Subscribe to telemetry specifically to populate our internal cache
+                try:
+                    pub.unsubscribe(self._on_telemetry, "meshtastic.receive.telemetry")
+                except:
+                    pass
+                pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
+                logger.debug("✅ Subscribed to meshtastic.receive.telemetry for caching")
                 
                 # Subscribe to ACKs for reliable sending
                 try:
@@ -236,6 +248,64 @@ class MeshtasticHandler:
         if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
             logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
             self.current_ack_event.set()
+
+    def _on_telemetry(self, packet, interface):
+        """Handle incoming telemetry packets specifically to populate the cache."""
+        try:
+            from_id_raw = packet.get('fromId')
+            # Handle int/str mix
+            from_id = from_id_raw
+            if isinstance(from_id_raw, int):
+                from_id = f"!{from_id_raw:08x}"
+                
+            decoded = packet.get('decoded', {})
+            
+            # telemetry data is usually inside 'telemetry' key in decoded dictionary
+            telemetry = decoded.get('telemetry', {})
+            env_data = telemetry.get('environmentMetrics')
+            
+            if env_data and from_id:
+                self.env_telemetry_cache[from_id] = env_data
+                logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+        except Exception as e:
+            logger.warning(f"Error caching telemetry: {e}")
+
+    def request_telemetry(self, destination_id):
+        """
+        Request telemetry from a specific node.
+        
+        This sends an empty telemetry packet with wantResponse=True
+        to trigger an asynchronous update from the remote node.
+        """
+        if not self.interface or not self.running:
+            logger.warning(f"Cannot request telemetry: Not connected")
+            return False
+            
+        try:
+            # Create an empty environmental telemetry packet
+            # MeshMonitor uses an empty EnvironmentMetrics packet to request a refresh
+            env_metrics = telemetry_pb2.EnvironmentMetrics()
+            telemetry = telemetry_pb2.Telemetry()
+            telemetry.environment_metrics.CopyFrom(env_metrics)
+            
+            payload = telemetry.SerializeToString()
+            
+            # destination_id can be node ID string like "!12345678" or integer
+            dest = destination_id
+            if isinstance(destination_id, str) and destination_id.startswith('!'):
+                dest = int(destination_id[1:], 16)
+            
+            logger.info(f"📊 Requesting environmental telemetry from {destination_id} ({dest})")
+            self.interface.sendData(
+                payload,
+                destinationId=dest,
+                portNum=portnums_pb2.PortNum.TELEMETRY_APP,
+                wantResponse=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to request telemetry from {destination_id}: {e}")
+            return False
 
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):
         """
@@ -403,7 +473,12 @@ class MeshtasticHandler:
                 metadata_parts.append(f"Uptime: {uptime}s")
 
             # 3. Environment Metrics
+            # First check direct node info, then fall back to our internal cache
             env = node_info.get('environmentMetrics', {})
+            if not env and node_id in self.env_telemetry_cache:
+                env = self.env_telemetry_cache[node_id]
+                logger.debug(f"Using cached telemetry for {node_id}")
+
             # Map API keys to Display labels
             env_map = {
                 'temperature': 'Temp',

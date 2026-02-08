@@ -36,8 +36,9 @@ graph TD
 
 ### 1. Meshtastic Interface (`MeshtasticHandler`)
 The application abstracts the connection to the radio via the `MeshtasticHandler` class. It supports:
-- **TCP Connection**: (Default) Connects to a Meshtastic node or MeshMonitor via network.
 - **Serial Connection**: Connects directly to a radio via USB.
+- **Telemetry Caching**: Subscribes to telemetry events to cache environmental metrics (Temp, Humidity, etc.) from remote nodes.
+- **On-Demand Request**: Proactively triggers empty telemetry packets with `wantResponse=True` to fetch fresh data for context awareness.
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:

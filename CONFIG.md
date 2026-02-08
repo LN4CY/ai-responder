@@ -42,6 +42,14 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
+### Situational Awareness (Metadata)
+
+The responder automatically injects helpful metadata into the AI's context for direct messages and context-relevant broadcast queries:
+- **Location**: Injected as GPS coordinates (latitude, longitude).
+- **Battery**: Node battery level and voltage.
+- **Environment**: Temperature, Humidity, Barometric Pressure, and Air Quality (IAQ).
+- **On-Demand Requests**: When a session starts or an environmental query is detected, the bot proactively sends an asynchronous telemetry request to the user's node to ensure and cache fresh data for subsequent messages.
+
 You can mount custom prompt files in Docker:
 ```yaml
 volumes:

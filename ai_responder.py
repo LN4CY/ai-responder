@@ -851,6 +851,10 @@ class AIResponder:
                 
                 # Fetch REMOTE node metadata (user's environmental data)
                 if inject_remote_metadata:
+                    # Trigger an asynchronous telemetry request to refresh our cache
+                    # for future messages, while still fetching whatever we have now.
+                    self.meshtastic.request_telemetry(from_node)
+                    
                     remote_metadata = self.meshtastic.get_node_metadata(from_node)
             
             # Combine metadata with clear labels

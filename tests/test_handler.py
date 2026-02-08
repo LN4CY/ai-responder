@@ -115,6 +115,81 @@ class TestHandlerMetadata(unittest.TestCase):
         self.assertIn("Temp: 22.5C", metadata)
         self.assertIn("Press: 1013.2hPa", metadata)
 
+    def test_get_node_metadata_uses_cache(self):
+        """Test that metadata extraction falls back to the internal cache."""
+        node_id = "!5678abcd"
+        node_int = int("5678abcd", 16)
+        
+        # Node exists in interface, but has NO environmentMetrics
+        self.handler.interface.nodes = {
+            node_int: {
+                'num': node_int,
+                'deviceMetrics': {'batteryLevel': 90}
+            }
+        }
+        
+        # But we have it in our cache!
+        self.handler.env_telemetry_cache[node_id] = {
+            'temperature': 18.5,
+            'relativeHumidity': 42.0
+        }
+        
+        metadata = self.handler.get_node_metadata(node_id)
+        self.assertIsNotNone(metadata)
+        self.assertIn("Temp: 18.5C", metadata)
+        self.assertIn("Hum: 42.0%", metadata)
+
+    def test_on_telemetry_caching(self):
+        """Test that incoming telemetry packets are correctly cached."""
+        node_id = "!99999999"
+        
+        packet = {
+            'fromId': node_id,
+            'decoded': {
+                'portnum': 'TELEMETRY_APP',
+                'telemetry': {
+                    'environmentMetrics': {
+                        'temperature': 25.0,
+                        'lux': 100
+                    }
+                }
+            }
+        }
+        
+        # Trigger the callback
+        self.handler._on_telemetry(packet, None)
+        
+        # Verify cache was updated
+        self.assertIn(node_id, self.handler.env_telemetry_cache)
+        self.assertEqual(self.handler.env_telemetry_cache[node_id]['temperature'], 25.0)
+        self.assertEqual(self.handler.env_telemetry_cache[node_id]['lux'], 100)
+
+    @patch('meshtastic_handler.handler.telemetry_pb2')
+    @patch('meshtastic_handler.handler.portnums_pb2')
+    def test_request_telemetry(self, mock_portnums_pb2, mock_telemetry_pb2):
+        """Test that request_telemetry sends an appropriate data packet."""
+        node_id = "!f8d0a80a"
+        self.handler.running = True # Ensure connection check passes
+        
+        # Mock the protobuf structures
+        mock_env_metrics = MagicMock()
+        mock_telemetry_pb2.EnvironmentMetrics.return_value = mock_env_metrics
+        
+        mock_telemetry = MagicMock()
+        mock_telemetry_pb2.Telemetry.return_value = mock_telemetry
+        
+        # Mock portnum
+        mock_portnums_pb2.PortNum.TELEMETRY_APP = 67
+        
+        self.handler.request_telemetry(node_id)
+        
+        # Verify sendData was called on the interface
+        self.handler.interface.sendData.assert_called_once()
+        args, kwargs = self.handler.interface.sendData.call_args
+        self.assertEqual(kwargs['destinationId'], int("f8d0a80a", 16))
+        self.assertEqual(kwargs['portNum'], 67)
+        self.assertTrue(kwargs['wantResponse'])
+
     def test_get_node_metadata_missing(self):
         """Test metadata extraction with missing fields."""
         node_id = "!missing"
