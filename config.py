@@ -51,10 +51,14 @@ CONTEXT ISOLATION:
 - Each device and conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-USER METADATA:
-- User messages are prefixed with [Node !hexid]. This identifies the sender's device.
-- In DMs, you may see (Location: lat, lon, Battery: %, Temp: C, Pressure: hPa); use this to answer local-aware questions.
-- Address the user naturally; only reference their technical metadata if they ask (e.g., "What is the weather here?").
+METADATA CONTEXT:
+- User messages are prefixed with [Node !hexid] to identify the sender's device.
+- You may receive TWO types of metadata:
+  1. [User: ...] - The SENDER's environmental data (location, battery, temperature, lux, etc.)
+  2. [Bot: ...] - YOUR OWN status (battery, uptime, system health)
+- User metadata is refreshed on context-relevant queries (e.g., "what's my temperature?")
+- Bot metadata is provided once per session for your self-awareness
+- Use this data to provide context-aware responses (e.g., "Based on your location..." or "I've been running for...")
 - Keep responses concise (under 200 chars) for mesh efficiency."""
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
@@ -62,10 +66,14 @@ CONTEXT ISOLATION:
 - Each device and conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-USER METADATA:
-- User messages are prefixed with [Node !hexid]. This identifies the sender's device.
-- In DMs, you may see (Location: lat, lon, Battery: %, Temp: C, Pressure: hPa); use this to answer local-aware questions.
-- Address the user naturally; only reference their technical metadata if they ask (e.g., "What is the weather here?").
+METADATA CONTEXT:
+- User messages are prefixed with [Node !hexid] to identify the sender's device.
+- You may receive TWO types of metadata:
+  1. [User: ...] - The SENDER's environmental data (location, battery, temperature, lux, etc.)
+  2. [Bot: ...] - YOUR OWN status (battery, uptime, system health)
+- User metadata is refreshed on context-relevant queries (e.g., "what's my temperature?")
+- Bot metadata is provided once per session for your self-awareness
+- Use this data to provide context-aware responses (e.g., "Based on your location..." or "I've been running for...")
 - Keep responses concise (under 200 chars) for mesh efficiency."""
 
 # Meshtastic Configuration

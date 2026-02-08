@@ -369,6 +369,9 @@ class MeshtasticHandler:
             
             if not node_info:
                 return None
+            
+            # DEBUG: Log raw node structure to diagnose missing environmentMetrics
+            logger.debug(f"Raw node_info for {node_id}: deviceMetrics={node_info.get('deviceMetrics')}, environmentMetrics={node_info.get('environmentMetrics')}")
                 
             metadata_parts = []
             

@@ -234,6 +234,25 @@ class AIResponder:
         self.save_history(user_id)
         logger.info(f"Cleared history for {user_id}")
     
+    def _format_dual_metadata(self, local_metadata, remote_metadata):
+        """
+        Format dual metadata with clear labels for AI context.
+        
+        Args:
+            local_metadata: Bot's own status metadata
+            remote_metadata: User's environmental metadata
+            
+        Returns:
+            str: Combined metadata string or None
+        """
+        parts = []
+        if remote_metadata:
+            parts.append(f"[User: {remote_metadata}]")
+        if local_metadata:
+            parts.append(f"[Bot: {local_metadata}]")
+        
+        return " ".join(parts) if parts else None
+    
     def add_to_history(self, history_key, role, content, node_id=None, metadata=None):
         """
         Add a message to conversation history with optional metadata.
@@ -789,39 +808,53 @@ class AIResponder:
             is_session = self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
             
-            # 2. Metadata Injection Logic
-            metadata = None
+            # 2. Dual Metadata Injection Logic
+            local_metadata = None  # Bot's own status
+            remote_metadata = None  # User's environmental data
+            
             if is_dm:
-                # Refresh metadata on session/conversation start OR if it's a fresh query
-                # We inject if: 
-                # a) It's a session AND this is the first message (history empty or just cleared)
-                # b) It's a non-session DM query (no session, just direct asking)
-                # the user said "once per conversation/session", and "refresh... before restarting"
-                
                 history_exists = history_key in self.history and len(self.history[history_key]) > 0
                 
-                # Check if we should inject metadata
-                inject_metadata = False
+                # Fetch LOCAL node metadata (bot's own status) on session start
+                if not history_exists or (is_session and not history_exists):
+                    try:
+                        my_node_info = self.meshtastic.get_node_info()
+                        if my_node_info:
+                            my_node_id = my_node_info.get('user', {}).get('id')
+                            if my_node_id:
+                                local_metadata = self.meshtastic.get_node_metadata(my_node_id)
+                                if local_metadata:
+                                    logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch local node metadata: {e}")
+                
+                # Determine if we should inject REMOTE metadata (user's data)
+                inject_remote_metadata = False
                 if not history_exists:
-                    inject_metadata = True
+                    inject_remote_metadata = True
                 else:
-                    # Check if specifically indicated for refresh (stashed in session manager or similar)
+                    # Check if specifically indicated for refresh
                     if getattr(self, '_refresh_metadata_nodes', set()) and from_node in self._refresh_metadata_nodes:
-                        inject_metadata = True
+                        inject_remote_metadata = True
                         self._refresh_metadata_nodes.discard(from_node)
                     
                     # Check for context-related queries (location, battery, environment)
                     context_keywords = [
                         'location', 'where am i', 'gps', 'coords', 'coordinates', 'position', 'map',
                         'battery', 'voltage', 'power',
-                        'temp', 'temperature', 'humidity', 'pressure', 'air', 'env'
+                        'temp', 'temperature', 'humidity', 'pressure', 'air', 'env',
+                        'lux', 'light', 'brightness'
                     ]
                     if any(k in query.lower() for k in context_keywords):
-                        logger.info(f"📍 Context query detected from {from_node}, injecting metadata.")
-                        inject_metadata = True
+                        logger.info(f"📍 Context query detected from {from_node}, injecting remote metadata.")
+                        inject_remote_metadata = True
                 
-                if inject_metadata:
-                    metadata = self.meshtastic.get_node_metadata(from_node)
+                # Fetch REMOTE node metadata (user's environmental data)
+                if inject_remote_metadata:
+                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
+            
+            # Combine metadata with clear labels
+            metadata = self._format_dual_metadata(local_metadata, remote_metadata)
 
             # 3. Add user message to history
             self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=metadata)
