@@ -427,3 +427,12 @@ Shows all available commands based on your permission level.
 5. **Check `!ai -m`** periodically to monitor storage usage
 6. **Sessions timeout after 5 minutes** - you'll see the session indicator disappear from responses
 
+## License
+
+This project is licensed under the **MIT License**.
+
+- **Meshtastic Integration**: This project depends on the `meshtastic` Python library which is licensed under **GPLv3**.
+- **Inspiration & Components**: [MeshMonitor](https://github.com/Yeraze/meshmonitor) components included in this project are licensed under the **BSD 3-Clause License**.
+
+See the [LICENSE](LICENSE) file for the full text.
+
