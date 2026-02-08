@@ -19,7 +19,7 @@ class AnthropicProvider(BaseProvider):
     def name(self):
         return "Anthropic"
     
-    def get_response(self, prompt, history=None, context_id=None):
+    def get_response(self, prompt, history=None, context_id=None, location=None):
         """Get response from Anthropic."""
         if not ANTHROPIC_API_KEY:
             return "Error: Anthropic API key missing."
