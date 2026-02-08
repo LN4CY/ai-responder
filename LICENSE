@@ -28,3 +28,11 @@ This project includes or depends on components with the following licenses:
 
 1. **Meshtastic Python Library**: Licensed under the GNU General Public License v3.0 (GPLv3).
 2. **MeshMonitor**: Licensed under the BSD 3-Clause License.
+
+---
+
+### GPL Compatibility Note
+
+Because this project imports and links with `meshtastic` (GPLv3), any distributed binary or Docker image containing these components is effectively subject to the terms of the **GPLv3**.
+
+If you are building upon this project and plan to distribute it, ensure you comply with the requirements of the GPLv3 for the combined work.

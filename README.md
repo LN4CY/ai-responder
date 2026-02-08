@@ -434,5 +434,11 @@ This project is licensed under the **MIT License**.
 - **Meshtastic Integration**: This project depends on the `meshtastic` Python library which is licensed under **GPLv3**.
 - **Inspiration & Components**: [MeshMonitor](https://github.com/Yeraze/meshmonitor) components included in this project are licensed under the **BSD 3-Clause License**.
 
+> [!IMPORTANT]
+> **GPL Compatibility Note:**
+> Because this responder imports and links with `meshtastic` (GPLv3), any distributed binary or Docker image containing these components is effectively subject to the terms of the **GPLv3**.
+>
+> If you are building upon this project and plan to distribute it, ensure you comply with the requirements of the GPLv3 for the combined work.
+
 See the [LICENSE](LICENSE) file for the full text.
 
