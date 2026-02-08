@@ -205,8 +205,8 @@ class TestAIResponder(unittest.TestCase):
         self.responder.config.save()
         
         # Patch API key and Model
-        with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
-            with patch('providers.gemini.GEMINI_MODEL', 'gemini-test-model'):
+        with patch('providers.gemini.config.GEMINI_API_KEY', 'test-key'):
+            with patch('providers.gemini.config.GEMINI_MODEL', 'gemini-test-model'):
                 mock_response = MagicMock()
                 mock_response.status_code = 200
                 mock_response.json.return_value = {
@@ -214,13 +214,18 @@ class TestAIResponder(unittest.TestCase):
                 }
                 mock_post.return_value = mock_response
 
-                response = self.responder.get_ai_response("hi", "test_gemini")
-                self.assertEqual(response, "Gemini says hi")
-                
-                # Check URL uses configured model
-                args, _ = mock_post.call_args
-                self.assertIn('gemini-test-model', args[0])
-                self.assertIn('googleapis.com', args[0])
+                with patch('providers.gemini.config.GEMINI_SEARCH_GROUNDING', True):
+                    response = self.responder.get_ai_response("hi", "test_gemini")
+                    self.assertEqual(response, "Gemini says hi")
+                    
+                    # Check URL uses configured model
+                    call_args = mock_post.call_args
+                    url = call_args[0][0]
+                    payload = call_args[1]['json']
+                    self.assertIn('gemini-test-model', url)
+                    self.assertIn('googleapis.com', url)
+                    # Verify grounding is enabled in payload
+                    self.assertIn('tools', payload)
 
     @patch('requests.post')
     def test_openai_provider(self, mock_post):
@@ -404,7 +409,7 @@ class TestAIResponder(unittest.TestCase):
             mock_get.return_value = mock_provider
             
             self.responder.get_ai_response("hi", "MyContextID")
-            mock_provider.get_response.assert_called_with(ANY, ANY, context_id="MyContextID")
+            mock_provider.get_response.assert_called_with(ANY, ANY, context_id="MyContextID", location=None)
 
 class TestSessionNotifications(unittest.TestCase):
     def setUp(self):
@@ -642,9 +647,75 @@ class TestAIProviders(unittest.TestCase):
         mock_response.json.return_value = {"error": {"message": "Internal Server Error"}}
         mock_post.return_value = mock_response
         
-        with patch('providers.gemini.GEMINI_API_KEY', 'test-key'):
+        with patch('providers.gemini.config.GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
             self.assertIn("Internal Server Error", response)
+
+    @patch('requests.post')
+    def test_gemini_grounding_feedback(self, mock_post):
+        """Test that Gemini provider correctly handles grounding metadata."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # Mock response with search queries
+        mock_response.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": "Paris is the capital."}]},
+                "groundingMetadata": {"webSearchQueries": ["capital of france"]}
+            }]
+        }
+        mock_post.return_value = mock_response
+        
+        with patch('providers.gemini.config.GEMINI_API_KEY', 'test-key'):
+            response = provider.get_response("What is the capital of France?")
+            self.assertTrue(response.startswith("🌐"))
+            self.assertIn("Paris", response)
+
+    @patch('requests.post')
+    def test_gemini_surgical_fallback(self, mock_post):
+        """Test that Gemini provider surgically falls back if Maps is unsupported."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # 1. First call fails with 400 (Maps unsupported)
+        mock_error = MagicMock()
+        mock_error.status_code = 400
+        mock_error.json.return_value = {"error": {"message": "google_maps is not supported"}}
+        
+        # 2. Second call (automatic retry) succeeds
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        mock_success.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": "Degraded but online response"}]},
+                "groundingMetadata": {"webSearchQueries": ["search still works"]}
+            }]
+        }
+        
+        mock_post.side_effect = [mock_error, mock_success]
+        
+        # Use patch.object to ensure we are patching the exact module object
+        with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
+            with patch.object(config, 'GEMINI_MAPS_GROUNDING', True):
+                with patch.object(config, 'GEMINI_SEARCH_GROUNDING', True):
+                    response = provider.get_response("test", location={'latitude': 1, 'longitude': 2})
+                    
+                    self.assertEqual(mock_post.call_count, 2)
+                    self.assertTrue(response.startswith("🌐"))
+                    self.assertIn("Degraded but online", response)
+                    
+                    # Verify first call had both tools
+                    first_call_payload = mock_post.call_args_list[0][1]['json']
+                    tool_names = [list(t.keys())[0] for t in first_call_payload['tools']]
+                    self.assertIn('google_maps', tool_names)
+                    self.assertIn('google_search', tool_names)
+                    
+                    # Verify second call had only search
+                    second_call_payload = mock_post.call_args_list[1][1]['json']
+                    self.assertEqual(len(second_call_payload['tools']), 1)
+                    self.assertEqual(list(second_call_payload['tools'][0].keys())[0], 'google_search')
 
     @patch('requests.post')
     def test_ollama_error_handling(self, mock_post):

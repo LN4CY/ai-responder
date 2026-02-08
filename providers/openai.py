@@ -20,7 +20,7 @@ class OpenAIProvider(BaseProvider):
         return "OpenAI"
     
     def get_response(self, prompt, history=None, context_id=None, location=None):
-        """Get response from OpenAI."""
+        """Get response from OpenAI. Note: location is currently unused."""
         if not OPENAI_API_KEY:
             return "Error: OpenAI API key missing."
         

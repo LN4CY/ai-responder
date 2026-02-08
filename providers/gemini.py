@@ -7,7 +7,8 @@
 import requests
 import logging
 from .base import BaseProvider
-from config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_SEARCH_GROUNDING, GEMINI_MAPS_GROUNDING, load_system_prompt
+import config
+from config import load_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class GeminiProvider(BaseProvider):
 
     def get_response(self, prompt, history=None, context_id=None, location=None):
         """Get response from Gemini with grounding tools and optional fallback."""
-        if not GEMINI_API_KEY:
+        if not config.GEMINI_API_KEY:
             return "Error: Gemini API key missing."
         
         system_prompt = load_system_prompt('gemini', context_id=context_id)
@@ -45,21 +46,21 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        model = GEMINI_MODEL
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        model = config.GEMINI_MODEL
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={config.GEMINI_API_KEY}"
         
         # 1. Prepare Grounding Payload
         tools = []
-        if GEMINI_SEARCH_GROUNDING:
+        if config.GEMINI_SEARCH_GROUNDING:
             tools.append({"google_search": {}})
-        if GEMINI_MAPS_GROUNDING:
+        if config.GEMINI_MAPS_GROUNDING:
             tools.append({"google_maps": {}})
             
         payload = {"contents": contents}
         if tools:
             payload["tools"] = tools
             tool_config = {}
-            if GEMINI_MAPS_GROUNDING and location and 'latitude' in location and 'longitude' in location:
+            if config.GEMINI_MAPS_GROUNDING and location and 'latitude' in location and 'longitude' in location:
                 tool_config["retrieval_config"] = {
                     "lat_lng": {
                         "latitude": location['latitude'],
@@ -85,12 +86,15 @@ class GeminiProvider(BaseProvider):
                     logger.warning(f"📍 Model {model} rejects Google Maps. Retrying with Search only.")
                     new_tools = [t for t in tools if "google_maps" not in t]
                     if new_tools:
+                        # Copy payload to avoid mutating the original object (preserves mock history)
+                        payload = payload.copy()
                         payload["tools"] = new_tools
                         # Remove Maps-specific config if it exists
                         payload.pop("tool_config", None) 
                         response = self._make_request(url, payload)
                     else:
                         # No other tools left, drop all
+                        payload = payload.copy()
                         payload.pop("tools", None)
                         payload.pop("tool_config", None)
                         response = self._make_request(url, payload)
@@ -98,6 +102,7 @@ class GeminiProvider(BaseProvider):
                 # Case B: General tool rejection or config rejection
                 elif any(kw in error_msg for kw in ["tool is not supported", "unknown name", "google_search_retrieval"]):
                     logger.warning(f"⚠️ Model {model} rejects grounding configuration. Falling back to standard chat.")
+                    payload = payload.copy()
                     payload.pop("tools", None)
                     payload.pop("tool_config", None)
                     response = self._make_request(url, payload)
