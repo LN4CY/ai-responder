@@ -448,6 +448,12 @@ class AIResponder:
             to_node: Destination node ID
             channel: Channel index
         """
+        # Track node for telemetry logging of active users
+        try:
+            self.meshtastic.track_node(from_node)
+        except:
+            pass
+            
         # Extract command and arguments
         parts = text.split(maxsplit=2)
         if len(parts) < 2:

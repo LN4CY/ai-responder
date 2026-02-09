@@ -165,9 +165,14 @@ class MeshtasticHandler:
         self.interface = None
         self.running = False
         
-        # Cache for environmental telemetry from remote nodes
         self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
-    
+        self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
+
+    def track_node(self, node_id):
+        """Mark a node as interesting for logging."""
+        if node_id:
+            self.interesting_nodes.add(node_id)
+
     def connect(self, on_receive_callback=None):
         """
         Establish connection to Meshtastic device.
@@ -282,6 +287,7 @@ class MeshtasticHandler:
                 return False
                 
         return True
+    def _on_ack(self, packetId, interface):
         """Handle incoming ACK events."""
         if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
             logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
@@ -304,7 +310,12 @@ class MeshtasticHandler:
             
             if env_data and from_id:
                 self.env_telemetry_cache[from_id] = env_data
-                logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+                
+                # Only log INFO if we care about this node, otherwise DEBUG
+                if from_id in self.interesting_nodes:
+                    logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+                else:
+                    logger.debug(f"📊 Cached telemetry for {from_id}: {env_data}")
         except Exception as e:
             logger.warning(f"Error caching telemetry: {e}")
 
