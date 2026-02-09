@@ -63,6 +63,8 @@ class TestAIResponder(unittest.TestCase):
         # Mock the Meshtastic interface
         self.responder.meshtastic = MagicMock()
         self.responder.meshtastic.interface = MagicMock()
+        # Ensure is_connected returns True by default for tests
+        self.responder.meshtastic.is_connected.return_value = True
         
         # Mock session manager for most tests to avoid file I/O unless testing that specifically
         # (Optional: keep real session manager but mock its dependencies if needed)

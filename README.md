@@ -163,6 +163,7 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `SERIAL_PORT` | `/dev/ttyACM0` | Serial port (e.g. `COM3`) |
 | `MESHTASTIC_HOST` | `meshmonitor` | Hostname of TCP interface |
 | `MESHTASTIC_PORT` | `4404` | Port of TCP interface |
+| `CONNECTION_RETRY_INTERVAL` | `10` | Seconds between reconnect attempts |
 | `AI_PROVIDER` | `ollama` | Initial provider (`ollama`, `gemini`, `openai`, `anthropic`) |
 | `OLLAMA_HOST` | `ollama` | Hostname for Ollama service |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |

@@ -975,21 +975,40 @@ class AIResponder:
     
     def connect(self):
         """Connect to Meshtastic and start the main loop."""
-        logger.info("🚀 Starting AI Responder...")
+        logger.info("🚀 AI Responder Service Starting...")
         
         # Log AI Provider info at startup
         self._log_provider_info()
         
-        # Connect to Meshtastic
-        if not self.meshtastic.connect(on_receive_callback=self.on_receive):
-            logger.error("Failed to connect to Meshtastic. Exiting.")
-            return
+        # Initial Connection
+        # We don't exit if this fails, we just enter the loop and retry there
+        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+            logger.info("✅ Initial connection successful.")
+        else:
+            logger.warning("⚠️ Initial connection failed. Will retry in main loop.")
         
-        logger.info("✅ AI Responder is running. Press Ctrl+C to stop.")
+        self.running = True
         
         # Main loop
         try:
             while self.running:
+                # 1. Connection Watchdog
+                if not self.meshtastic.is_connected():
+                    logger.warning("⚠️ Connection to Meshtastic lost/missing. Attempting to reconnect...")
+                    try:
+                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                            logger.info("✅ Reconnected to Meshtastic!")
+                        else:
+                            logger.error("❌ Reconnection attempt failed.")
+                    except Exception as e:
+                        logger.error(f"Error during reconnection: {e}")
+                    
+                    # Backoff before next loop iteration to avoid hammering
+                    if not self.meshtastic.is_connected():
+                        time.sleep(config.CONNECTION_RETRY_INTERVAL)
+                        continue
+
+                # 2. Daily Tasks / Periodic Checks
                 time.sleep(1)
                 
                 # Periodic session timeout check
@@ -1005,8 +1024,10 @@ class AIResponder:
                     )
                     
                 # Heartbeat for Docker healthcheck
-                with open("/tmp/healthy", "w") as f:
-                    f.write(str(time.time()))
+                # Only update if actually connected
+                if self.meshtastic.is_connected():
+                    with open("/tmp/healthy", "w") as f:
+                        f.write(str(time.time()))
                 
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")

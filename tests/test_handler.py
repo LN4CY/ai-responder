@@ -98,6 +98,10 @@ class TestHandlerMetadata(unittest.TestCase):
     def setUp(self):
         self.handler = MeshtasticHandler()
         self.handler.interface = MagicMock()
+        # Mock the reader thread to be alive so is_connected returns True
+        self.handler.interface._reader = MagicMock()
+        self.handler.interface._reader.is_alive.return_value = True
+        self.handler.running = True
 
     def test_get_node_metadata(self):
         """Test extraction of node metadata (telemetry, location, battery)."""
@@ -173,7 +177,7 @@ class TestHandlerMetadata(unittest.TestCase):
     def test_request_telemetry(self, mock_portnums_pb2, mock_telemetry_pb2):
         """Test that request_telemetry sends an appropriate data packet."""
         node_id = "!f8d0a80a"
-        self.handler.running = True # Ensure connection check passes
+        # self.handler.running = True # Already set in setUp
         
         # Mock the protobuf structures
         mock_env_metrics = MagicMock()

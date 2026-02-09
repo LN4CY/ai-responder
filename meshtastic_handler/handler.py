@@ -179,8 +179,17 @@ class MeshtasticHandler:
         Returns:
             bool: True if connection successful
         """
-        max_retries = 5
-        retry_delay = 5
+        # If already connected, do nothing
+        if self.is_connected():
+            return True
+            
+        # Ensure clean state
+        self.disconnect()
+        
+        # Import config here to avoid circular dependencies if any
+        import config
+        max_retries = config.CONNECTION_MAX_RETRIES
+        retry_delay = config.CONNECTION_RETRY_INTERVAL
         
         for attempt in range(max_retries):
             try:
@@ -225,6 +234,14 @@ class MeshtasticHandler:
                 
             except Exception as e:
                 logger.error(f"❌ Connection failed (Attempt {attempt+1}/{max_retries}): {e}")
+                
+                # Clean up failed interface if partially created
+                if self.interface:
+                    try:
+                        self.interface.close()
+                    except: pass
+                    self.interface = None
+                    
                 if attempt < max_retries - 1:
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
@@ -247,7 +264,24 @@ class MeshtasticHandler:
         self.running = False
         self.interface = None
     
-    def _on_ack(self, packetId, interface):
+    def is_connected(self):
+        """
+        Check if currently connected to Meshtastic.
+        
+        Returns:
+            bool: True if connected and interface is healthy
+        """
+        if not self.interface or not self.running:
+            return False
+            
+        # Check if serial/tcp interface is actually alive
+        # For TCPInterface/SerialInterface, they usually have a reader thread
+        if hasattr(self.interface, '_reader') and self.interface._reader:
+            if not self.interface._reader.is_alive():
+                logger.warning("⚠️ Meshtastic interface reader thread is dead")
+                return False
+                
+        return True
         """Handle incoming ACK events."""
         if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
             logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
@@ -548,14 +582,7 @@ class MeshtasticHandler:
             logger.error(f"Failed to get node info: {e}")
             return None
 
-    def is_connected(self):
-        """
-        Check if currently connected to Meshtastic.
-        
-        Returns:
-            bool: True if connected
-        """
-        return self.interface is not None and self.running
+
 
 
 class MessageQueue:

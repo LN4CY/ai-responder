@@ -84,6 +84,8 @@ METADATA CONTEXT:
 
 # Meshtastic Configuration
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
+CONNECTION_RETRY_INTERVAL = int(os.getenv('CONNECTION_RETRY_INTERVAL', '10')) # Seconds between reconnections
+CONNECTION_MAX_RETRIES = int(os.getenv('CONNECTION_MAX_RETRIES', '3')) # Initial connection retries
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 
 
