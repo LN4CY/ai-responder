@@ -36,7 +36,8 @@ from meshtastic_handler import MeshtasticHandler
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    force=True  # Prevent duplicate handlers
 )
 logger = logging.getLogger('AI-Responder')
 
