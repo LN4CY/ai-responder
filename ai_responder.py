@@ -36,7 +36,8 @@ from meshtastic_handler import MeshtasticHandler
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
     level=getattr(logging, log_level, logging.INFO),
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    force=True  # Prevent duplicate handlers
 )
 logger = logging.getLogger('AI-Responder')
 
@@ -448,6 +449,12 @@ class AIResponder:
             to_node: Destination node ID
             channel: Channel index
         """
+        # Track node for telemetry logging of active users
+        try:
+            self.meshtastic.track_node(from_node)
+        except:
+            pass
+            
         # Extract command and arguments
         parts = text.split(maxsplit=2)
         if len(parts) < 2:
@@ -593,6 +600,9 @@ class AIResponder:
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
         """Handle conversation management commands."""
+        # Determine if this is a DM (sessions are DM-only)
+        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        
         if not args:
             # Load last conversation (most recently accessed)
             metadata = self.conversation_manager._load_metadata(from_node)
@@ -606,7 +616,7 @@ class AIResponder:
                     # Mark for metadata refresh
                     self._refresh_metadata_nodes.add(from_node)
                     # If in DM, restart the session so they can continue chatting
-                    if to_node != '^all':
+                    if is_dm:
                         self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                         message += "\n🟢 Session Resumed"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
@@ -642,7 +652,7 @@ class AIResponder:
                 # Mark for metadata refresh
                 self._refresh_metadata_nodes.add(from_node)
                 # If in DM, restart the session so they can continue chatting
-                if to_node != '^all':
+                if is_dm:
                     self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                     message += "\n🟢 Session Resumed"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
@@ -975,21 +985,40 @@ class AIResponder:
     
     def connect(self):
         """Connect to Meshtastic and start the main loop."""
-        logger.info("🚀 Starting AI Responder...")
+        logger.info("🚀 AI Responder Service Starting...")
         
         # Log AI Provider info at startup
         self._log_provider_info()
         
-        # Connect to Meshtastic
-        if not self.meshtastic.connect(on_receive_callback=self.on_receive):
-            logger.error("Failed to connect to Meshtastic. Exiting.")
-            return
+        # Initial Connection
+        # We don't exit if this fails, we just enter the loop and retry there
+        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+            logger.info("✅ Initial connection successful.")
+        else:
+            logger.warning("⚠️ Initial connection failed. Will retry in main loop.")
         
-        logger.info("✅ AI Responder is running. Press Ctrl+C to stop.")
+        self.running = True
         
         # Main loop
         try:
             while self.running:
+                # 1. Connection Watchdog
+                if not self.meshtastic.is_connected():
+                    logger.warning("⚠️ Connection to Meshtastic lost/missing. Attempting to reconnect...")
+                    try:
+                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                            logger.info("✅ Reconnected to Meshtastic!")
+                        else:
+                            logger.error("❌ Reconnection attempt failed.")
+                    except Exception as e:
+                        logger.error(f"Error during reconnection: {e}")
+                    
+                    # Backoff before next loop iteration to avoid hammering
+                    if not self.meshtastic.is_connected():
+                        time.sleep(config.CONNECTION_RETRY_INTERVAL)
+                        continue
+
+                # 2. Daily Tasks / Periodic Checks
                 time.sleep(1)
                 
                 # Periodic session timeout check
@@ -1005,8 +1034,10 @@ class AIResponder:
                     )
                     
                 # Heartbeat for Docker healthcheck
-                with open("/tmp/healthy", "w") as f:
-                    f.write(str(time.time()))
+                # Only update if actually connected
+                if self.meshtastic.is_connected():
+                    with open("/tmp/healthy", "w") as f:
+                        f.write(str(time.time()))
                 
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")

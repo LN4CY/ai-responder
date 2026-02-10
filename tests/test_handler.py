@@ -98,6 +98,10 @@ class TestHandlerMetadata(unittest.TestCase):
     def setUp(self):
         self.handler = MeshtasticHandler()
         self.handler.interface = MagicMock()
+        # Mock the reader thread to be alive so is_connected returns True
+        self.handler.interface._reader = MagicMock()
+        self.handler.interface._reader.is_alive.return_value = True
+        self.handler.running = True
 
     def test_get_node_metadata(self):
         """Test extraction of node metadata (telemetry, location, battery)."""
@@ -143,6 +147,40 @@ class TestHandlerMetadata(unittest.TestCase):
         self.assertIn("Temp: 18.5C", metadata)
         self.assertIn("Hum: 42.0%", metadata)
 
+    def test_track_node(self):
+        """Test that track_node adds nodes to the interesting set."""
+        node_id = "!12345678"
+        self.handler.track_node(node_id)
+        self.assertIn(node_id, self.handler.interesting_nodes)
+
+    def test_on_telemetry_logging_filtering(self):
+        """Test that telemetry logging level depends on interesting_nodes."""
+        # 1. Test "uninteresting" node (should be DEBUG)
+        node_id_uninteresting = "!uninteresting"
+        packet_uninteresting = {
+            'fromId': node_id_uninteresting,
+            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 20.0}}}
+        }
+        
+        with patch('meshtastic_handler.handler.logger') as mock_logger:
+            self.handler._on_telemetry(packet_uninteresting, None)
+            # Should call debug, NOT info
+            mock_logger.debug.assert_called()
+            mock_logger.info.assert_not_called()
+            
+        # 2. Test "interesting" node (should be INFO)
+        node_id_interesting = "!interesting"
+        self.handler.track_node(node_id_interesting)
+        packet_interesting = {
+            'fromId': node_id_interesting,
+            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 25.0}}}
+        }
+        
+        with patch('meshtastic_handler.handler.logger') as mock_logger:
+            self.handler._on_telemetry(packet_interesting, None)
+            # Should call INFO
+            mock_logger.info.assert_called()
+
     def test_on_telemetry_caching(self):
         """Test that incoming telemetry packets are correctly cached."""
         node_id = "!99999999"
@@ -173,7 +211,7 @@ class TestHandlerMetadata(unittest.TestCase):
     def test_request_telemetry(self, mock_portnums_pb2, mock_telemetry_pb2):
         """Test that request_telemetry sends an appropriate data packet."""
         node_id = "!f8d0a80a"
-        self.handler.running = True # Ensure connection check passes
+        # self.handler.running = True # Already set in setUp
         
         # Mock the protobuf structures
         mock_env_metrics = MagicMock()

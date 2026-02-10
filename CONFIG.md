@@ -14,6 +14,8 @@ The application is configured primarily via environment variables passed to the 
 | `SERIAL_PORT` | `/dev/ttyACM0` | Serial device path (e.g., `COM3` on Windows). |
 | `MESHTASTIC_HOST` | `meshmonitor` | Hostname of the Meshtastic TCP interface. |
 | `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface. |
+| `CONNECTION_RETRY_INTERVAL` | `10` | Seconds to wait between reconnection attempts. |
+| `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
 
 ### AI Provider Settings
 
