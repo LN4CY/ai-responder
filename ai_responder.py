@@ -599,6 +599,9 @@ class AIResponder:
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
         """Handle conversation management commands."""
+        # Determine if this is a DM (sessions are DM-only)
+        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        
         if not args:
             # Load last conversation (most recently accessed)
             metadata = self.conversation_manager._load_metadata(from_node)
@@ -612,7 +615,7 @@ class AIResponder:
                     # Mark for metadata refresh
                     self._refresh_metadata_nodes.add(from_node)
                     # If in DM, restart the session so they can continue chatting
-                    if to_node != '^all':
+                    if is_dm:
                         self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                         message += "\n🟢 Session Resumed"
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
@@ -648,7 +651,7 @@ class AIResponder:
                 # Mark for metadata refresh
                 self._refresh_metadata_nodes.add(from_node)
                 # If in DM, restart the session so they can continue chatting
-                if to_node != '^all':
+                if is_dm:
                     self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                     message += "\n🟢 Session Resumed"
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
