@@ -18,6 +18,7 @@ import time
 import json
 import logging
 import threading
+import sys
 from pubsub import pub
 
 # Import our modular components
@@ -25,7 +26,8 @@ import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
     HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
-    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER
+    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER,
+    HEALTH_CHECK_ACTIVITY_TIMEOUT, HEALTH_CHECK_PROBE_INTERVAL
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -952,15 +954,12 @@ class AIResponder:
             
             # Determine DM status
             my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('noId', '') if my_node_info else ''
+            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
             # In MeshPacket, 'toId' is our ID for DMs.
-            # But sometimes ACKs/Routing packets confuse this. 
-            # For TEXT_MESSAGE_APP:
-            # if to_node == my_id or it's a DM session:
             is_dm = (to_node == my_id or (to_node != "^all" and channel == 0))
 
-            # Check if user is in an active session
-            if self.session_manager.is_active(from_node):
+            # Check if user is in an active session (DM only)
+            if is_dm and self.session_manager.is_active(from_node):
                 # Check for timeout
                 timed_out, message, session_channel, session_to_node = self.session_manager.check_timeout(from_node)
                 if timed_out:
@@ -970,7 +969,6 @@ class AIResponder:
                 else:
                     # Active session - process as AI query without !ai prefix (DMs only)
                     if not text.startswith('!ai'):
-                        # Pass TRUE for is_dm because sessions are DM only
                         self._handle_ai_query(text, from_node, to_node, channel)
                         return
             
@@ -1002,26 +1000,54 @@ class AIResponder:
         # Main loop
         try:
             while self.running:
-                # 1. Connection Watchdog
-                if not self.meshtastic.is_connected():
-                    logger.warning("⚠️ Connection to Meshtastic lost/missing. Attempting to reconnect...")
-                    try:
-                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
-                            logger.info("✅ Reconnected to Meshtastic!")
-                        else:
-                            logger.error("❌ Reconnection attempt failed.")
-                    except Exception as e:
-                        logger.error(f"Error during reconnection: {e}")
-                    
-                    # Backoff before next loop iteration to avoid hammering
-                    if not self.meshtastic.is_connected():
-                        time.sleep(config.CONNECTION_RETRY_INTERVAL)
-                        continue
+                # 2. Radio Watchdog & Health Check
+                current_time = time.time()
+                health_ok = True
+                reasons = []
 
-                # 2. Daily Tasks / Periodic Checks
-                time.sleep(1)
+                # Check radio activity
+                last_radio = self.meshtastic.last_activity
+                if last_radio > 0:
+                    time_since_radio = current_time - last_radio
+                    if time_since_radio > HEALTH_CHECK_ACTIVITY_TIMEOUT:
+                        # Radio silent too long
+                        time_since_last_probe = current_time - self.last_probe
+                        if time_since_last_probe > 40: # Probe every 40s when silent
+                            logger.warning(f"Radio silent for {int(time_since_radio)}s. Sending active probe...")
+                            self.last_probe = current_time
+                            self.meshtastic.send_probe()
+                        elif time_since_last_probe > 30:
+                            # If we probed 30s ago and still no activity, health is failing
+                            health_ok = False
+                            reasons.append(f"Radio silent (Probed {int(time_since_last_probe)}s ago - NO REPLY)")
                 
-                # Periodic session timeout check
+                # Check connection status
+                if not self.meshtastic.is_connected():
+                    # If we've been disconnected for more than 60s, force restart
+                    if not self.connection_lost:
+                        self.connection_lost = True
+                        self.last_activity = current_time # Start tracking disconnect duration
+                    
+                    if current_time - self.last_activity > 60:
+                        health_ok = False
+                        reasons.append("Connection lost for >60s")
+                else:
+                    self.connection_lost = False
+
+                # 3. Update Heartbeat / Health Check
+                if health_ok:
+                    try:
+                        with open("/tmp/healthy", "w") as f:
+                            f.write(str(current_time))
+                    except: pass
+                else:
+                    logger.error(f"Health check FAILED: {', '.join(reasons)}. Exiting...")
+                    if os.path.exists("/tmp/healthy"):
+                        try: os.remove("/tmp/healthy")
+                        except: pass
+                    sys.exit(1)
+
+                # 4. Periodic session timeout check
                 timed_out_data = self.session_manager.check_all_timeouts()
                 for data in timed_out_data:
                     # Send timeout notification proactively
@@ -1032,12 +1058,8 @@ class AIResponder:
                         data['channel'], 
                         is_admin_cmd=False
                     )
-                    
-                # Heartbeat for Docker healthcheck
-                # Only update if actually connected
-                if self.meshtastic.is_connected():
-                    with open("/tmp/healthy", "w") as f:
-                        f.write(str(time.time()))
+
+                time.sleep(1)
                 
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")

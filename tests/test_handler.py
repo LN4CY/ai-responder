@@ -181,6 +181,17 @@ class TestHandlerMetadata(unittest.TestCase):
             # Should call INFO
             mock_logger.info.assert_called()
 
+    def test_on_packet_activity(self):
+        """Test that received packets update the last_activity timestamp."""
+        self.handler.last_activity = 0
+        self.handler._on_packet_activity({}, None)
+        self.assertGreater(self.handler.last_activity, 0)
+
+    def test_send_probe(self):
+        """Test that send_probe calls interface.sendPosition."""
+        self.handler.send_probe()
+        self.handler.interface.sendPosition.assert_called_once()
+
     def test_on_telemetry_caching(self):
         """Test that incoming telemetry packets are correctly cached."""
         node_id = "!99999999"

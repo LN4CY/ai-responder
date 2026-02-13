@@ -167,6 +167,7 @@ class MeshtasticHandler:
         
         self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
+        self.last_activity = 0
 
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
@@ -233,7 +234,22 @@ class MeshtasticHandler:
                 pub.subscribe(self._on_ack, "meshtastic.ack")
                 logger.info("✅ Subscribed to meshtastic.ack")
 
+                # Subscribe to general packets for activity tracking
+                try:
+                    pub.unsubscribe(self._on_packet_activity, "meshtastic.receive")
+                except:
+                    pass
+                pub.subscribe(self._on_packet_activity, "meshtastic.receive")
+                
+                # Subscribe to connection lost
+                try:
+                    pub.unsubscribe(self._on_connection_lost, "meshtastic.connection.lost")
+                except:
+                    pass
+                pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
+
                 self.running = True
+                self.last_activity = time.time()
                 logger.info("✅ Connected to Meshtastic")
                 return True
                 
@@ -318,6 +334,29 @@ class MeshtasticHandler:
                     logger.debug(f"📊 Cached telemetry for {from_id}: {env_data}")
         except Exception as e:
             logger.warning(f"Error caching telemetry: {e}")
+
+    def _on_packet_activity(self, packet, interface):
+        """Update last activity on any received packet."""
+        self.last_activity = time.time()
+
+    def _on_connection_lost(self, interface):
+        """Handle connection lost event."""
+        logger.warning("Meshtastic connection reported LOST!")
+        # We don't set running=False here to allow watchdog in ai_responder to handle it
+        # but we can update a state or log it.
+
+    def send_probe(self):
+        """Send an active probe to the radio to verify connection."""
+        if not self.interface or not self.running:
+            return False
+        
+        try:
+            logger.info("📡 Sending active radio probe (position query)...")
+            self.interface.sendPosition()
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send probe: {e}")
+            return False
 
     def request_telemetry(self, destination_id):
         """

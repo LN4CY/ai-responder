@@ -86,6 +86,11 @@ METADATA CONTEXT:
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
 CONNECTION_RETRY_INTERVAL = int(os.getenv('CONNECTION_RETRY_INTERVAL', '10')) # Seconds between reconnections
 CONNECTION_MAX_RETRIES = int(os.getenv('CONNECTION_MAX_RETRIES', '3')) # Initial connection retries
+
+# Health check and Radio Watchdog
+HEALTH_CHECK_ACTIVITY_TIMEOUT = int(os.getenv('HEALTH_CHECK_ACTIVITY_TIMEOUT', '300')) # 5 minutes default
+HEALTH_CHECK_PROBE_INTERVAL = int(os.getenv('HEALTH_CHECK_PROBE_INTERVAL', str(HEALTH_CHECK_ACTIVITY_TIMEOUT // 2)))
+
 CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 
 
