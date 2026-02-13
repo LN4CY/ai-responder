@@ -466,6 +466,52 @@ class MeshtasticHandler:
         
         return chunks
     
+    def _get_node_by_id(self, node_id):
+        """
+        Helper to find a node in the interface.nodes dictionary by various ID formats.
+        
+        Args:
+            node_id: Node ID (int, hex string '!1234abcd', or decimal string)
+            
+        Returns:
+            dict or None: Node information if found
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+
+        # 1. Try direct lookup (works if type matches exactly)
+        info = self.interface.nodes.get(node_id)
+        if info:
+            return info
+
+        # 2. Normalize to Int and Hex
+        node_int = None
+        node_hex = None
+
+        if isinstance(node_id, str):
+            if node_id.startswith('!'):
+                try:
+                    node_int = int(node_id[1:], 16)
+                    node_hex = node_id
+                except: pass
+            elif node_id.isdigit():
+                node_int = int(node_id)
+                node_hex = f"!{node_int:08x}"
+        elif isinstance(node_id, int):
+            node_int = node_id
+            node_hex = f"!{node_int:08x}"
+
+        # 3. Try lookup by normalized forms
+        if node_int is not None:
+            info = self.interface.nodes.get(node_int)
+            if info: return info
+            
+        if node_hex is not None:
+            info = self.interface.nodes.get(node_hex)
+            if info: return info
+
+        return None
+
     def get_node_metadata(self, node_id):
         """
         Get metadata (location, battery, environment) for a node.
@@ -476,58 +522,14 @@ class MeshtasticHandler:
         Returns:
             str: Formatted metadata string or None
         """
-        if not self.interface or not self.interface.nodes:
+        if not self.interface:
             return None
             
         try:
-            # Check if requesting local node
-            my_info = self.get_node_info()
-            if my_info:
-                my_id_str = my_info.get('user', {}).get('id')
-                my_id_int = my_info.get('num')
-                
-                is_local = False
-                if isinstance(node_id, str) and node_id == my_id_str:
-                    is_local = True
-                elif isinstance(node_id, int) and node_id == my_id_int:
-                    is_local = True
-                elif isinstance(node_id, str) and node_id.isdigit() and int(node_id) == my_id_int:
-                    is_local = True
-                    
-                if is_local:
-                    node_info = my_info
-                else:
-                    # Try direct lookup first
-                    node_info = self.interface.nodes.get(node_id)
-            
-            if not node_info:
-                # Try looking up by converted types
-                node_int = None
-                node_str = None
-                
-                if isinstance(node_id, str):
-                    if node_id.startswith('!'):
-                        try:
-                            node_int = int(node_id[1:], 16)
-                        except: pass
-                    elif node_id.isdigit():
-                        node_int = int(node_id)
-                        node_str = f"!{node_int:08x}"
-                elif isinstance(node_id, int):
-                    node_int = node_id
-                    node_str = f"!{node_int:08x}"
-                
-                # Try int key
-                if node_int is not None:
-                    node_info = self.interface.nodes.get(node_int)
-                
-                # If still not found, try str key
-                if not node_info and node_str is not None:
-                    node_info = self.interface.nodes.get(node_str)
-            
+            node_info = self._get_node_by_id(node_id)
             if not node_info:
                 return None
-            
+        
             # DEBUG: Log raw node structure to diagnose missing environmentMetrics
             logger.debug(f"Raw node_info for {node_id}: deviceMetrics={node_info.get('deviceMetrics')}, environmentMetrics={node_info.get('environmentMetrics')}")
                 
@@ -627,7 +629,20 @@ class MeshtasticHandler:
             return None
         
         try:
-            return self.interface.getMyNodeInfo()
+            # 1. Get static info
+            my_info = self.interface.getMyNodeInfo()
+            if not my_info:
+                return None
+                
+            # 2. Try to supplement with dynamic data from the nodes database
+            my_num = my_info.get('num')
+            if my_num and self.interface.nodes:
+                dynamic_info = self.interface.nodes.get(my_num)
+                if dynamic_info:
+                    # Merge dynamic info into base info, prioritizing dynamic (contains latest position etc)
+                    my_info.update(dynamic_info)
+                    
+            return my_info
         except Exception as e:
             logger.error(f"Failed to get node info: {e}")
             return None

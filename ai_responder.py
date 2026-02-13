@@ -401,7 +401,7 @@ class AIResponder:
     
     # ==================== Message Sending ====================
     
-    def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False):
+    def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=False):
         """
         Send a response message via Meshtastic.
         
@@ -413,6 +413,7 @@ class AIResponder:
             to_node: Destination node ID (or '^all' for broadcast)
             channel: Channel index
             is_admin_cmd: Whether this is an admin command response
+            use_session_indicator: Whether to include the [🟢 session_name] prefix
         """
         # Determine destination
         if is_admin_cmd:
@@ -422,6 +423,7 @@ class AIResponder:
             # Public message - reply publicly only if channel is enabled
             if self.is_channel_allowed(channel):
                 destination = '^all'
+                use_session_indicator = False # Force off for channel messages
             else:
                 # Channel not enabled, don't respond
                 logger.info(f"Skipping response on disabled channel {channel}")
@@ -431,7 +433,9 @@ class AIResponder:
             destination = from_node
         
         # Get session indicator if applicable
-        session_indicator = self.session_manager.get_session_indicator(from_node)
+        session_indicator = ""
+        if use_session_indicator:
+            session_indicator = self.session_manager.get_session_indicator(from_node)
         
         # Send via Meshtastic handler
         self.meshtastic.send_message(text, destination, channel, session_indicator)
@@ -787,7 +791,7 @@ class AIResponder:
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
     
-    def _handle_ai_query(self, query, from_node, to_node, channel, initial_msg="Thinking... 🤖"):
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
         """
         Handle an AI query in a background thread.
         
@@ -796,11 +800,14 @@ class AIResponder:
             from_node: Source node ID
             to_node: Destination node ID
             channel: Channel index
+            is_dm: Optional DM status (if already determined)
             initial_msg: Initial "thinking" message to send
         """
-        # Determine if this is a DM interaction
-        # to_node == my node ID or is not a channel packet
-        is_dm = (to_node != "^all" and channel == 0) # Simplification, improved in process_command
+        # Determine if this is a DM interaction if not provided
+        if is_dm is None:
+            my_node_info = self.meshtastic.get_node_info()
+            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
+            is_dm = (to_node == my_id)
         
         # Send initial acknowledgment
         if initial_msg:
@@ -890,7 +897,7 @@ class AIResponder:
             # 4. Extract Location for Grounding if available
             location = None
             try:
-                node_info = self.meshtastic.interface.nodes.get(from_node)
+                node_info = self.meshtastic._get_node_by_id(from_node)
                 if node_info:
                     pos = node_info.get('position', {})
                     lat = pos.get('latitude')
@@ -914,7 +921,7 @@ class AIResponder:
                 self.session_manager.update_activity(from_node)
             
             # 7. Send response
-            self.send_response(response, from_node, to_node, channel, is_admin_cmd=False)
+            self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
             
         except Exception as e:
             logger.error(f"Error processing AI query: {e}")
@@ -955,8 +962,8 @@ class AIResponder:
             # Determine DM status
             my_node_info = self.meshtastic.get_node_info()
             my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
-            # In MeshPacket, 'toId' is our ID for DMs.
-            is_dm = (to_node == my_id or (to_node != "^all" and channel == 0))
+            # In MeshPacket, 'toId' is our ID for DMs. STRICT check.
+            is_dm = (to_node == my_id)
 
             # Check if user is in an active session (DM only)
             if is_dm and self.session_manager.is_active(from_node):
@@ -969,7 +976,7 @@ class AIResponder:
                 else:
                     # Active session - process as AI query without !ai prefix (DMs only)
                     if not text.startswith('!ai'):
-                        self._handle_ai_query(text, from_node, to_node, channel)
+                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm)
                         return
             
             # Check for !ai command
