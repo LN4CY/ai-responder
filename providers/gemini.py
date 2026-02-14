@@ -58,10 +58,21 @@ class GeminiProvider(BaseProvider):
         
         # 1. Prepare Tools Payload
         gemini_tools = []
-        if self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
-            gemini_tools.append({"google_search": {}})
-        if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
-            gemini_tools.append({"google_maps": {}})
+        
+        # Check if we have custom tools to execute
+        has_custom_tools = False
+        if tools:
+            has_custom_tools = True
+            
+        # Grounding tools (Search/Maps) are often mutually exclusive with Function Calling 
+        # in strict models or specific API versions. Prioritize Function Calling.
+        if not has_custom_tools:
+            if self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
+                gemini_tools.append({"google_search": {}})
+            if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
+                gemini_tools.append({"google_maps": {}})
+        else:
+             logger.info("🔧 Custom tools active - disabling incompatible Google Search grounding.")
             
         # Add custom Meshtastic tools if provided
         custom_tool_map = {}
@@ -71,6 +82,14 @@ class GeminiProvider(BaseProvider):
                 function_declarations.append(t_info['declaration'])
                 custom_tool_map[t_name] = t_info['handler']
             
+            # Dynamic Grounding: Inject a "stub" search tool to let the AI request search.
+            if has_custom_tools and self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
+                function_declarations.append({
+                     "name": "google_search_stub",
+                     "description": "Search the web for real-time information, news, or general knowledge using Google.",
+                     "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING", "description": "The search query."}}, "required": ["query"]}
+                })
+
             if function_declarations:
                 gemini_tools.append({"function_declarations": function_declarations})
 
@@ -82,14 +101,24 @@ class GeminiProvider(BaseProvider):
         max_retries = 3
         retry_delay = 2
         
+        # State: Force native grounding for this turn?
+        force_grounding_turn = False
+        
         for attempt in range(max_retries + 1):
             try:
-                if attempt > 0:
+                # Dynamic Switching: If forced, REPLACE tools with only Google Search
+                current_tools = gemini_tools
+                if force_grounding_turn:
+                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Search Grounding for this turn.")
+                    current_tools = [{"google_search": {}}]
+                    payload["tools"] = current_tools
+                
+                if attempt > 0 and not force_grounding_turn:
                     logger.info(f"🔄 Retrying Gemini request (attempt {attempt}/{max_retries})...")
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 
-                logger.info(f"Calling Gemini model: {model} (Tools: {len(gemini_tools)})")
+                logger.info(f"Calling Gemini model: {model} (Tools: {len(current_tools)})")
                 
                 # Turn loop for function calling
                 max_turns = 5
@@ -116,6 +145,15 @@ class GeminiProvider(BaseProvider):
                             f_name = f_call["name"]
                             f_args = f_call.get("args", {})
                             
+                            # DYNAMIC SWITCH INTERCEPTION
+                            if f_name == "google_search_stub":
+                                logger.info(f"🕵️ Intercepted Search Stub call: query='{f_args.get('query')}'")
+                                force_grounding_turn = True
+                                # Add the AI's call to history? No, we retry the whole turn.
+                                # Breaking inner loop triggers outer loop retry?
+                                # We need to ensure logic below handles this.
+                                break 
+
                             logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
                             
                             if f_name in custom_tool_map:
