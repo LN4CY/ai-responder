@@ -1,5 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import sys
+import os
+
+# Add parent directory to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from ai_responder import AIResponder
 
 class TestAdaptiveTools(unittest.TestCase):
