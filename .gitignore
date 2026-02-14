@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 .env
 data/
+scripts/verify_models.py
+scripts/*.log

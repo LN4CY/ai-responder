@@ -164,7 +164,8 @@ class GeminiProvider(BaseProvider):
                         # ... grounding fallback logic ...
                         error_data = response.json()
                         error_msg = error_data.get('error', {}).get('message', '').lower()
-                        logger.warning(f"⚠️ Tool configuration issue: {error_msg}")
+                        logger.warning(f"⚠️ Tool configuration issue with model '{self.model_name}': {error_msg}")
+                        logger.debug(f"FULL ERROR: {response.text}")
                         
                         # Strip problematic tools and retry (internal retry)
                         if "google_maps" in error_msg:
