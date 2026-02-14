@@ -906,8 +906,8 @@ class AIResponder:
                             },
                             "telemetry_type": {
                                 "type": "STRING",
-                                "description": "Type of telemetry to request: 'device', 'environment', or 'local_stats'.",
-                                "enum": ["device", "environment", "local_stats"]
+                                "description": "Type of telemetry to request: 'device', 'environment', 'local_stats', 'air_quality', 'power', 'health', or 'host'.",
+                                "enum": ["device", "environment", "local_stats", "air_quality", "power", "health", "host"]
                             }
                         },
                         "required": ["node_id_or_name", "telemetry_type"]
@@ -942,34 +942,40 @@ class AIResponder:
             else:
                 return f"Error: Node '{node_id_or_name}' not found."
 
-        # 1. Send Request
+        # 1. Map type to internal metric key
+        type_map = {
+            'device': 'device_metrics',
+            'environment': 'environment_metrics',
+            'local_stats': 'local_stats',
+            'air_quality': 'air_quality_metrics',
+            'power': 'power_metrics',
+            'health': 'health_metrics',
+            'host': 'host_metrics'
+        }
+        metric_key = type_map.get(telemetry_type, 'environment_metrics')
+
+        # 2. Send Request
+        request_time = time.time()
         logger.info(f"📡 AI triggering telemetry refresh ({telemetry_type}) for {node_id}")
         self.meshtastic.request_telemetry(node_id, telemetry_type)
 
-        # 2. Short Poll (Wait up to 15 seconds for data to arrive in cache)
+        # 3. Short Poll (Wait up to 15 seconds for data to arrive in cache)
         # We check the cache every 3 seconds
         poll_start = time.time()
         poll_timeout = 15 
         
         while time.time() - poll_start < poll_timeout:
             time.sleep(3)
-            # Fetch fresh metadata
-            metadata = self.meshtastic.get_node_metadata(node_id)
+            # Check timestamps in the handler
+            node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id, {})
+            last_received = node_timestamps.get(metric_key, 0)
             
-            # Check if the requested type is present in the formatted string
-            # This is a bit heuristic but works with our string-based get_node_metadata
-            found_field = False
-            if telemetry_type == 'environment' and ('Temp:' in metadata or 'Hum:' in metadata):
-                found_field = True
-            elif telemetry_type == 'device' and 'Battery:' in metadata:
-                found_field = True
-            elif telemetry_type == 'local_stats' and 'Uptime:' in metadata: # Uptime is in local_stats too
-                found_field = True
-                
-            if found_field:
+            if last_received > request_time:
+                # Fresh data arrived!
+                metadata = self.meshtastic.get_node_metadata(node_id)
                 return f"Success! New telemetry received:\n{metadata}"
 
-        # 3. Timeout fallback
+        # 4. Timeout fallback
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—please wait about 60 seconds and ask me again. "
                 "I should have the data in my memory by then.")

@@ -165,7 +165,8 @@ class MeshtasticHandler:
         self.interface = None
         self.running = False
         
-        self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
+        self.telemetry_cache = {}      # {node_id: {type: {metrics}}}
+        self.telemetry_timestamps = {} # {node_id: {type: timestamp}}
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
         self.last_activity = 0
         self.connection_healthy = False
@@ -317,28 +318,45 @@ class MeshtasticHandler:
             self.current_ack_event.set()
 
     def _on_telemetry(self, packet, interface):
-        """Handle incoming telemetry packets specifically to populate the cache."""
+        """Handle incoming telemetry packets to populate the multi-metric cache."""
         try:
             from_id_raw = packet.get('fromId')
-            # Handle int/str mix
             from_id = from_id_raw
             if isinstance(from_id_raw, int):
                 from_id = f"!{from_id_raw:08x}"
                 
             decoded = packet.get('decoded', {})
-            
-            # telemetry data is usually inside 'telemetry' key in decoded dictionary
             telemetry = decoded.get('telemetry', {})
-            env_data = telemetry.get('environmentMetrics')
             
-            if env_data and from_id:
-                self.env_telemetry_cache[from_id] = env_data
-                
+            if not from_id or not telemetry:
+                return
+
+            if from_id not in self.telemetry_cache:
+                self.telemetry_cache[from_id] = {}
+            if from_id not in self.telemetry_timestamps:
+                self.telemetry_timestamps[from_id] = {}
+
+            # Capture all recognized telemetry types
+            metric_types = [
+                'device_metrics', 'environment_metrics', 'air_quality_metrics', 
+                'power_metrics', 'local_stats', 'health_metrics', 'host_metrics'
+            ]
+            
+            updated_any = False
+            now = time.time()
+            for m_type in metric_types:
+                data = telemetry.get(m_type)
+                if data:
+                    self.telemetry_cache[from_id][m_type] = data
+                    self.telemetry_timestamps[from_id][m_type] = now
+                    updated_any = True
+            
+            if updated_any:
                 # Only log INFO if we care about this node, otherwise DEBUG
                 if from_id in self.interesting_nodes:
-                    logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+                    logger.info(f"📊 Cached telemetry for {from_id}")
                 else:
-                    logger.debug(f"📊 Cached telemetry for {from_id}: {env_data}")
+                    logger.debug(f"📊 Cached telemetry for {from_id}")
         except Exception as e:
             logger.warning(f"Error caching telemetry: {e}")
 
@@ -382,11 +400,19 @@ class MeshtasticHandler:
         try:
             telemetry = telemetry_pb2.Telemetry()
             
-            # Map type to protobuf field
+            # Map tool type to protobuf field
             if telemetry_type == 'device':
                 telemetry.device_metrics.CopyFrom(telemetry_pb2.DeviceMetrics())
             elif telemetry_type == 'local_stats':
                 telemetry.local_stats.CopyFrom(telemetry_pb2.LocalStats())
+            elif telemetry_type == 'air_quality':
+                telemetry.air_quality_metrics.CopyFrom(telemetry_pb2.AirQualityMetrics())
+            elif telemetry_type == 'power':
+                telemetry.power_metrics.CopyFrom(telemetry_pb2.PowerMetrics())
+            elif telemetry_type == 'health':
+                telemetry.health_metrics.CopyFrom(telemetry_pb2.HealthMetrics())
+            elif telemetry_type == 'host':
+                telemetry.host_metrics.CopyFrom(telemetry_pb2.HostMetrics())
             else: # Default to environment
                 telemetry.environment_metrics.CopyFrom(telemetry_pb2.EnvironmentMetrics())
             
@@ -657,53 +683,95 @@ class MeshtasticHandler:
             if rssi is not None:
                 metadata_parts.append(f"RSSI: {rssi}dBm")
 
-            # 4. Environment Metrics
-            # First check direct node info, then fall back to our internal cache
-            env = node_info.get('environmentMetrics', {})
-            if not env and node_id in self.env_telemetry_cache:
-                env = self.env_telemetry_cache[node_id]
-                logger.debug(f"Using cached telemetry for {node_id}")
-
-            # Map API keys to Display labels
-            env_map = {
-                'temperature': 'Temp',
-                'relativeHumidity': 'Hum',
-                'barometricPressure': 'Press',
-                'lux': 'Lux',
-                'white_lux': 'WhiteLux',
-                'ir_lux': 'IRLux',
-                'gas_resistance': 'Gas',
-                'iaq': 'IAQ',
-                'distance': 'Dist',
-                'wind_speed': 'Wind',
-                'wind_gust': 'Gust',
-                'wind_direction': 'WindDir',
-                'rainfall_1h': 'Rain1h',
-                'rainfall_24h': 'Rain24h',
-                'soil_moisture': 'SoilMoist',
-                'soil_temperature': 'SoilTemp'
-            }
+            # 4. Comprehensive Telemetry (All 7 types)
+            # Use data from packet if available, otherwise fall back to cache
             
-            for key, label in env_map.items():
-                val = env.get(key)
-                if val is not None:
-                    # Format floats to 1 or 2 decimal places
-                    if isinstance(val, float):
-                         if key in ['lux', 'white_lux', 'ir_lux', 'gas_resistance']:
-                             val_str = f"{val:.1f}"
-                         elif key == 'barometricPressure':
-                             val_str = f"{val:.1f}hPa"
-                         elif key == 'temperature' or key == 'soil_temperature':
-                             val_str = f"{val:.1f}C"
-                         elif key == 'relativeHumidity' or key == 'soil_moisture':
-                             val_str = f"{val:.1f}%"
-                         else:
-                             val_str = f"{val:.2f}"
-                    else:
-                        val_str = str(val)
-                    
-                    metadata_parts.append(f"{label}: {val_str}")
+            # Map metrics to their display categories
+            telemetry_to_show = {
+                'environment_metrics': {
+                    'temperature': ('Temp', 'C'),
+                    'relative_humidity': ('Hum', '%'),
+                    'barometric_pressure': ('Press', 'hPa'),
+                    'lux': ('Lux', ''),
+                    'white_lux': ('WhiteLux', ''),
+                    'ir_lux': ('IRLux', ''),
+                    'gas_resistance': ('Gas', 'ohm'),
+                    'iaq': ('IAQ', ''),
+                    'distance': ('Dist', 'm'),
+                    'wind_speed': ('Wind', 'm/s'),
+                    'wind_gust': ('Gust', 'm/s'),
+                    'wind_direction': ('WindDir', 'deg'),
+                    'rainfall_1h': ('Rain1h', 'mm'),
+                    'rainfall_24h': ('Rain24h', 'mm'),
+                    'soil_moisture': ('SoilMoist', '%'),
+                    'soil_temperature': ('SoilTemp', 'C'),
+                    'voltage': ('EnvVolt', 'V'),
+                    'current': ('EnvCurr', 'mA')
+                },
+                'air_quality_metrics': {
+                    'pm10_standard': ('PM1.0', 'ug/m3'),
+                    'pm25_standard': ('PM2.5', 'ug/m3'),
+                    'pm100_standard': ('PM10.0', 'ug/m3'),
+                    'pm_voc_idx': ('VOCIdx', ''),
+                    'pm_nox_idx': ('NOXIdx', '')
+                },
+                'power_metrics': {
+                    'ch1_voltage': ('V1', 'V'), 'ch1_current': ('A1', 'mA'),
+                    'ch2_voltage': ('V2', 'V'), 'ch2_current': ('A2', 'mA'),
+                    'ch3_voltage': ('V3', 'V'), 'ch3_current': ('A3', 'mA')
+                },
+                'health_metrics': {
+                    'heart_bpm': ('HR', 'bpm'),
+                    'spO2': ('SpO2', '%'),
+                    'temperature': ('BodyTemp', 'C')
+                },
+                'local_stats': {
+                    'num_packets_tx': ('TX_Pkt', ''),
+                    'num_packets_rx': ('RX_Pkt', ''),
+                    'num_pkts_rx_bad': ('RX_Err', ''),
+                    'uptime_seconds': ('StatsUptime', 's')
+                },
+                'host_metrics': {
+                    'load1': ('Load1', ''),
+                    'free_mem_bytes': ('FreeMem', 'B'),
+                    'uptime': ('HostUptime', 's')
+                }
+            }
+
+            # Gather data from current packet AND cache
+            # Cache keys are the same as protobuf fields (snake_case)
+            cached_data = self.telemetry_cache.get(node_id, {})
+            
+            for m_type, field_map in telemetry_to_show.items():
+                # Check current node_info (API usually snake_case or camelCase depending on library version)
+                # Meshtastic python lib uses camelCase for the top-level keys in the node dict
+                msg_key = m_type
+                if m_type == 'environment_metrics': msg_key = 'environmentMetrics'
+                elif m_type == 'air_quality_metrics': msg_key = 'airQualityMetrics'
+                elif m_type == 'power_metrics': msg_key = 'powerMetrics'
+                elif m_type == 'health_metrics': msg_key = 'healthMetrics'
+                elif m_type == 'local_stats': msg_key = 'localStats'
+                elif m_type == 'host_metrics': msg_key = 'hostMetrics'
                 
+                # Get the best source of data
+                data = node_info.get(msg_key) or cached_data.get(m_type)
+                if not data: continue
+                
+                if isinstance(data, dict):
+                    for field, (label, unit) in field_map.items():
+                        # Try both snake_case (protobuf) and camelCase (library API)
+                        val = data.get(field)
+                        if val is None:
+                            camel_field = "".join(word.capitalize() if i > 0 else word for i, word in enumerate(field.split("_")))
+                            val = data.get(camel_field)
+                            
+                        if val is not None:
+                            if isinstance(val, float):
+                                val_str = f"{val:.1f}{unit}"
+                            else:
+                                val_str = f"{val}{unit}"
+                            metadata_parts.append(f"{label}: {val_str}")
+
             if not metadata_parts:
                 return None
                 

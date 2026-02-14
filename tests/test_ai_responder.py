@@ -89,6 +89,48 @@ class TestAIResponder(unittest.TestCase):
         if os.path.exists(self.mock_conversations_dir):
             shutil.rmtree(self.mock_conversations_dir)
 
+    def test_request_node_telemetry_polling_success(self):
+        """Test that request_node_telemetry succeeds when timestamp updates."""
+        node_id = "!1234abcd"
+        self.responder.meshtastic.telemetry_timestamps = {node_id: {}}
+        self.responder.meshtastic.get_node_metadata.return_value = "Temp: 25C"
+        
+        with patch('time.time') as mock_time:
+            mock_time.side_effect = [
+                100, # request_time
+                100, # poll_start
+                101, # loop check 1
+                104, # loop check 2
+                107  # loop check 3
+            ]
+            
+            with patch('time.sleep'):
+                self.responder.meshtastic.telemetry_timestamps = MagicMock()
+                self.responder.meshtastic.telemetry_timestamps.get.return_value.get.side_effect = [0, 200]
+                
+                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                
+                self.assertIn("Success! New telemetry received", result)
+                self.assertIn("Temp: 25C", result)
+                self.responder.meshtastic.request_telemetry.assert_called_with(node_id, 'environment')
+
+    def test_request_node_telemetry_polling_timeout(self):
+        """Test that request_node_telemetry returns timeout message if no data arrives."""
+        node_id = "!1234abcd"
+        self.responder.meshtastic.telemetry_timestamps = {node_id: {}}
+        
+        with patch('time.time') as mock_time:
+            # Simulate 15s passing quickly
+            mock_time.side_effect = [100, 100, 103, 106, 109, 112, 115, 118, 121, 124, 127]
+            
+            with patch('time.sleep'):
+                self.responder.meshtastic.telemetry_timestamps = MagicMock()
+                self.responder.meshtastic.telemetry_timestamps.get.return_value.get.return_value = 0
+                
+                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                
+                self.assertIn("The mesh is slow—please wait about 60 seconds", result)
+
     def test_provider_list(self):
         """Test listing providers."""
         # Mock send_response to intercept output

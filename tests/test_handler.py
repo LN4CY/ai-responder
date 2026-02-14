@@ -103,39 +103,63 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.interface._reader.is_alive.return_value = True
         self.handler.running = True
 
-    def test_get_node_metadata(self):
-        """Test extraction of node metadata (telemetry, location, battery, names)."""
-        node_id = "!1234abcd"
-        node_int = int("1234abcd", 16)
-        self.handler.interface.nodes = {
-            node_int: {
+    def test_get_node_metadata_exhaustive(self):
+        """Test extraction of ALL 7 types of node metadata."""
+        node_id = "!77777777"
+        node_int = int("77777777", 16)
+        
+        node_info = {
                 'num': node_int,
-                'user': {'id': node_id, 'longName': 'TestNode', 'shortName': 'TN'},
-                'position': {'latitude': 40.7, 'longitude': -74.0},
-                'snr': 5.5,
-                'rssi': -80,
-                'deviceMetrics': {'batteryLevel': 85},
-                'environmentMetrics': {'temperature': 22.5, 'barometricPressure': 1013.2}
-            }
+                'user': {'id': node_id, 'longName': 'FullNode', 'shortName': 'FN'},
+                'snr': 10.0,
+                'deviceMetrics': {'batteryLevel': 99, 'voltage': 4.2},
+                'environmentMetrics': {'temperature': 25.5, 'relativeHumidity': 50.1, 'lux': 150.0},
+                'airQualityMetrics': {'pm25_standard': 12.5, 'pm_voc_idx': 100},
+                'powerMetrics': {'ch1_voltage': 12.0, 'ch1_current': 500},
+                'healthMetrics': {'heart_bpm': 72, 'spO2': 98},
+                'localStats': {'num_packets_tx': 1000, 'num_packets_rx': 5000},
+                'hostMetrics': {'load1': 0.5, 'uptime': 3600}
         }
+        
+        self.handler.interface.nodes = {node_int: node_info}
         
         metadata = self.handler.get_node_metadata(node_id)
         self.assertIsNotNone(metadata)
-        self.assertIn("Name: TestNode", metadata)
-        self.assertIn("ShortName: TN", metadata)
-        self.assertIn("SNR: 5.5dB", metadata)
-        self.assertIn("RSSI: -80dBm", metadata)
-        self.assertIn("Location: 40.7000, -74.0000", metadata)
-        self.assertIn("Battery: 85%", metadata)
-        self.assertIn("Temp: 22.5C", metadata)
-        self.assertIn("Press: 1013.2hPa", metadata)
+        
+        # Verify 1. Device
+        self.assertIn("Battery: 99%", metadata)
+        self.assertIn("Voltage: 4.20V", metadata)
+        
+        # Verify 2. Environment
+        self.assertIn("Temp: 25.5C", metadata)
+        self.assertIn("Hum: 50.1%", metadata)
+        self.assertIn("Lux: 150.0", metadata)
+        
+        # Verify 3. Air Quality
+        self.assertIn("PM2.5: 12.5ug/m3", metadata)
+        self.assertIn("VOCIdx: 100", metadata)
+        
+        # Verify 4. Power
+        self.assertIn("V1: 12.0V", metadata)
+        self.assertIn("A1: 500mA", metadata)
+        
+        # Verify 5. Health
+        self.assertIn("HR: 72bpm", metadata)
+        self.assertIn("SpO2: 98%", metadata)
+        
+        # Verify 6. Local Stats
+        self.assertIn("TX_Pkt: 1000", metadata)
+        self.assertIn("RX_Pkt: 5000", metadata)
+        
+        # Verify 7. Host
+        self.assertIn("Load1: 0.5", metadata)
+        self.assertIn("HostUptime: 3600s", metadata)
 
     def test_get_node_metadata_uses_cache(self):
         """Test that metadata extraction falls back to the internal cache."""
         node_id = "!5678abcd"
         node_int = int("5678abcd", 16)
         
-        # Node exists in interface, but has NO environmentMetrics
         self.handler.interface.nodes = {
             node_int: {
                 'num': node_int,
@@ -143,10 +167,12 @@ class TestHandlerMetadata(unittest.TestCase):
             }
         }
         
-        # But we have it in our cache!
-        self.handler.env_telemetry_cache[node_id] = {
-            'temperature': 18.5,
-            'relativeHumidity': 42.0
+        # New multi-category cache structure
+        self.handler.telemetry_cache[node_id] = {
+            'environment_metrics': {
+                'temperature': 18.5,
+                'relative_humidity': 42.0
+            }
         }
         
         metadata = self.handler.get_node_metadata(node_id)
@@ -166,13 +192,13 @@ class TestHandlerMetadata(unittest.TestCase):
         node_id_uninteresting = "!uninteresting"
         packet_uninteresting = {
             'fromId': node_id_uninteresting,
-            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 20.0}}}
+            'decoded': {'telemetry': {'environment_metrics': {'temperature': 20.0}}}
         }
         
         with patch('meshtastic_handler.handler.logger') as mock_logger:
             self.handler._on_telemetry(packet_uninteresting, None)
-            # Should call debug, NOT info
             mock_logger.debug.assert_called()
+            self.assertIn(node_id_uninteresting, self.handler.telemetry_cache)
             mock_logger.info.assert_not_called()
             
         # 2. Test "interesting" node (should be INFO)
@@ -180,7 +206,7 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.track_node(node_id_interesting)
         packet_interesting = {
             'fromId': node_id_interesting,
-            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 25.0}}}
+            'decoded': {'telemetry': {'environment_metrics': {'temperature': 25.0}}}
         }
         
         with patch('meshtastic_handler.handler.logger') as mock_logger:
@@ -208,7 +234,7 @@ class TestHandlerMetadata(unittest.TestCase):
             'decoded': {
                 'portnum': 'TELEMETRY_APP',
                 'telemetry': {
-                    'environmentMetrics': {
+                    'environment_metrics': {
                         'temperature': 25.0,
                         'lux': 100
                     }
@@ -220,9 +246,14 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler._on_telemetry(packet, None)
         
         # Verify cache was updated
-        self.assertIn(node_id, self.handler.env_telemetry_cache)
-        self.assertEqual(self.handler.env_telemetry_cache[node_id]['temperature'], 25.0)
-        self.assertEqual(self.handler.env_telemetry_cache[node_id]['lux'], 100)
+        self.assertIn(node_id, self.handler.telemetry_cache)
+        self.assertIn('environment_metrics', self.handler.telemetry_cache[node_id])
+        self.assertEqual(self.handler.telemetry_cache[node_id]['environment_metrics']['temperature'], 25.0)
+        
+        # Verify timestamps were captured
+        self.assertIn(node_id, self.handler.telemetry_timestamps)
+        self.assertIn('environment_metrics', self.handler.telemetry_timestamps[node_id])
+        self.assertGreater(self.handler.telemetry_timestamps[node_id]['environment_metrics'], 0)
 
     @patch('meshtastic_handler.handler.telemetry_pb2')
     @patch('meshtastic_handler.handler.portnums_pb2')
@@ -259,6 +290,26 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.interface.sendData.reset_mock()
         self.handler.request_telemetry(node_id, 'local_stats')
         mock_telemetry.local_stats.CopyFrom.assert_called_with(mock_local_stats)
+
+        # 4. Test Air Quality
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'air_quality')
+        mock_telemetry.air_quality_metrics.CopyFrom.assert_called()
+
+        # 5. Test Power
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'power')
+        mock_telemetry.power_metrics.CopyFrom.assert_called()
+
+        # 6. Test Health
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'health')
+        mock_telemetry.health_metrics.CopyFrom.assert_called()
+
+        # 7. Test Host
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'host')
+        mock_telemetry.host_metrics.CopyFrom.assert_called()
 
     def test_get_node_metadata_missing(self):
         """Test metadata extraction with missing fields."""

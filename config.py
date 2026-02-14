@@ -70,8 +70,8 @@ TOOL USAGE PROTOCOL:
    - Use these ONLY to fetch raw data from the mesh (nodes, telemetry, status).
    - "get_my_info": Call for your own identity/status.
    - "get_mesh_nodes": "Who is online" or find Node IDs.
-   - "get_node_details(node_id_or_name)": Specific telemetry (Battery, SNR, Temp, Hum, Press).
-   - "request_node_telemetry(node_id_or_name, telemetry_type)": Active sensor refresh (device, environment, local_stats).
+   - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
+   - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale.
 
 2. INTERNAL REASONING (Calculations & Logic):
    - You MUST use your own internal capabilities for math, analysis, and logic.
