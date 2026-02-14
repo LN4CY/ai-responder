@@ -16,6 +16,8 @@ The application is configured primarily via environment variables passed to the 
 | `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface. |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds to wait between reconnection attempts. |
 | `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
+| `HEALTH_CHECK_ACTIVITY_TIMEOUT` | `300` | Seconds of silence before sending a probe (Radio Watchdog). |
+| `HEALTH_CHECK_PROBE_INTERVAL` | `150` | Seconds between active probes when silent. |
 
 ### AI Provider Settings
 

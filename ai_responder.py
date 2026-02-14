@@ -18,6 +18,8 @@ import time
 import json
 import logging
 import threading
+import sys
+import re
 from pubsub import pub
 
 # Import our modular components
@@ -25,7 +27,8 @@ import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
     HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
-    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER
+    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER,
+    HEALTH_CHECK_ACTIVITY_TIMEOUT, HEALTH_CHECK_PROBE_INTERVAL
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -253,7 +256,14 @@ class AIResponder:
         if remote_metadata:
             parts.append(f"[User: {remote_metadata}]")
         if local_metadata:
-            parts.append(f"[Bot: {local_metadata}]")
+            # Try to get bot's own name for a descriptive label
+            name = "Bot"
+            try:
+                my_info = self.meshtastic.get_node_info()
+                if my_info:
+                    name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
+            except: pass
+            parts.append(f"[{name}: {local_metadata}]")
         
         return " ".join(parts) if parts else None
     
@@ -399,7 +409,7 @@ class AIResponder:
     
     # ==================== Message Sending ====================
     
-    def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False):
+    def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=False):
         """
         Send a response message via Meshtastic.
         
@@ -411,6 +421,7 @@ class AIResponder:
             to_node: Destination node ID (or '^all' for broadcast)
             channel: Channel index
             is_admin_cmd: Whether this is an admin command response
+            use_session_indicator: Whether to include the [🟢 session_name] prefix
         """
         # Determine destination
         if is_admin_cmd:
@@ -420,6 +431,7 @@ class AIResponder:
             # Public message - reply publicly only if channel is enabled
             if self.is_channel_allowed(channel):
                 destination = '^all'
+                use_session_indicator = False # Force off for channel messages
             else:
                 # Channel not enabled, don't respond
                 logger.info(f"Skipping response on disabled channel {channel}")
@@ -429,7 +441,9 @@ class AIResponder:
             destination = from_node
         
         # Get session indicator if applicable
-        session_indicator = self.session_manager.get_session_indicator(from_node)
+        session_indicator = ""
+        if use_session_indicator:
+            session_indicator = self.session_manager.get_session_indicator(from_node)
         
         # Send via Meshtastic handler
         self.meshtastic.send_message(text, destination, channel, session_indicator)
@@ -785,7 +799,32 @@ class AIResponder:
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
     
-    def _handle_ai_query(self, query, from_node, to_node, channel, initial_msg="Thinking... 🤖"):
+    def _detect_node_references(self, text):
+        """
+        Detect node IDs or names in the text.
+        
+        Returns:
+            set: Set of detected node IDs
+        """
+        detected_ids = set()
+        
+        # 1. Direct Hex ID detection (!1234abcd)
+        hex_matches = re.findall(r'![0-9a-f]{8}', text.lower())
+        for match in hex_matches:
+            detected_ids.add(match)
+            
+        # 2. Name-based detection
+        # Split text into words/tokens (simple approach)
+        tokens = re.findall(r'\w+', text)
+        for token in tokens:
+            if len(token) < 2: continue
+            n_id = self.meshtastic.find_node_by_name(token)
+            if n_id:
+                detected_ids.add(n_id)
+                
+        return detected_ids
+    
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
         """
         Handle an AI query in a background thread.
         
@@ -794,11 +833,14 @@ class AIResponder:
             from_node: Source node ID
             to_node: Destination node ID
             channel: Channel index
+            is_dm: Optional DM status (if already determined)
             initial_msg: Initial "thinking" message to send
         """
-        # Determine if this is a DM interaction
-        # to_node == my node ID or is not a channel packet
-        is_dm = (to_node != "^all" and channel == 0) # Simplification, improved in process_command
+        # Determine if this is a DM interaction if not provided
+        if is_dm is None:
+            my_node_info = self.meshtastic.get_node_info()
+            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
+            is_dm = (to_node == my_id)
         
         # Send initial acknowledgment
         if initial_msg:
@@ -822,6 +864,9 @@ class AIResponder:
             is_session = self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
             
+            # Detect references in user query (Moved up for self-awareness logic)
+            referenced_nodes = self._detect_node_references(query)
+            
             # 2. Dual Metadata Injection Logic
             local_metadata = None  # Bot's own status
             remote_metadata = None  # User's environmental data
@@ -829,16 +874,18 @@ class AIResponder:
             if is_dm:
                 history_exists = history_key in self.history and len(self.history[history_key]) > 0
                 
-                # Fetch LOCAL node metadata (bot's own status) on session start
-                if not history_exists or (is_session and not history_exists):
+                # Bot identification
+                my_node_info = self.meshtastic.get_node_info()
+                my_id = my_node_info.get('user', {}).get('id') if my_node_info else None
+                
+                # Fetch LOCAL node metadata (bot's own status) on session start OR if bot is mentioned
+                bot_mentioned = (my_id and my_id in referenced_nodes)
+                if not history_exists or (is_session and not history_exists) or bot_mentioned:
                     try:
-                        my_node_info = self.meshtastic.get_node_info()
-                        if my_node_info:
-                            my_node_id = my_node_info.get('user', {}).get('id')
-                            if my_node_id:
-                                local_metadata = self.meshtastic.get_node_metadata(my_node_id)
-                                if local_metadata:
-                                    logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
+                        if my_id:
+                            local_metadata = self.meshtastic.get_node_metadata(my_id)
+                            if local_metadata:
+                                logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
                     except Exception as e:
                         logger.warning(f"Failed to fetch local node metadata: {e}")
                 
@@ -885,19 +932,58 @@ class AIResponder:
             msgs_count = len(self.history.get(history_key, []))
             logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
 
-            # 4. Extract Location for Grounding if available
+            # 4. Extract Multi-Node Metadata and Grounding
+            additional_context = []
+            
+            # referenced_nodes already detected above
+            
+            # Check for general mesh status queries
+            mesh_keywords = ['mesh', 'nodes', 'neighbors', 'who is online', 'list nodes', 'network']
+            if any(k in query.lower() for k in mesh_keywords):
+                summary = self.meshtastic.get_node_list_summary()
+                additional_context.append(summary)
+            
+            # Fetch metadata for referenced nodes (excluding ones already handled)
+            handled_nodes = {from_node}
+            my_node_info = self.meshtastic.get_node_info()
+            if my_node_info: handled_nodes.add(my_node_info.get('user', {}).get('id'))
+            
+            for ref_id in referenced_nodes:
+                if ref_id not in handled_nodes:
+                    node_md = self.meshtastic.get_node_metadata(ref_id)
+                    if node_md:
+                        # Find name for label
+                        node_info = self.meshtastic._get_node_by_id(ref_id)
+                        name = "Unknown"
+                        if node_info:
+                            user = node_info.get('user', {})
+                            name = user.get('longName') or user.get('shortName') or "Unknown"
+                        
+                        additional_context.append(f"Metadata for {name} ({ref_id}):\n{node_md}")
+            
+            # Combine all additional context
+            if additional_context:
+                injected_content = "\n\n---\n" + "\n\n".join(additional_context) + "\n---"
+                # Update history for the current message to include this context for the AI
+                if history_key in self.history and self.history[history_key]:
+                    last_msg = self.history[history_key][-1]
+                    if last_msg['role'] == 'user':
+                        last_msg['content'] += injected_content
+                        logger.info(f"🔗 Injected additional mesh context ({len(additional_context)} items)")
+
+            # Extract Primary Location for Grounding if available
             location = None
             try:
-                node_info = self.meshtastic.interface.nodes.get(from_node)
+                node_info = self.meshtastic._get_node_by_id(from_node)
                 if node_info:
                     pos = node_info.get('position', {})
                     lat = pos.get('latitude')
                     lon = pos.get('longitude')
                     if lat is not None and lon is not None:
                         location = {'latitude': lat, 'longitude': lon}
-                        logger.info(f"📍 Location identified for grounding: {lat}, {lon}")
+                        logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
             except Exception as e:
-                logger.debug(f"Could not extract direct location for grounding: {e}")
+                logger.debug(f"Could not extract primary location for grounding: {e}")
 
             # 5. Get AI response with tuned context
             response = self.get_ai_response(query, history_key, is_session=is_session, location=location)
@@ -912,7 +998,7 @@ class AIResponder:
                 self.session_manager.update_activity(from_node)
             
             # 7. Send response
-            self.send_response(response, from_node, to_node, channel, is_admin_cmd=False)
+            self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
             
         except Exception as e:
             logger.error(f"Error processing AI query: {e}")
@@ -952,15 +1038,12 @@ class AIResponder:
             
             # Determine DM status
             my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('noId', '') if my_node_info else ''
-            # In MeshPacket, 'toId' is our ID for DMs.
-            # But sometimes ACKs/Routing packets confuse this. 
-            # For TEXT_MESSAGE_APP:
-            # if to_node == my_id or it's a DM session:
-            is_dm = (to_node == my_id or (to_node != "^all" and channel == 0))
+            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
+            # In MeshPacket, 'toId' is our ID for DMs. STRICT check.
+            is_dm = (to_node == my_id)
 
-            # Check if user is in an active session
-            if self.session_manager.is_active(from_node):
+            # Check if user is in an active session (DM only)
+            if is_dm and self.session_manager.is_active(from_node):
                 # Check for timeout
                 timed_out, message, session_channel, session_to_node = self.session_manager.check_timeout(from_node)
                 if timed_out:
@@ -970,8 +1053,7 @@ class AIResponder:
                 else:
                     # Active session - process as AI query without !ai prefix (DMs only)
                     if not text.startswith('!ai'):
-                        # Pass TRUE for is_dm because sessions are DM only
-                        self._handle_ai_query(text, from_node, to_node, channel)
+                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm)
                         return
             
             # Check for !ai command
@@ -1002,26 +1084,63 @@ class AIResponder:
         # Main loop
         try:
             while self.running:
-                # 1. Connection Watchdog
-                if not self.meshtastic.is_connected():
-                    logger.warning("⚠️ Connection to Meshtastic lost/missing. Attempting to reconnect...")
-                    try:
-                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
-                            logger.info("✅ Reconnected to Meshtastic!")
-                        else:
-                            logger.error("❌ Reconnection attempt failed.")
-                    except Exception as e:
-                        logger.error(f"Error during reconnection: {e}")
-                    
-                    # Backoff before next loop iteration to avoid hammering
-                    if not self.meshtastic.is_connected():
-                        time.sleep(config.CONNECTION_RETRY_INTERVAL)
-                        continue
+                # 2. Radio Watchdog & Health Check
+                current_time = time.time()
+                health_ok = True
+                reasons = []
 
-                # 2. Daily Tasks / Periodic Checks
-                time.sleep(1)
+                # Check radio activity
+                last_radio = self.meshtastic.last_activity
+                if last_radio > 0:
+                    time_since_radio = current_time - last_radio
+                    if time_since_radio > HEALTH_CHECK_ACTIVITY_TIMEOUT:
+                        # Radio silent too long
+                        time_since_last_probe = current_time - self.last_probe
+                        if time_since_last_probe > 40: # Probe every 40s when silent
+                            logger.warning(f"Radio silent for {int(time_since_radio)}s. Sending active probe...")
+                            self.last_probe = current_time
+                            self.meshtastic.send_probe()
+                        elif time_since_last_probe > 30:
+                            # If we probed 30s ago and still no activity, health is failing
+                            health_ok = False
+                            reasons.append(f"Radio silent (Probed {int(time_since_last_probe)}s ago - NO REPLY)")
                 
-                # Periodic session timeout check
+                # Check connection status
+                if not self.meshtastic.is_connected():
+                    if not self.connection_lost:
+                        self.connection_lost = True
+                        self.last_activity = current_time # Start tracking disconnect duration
+                        logger.warning("Meshtastic connection lost. Attempting to reconnect...")
+                    
+                    # Try to reconnect every 10 seconds
+                    if int(current_time) % 10 == 0:
+                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                            logger.info("✅ Reconnected to Meshtastic successfully.")
+                            self.connection_lost = False
+                        else:
+                            logger.warning("Still disconnected from Meshtastic...")
+
+                    # Fallback to exit/restart if we can't recover for a while
+                    if current_time - self.last_activity > 120: # Increased to 120s to give more reconnect attempts
+                        health_ok = False
+                        reasons.append("Connection lost for >120s (Reconnection attempts failed)")
+                else:
+                    self.connection_lost = False
+
+                # 3. Update Heartbeat / Health Check
+                if health_ok:
+                    try:
+                        with open("/tmp/healthy", "w") as f:
+                            f.write(str(current_time))
+                    except: pass
+                else:
+                    logger.error(f"Health check FAILED: {', '.join(reasons)}. Exiting...")
+                    if os.path.exists("/tmp/healthy"):
+                        try: os.remove("/tmp/healthy")
+                        except: pass
+                    sys.exit(1)
+
+                # 4. Periodic session timeout check
                 timed_out_data = self.session_manager.check_all_timeouts()
                 for data in timed_out_data:
                     # Send timeout notification proactively
@@ -1032,12 +1151,8 @@ class AIResponder:
                         data['channel'], 
                         is_admin_cmd=False
                     )
-                    
-                # Heartbeat for Docker healthcheck
-                # Only update if actually connected
-                if self.meshtastic.is_connected():
-                    with open("/tmp/healthy", "w") as f:
-                        f.write(str(time.time()))
+
+                time.sleep(1)
                 
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")

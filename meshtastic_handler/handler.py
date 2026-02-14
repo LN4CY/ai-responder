@@ -167,6 +167,8 @@ class MeshtasticHandler:
         
         self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
+        self.last_activity = 0
+        self.connection_healthy = False
 
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
@@ -233,7 +235,23 @@ class MeshtasticHandler:
                 pub.subscribe(self._on_ack, "meshtastic.ack")
                 logger.info("✅ Subscribed to meshtastic.ack")
 
+                # Subscribe to general packets for activity tracking
+                try:
+                    pub.unsubscribe(self._on_packet_activity, "meshtastic.receive")
+                except:
+                    pass
+                pub.subscribe(self._on_packet_activity, "meshtastic.receive")
+                
+                # Subscribe to connection lost
+                try:
+                    pub.unsubscribe(self._on_connection_lost, "meshtastic.connection.lost")
+                except:
+                    pass
+                pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
+
                 self.running = True
+                self.connection_healthy = True
+                self.last_activity = time.time()
                 logger.info("✅ Connected to Meshtastic")
                 return True
                 
@@ -267,6 +285,7 @@ class MeshtasticHandler:
         # But connect() handles cleanup of previous subscriptions
         
         self.running = False
+        self.connection_healthy = False
         self.interface = None
     
     def is_connected(self):
@@ -277,6 +296,10 @@ class MeshtasticHandler:
             bool: True if connected and interface is healthy
         """
         if not self.interface or not self.running:
+            return False
+            
+        # Check explicit health flag from connection lost events
+        if not self.connection_healthy:
             return False
             
         # Check if serial/tcp interface is actually alive
@@ -318,6 +341,28 @@ class MeshtasticHandler:
                     logger.debug(f"📊 Cached telemetry for {from_id}: {env_data}")
         except Exception as e:
             logger.warning(f"Error caching telemetry: {e}")
+
+    def _on_packet_activity(self, packet, interface):
+        """Update last activity on any received packet."""
+        self.last_activity = time.time()
+
+    def _on_connection_lost(self, interface):
+        """Handle connection lost event."""
+        logger.warning("Meshtastic connection reported LOST!")
+        self.connection_healthy = False
+
+    def send_probe(self):
+        """Send an active probe to the radio to verify connection."""
+        if not self.interface or not self.running:
+            return False
+        
+        try:
+            logger.info("📡 Sending active radio probe (position query)...")
+            self.interface.sendPosition()
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send probe: {e}")
+            return False
 
     def request_telemetry(self, destination_id):
         """
@@ -427,6 +472,116 @@ class MeshtasticHandler:
         
         return chunks
     
+    def _get_node_by_id(self, node_id):
+        """
+        Helper to find a node in the interface.nodes dictionary by various ID formats.
+        
+        Args:
+            node_id: Node ID (int, hex string '!1234abcd', or decimal string)
+            
+        Returns:
+            dict or None: Node information if found
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+
+        # 1. Try direct lookup (works if type matches exactly)
+        info = self.interface.nodes.get(node_id)
+        if info:
+            return info
+
+        # 2. Normalize to Int and Hex
+        node_int = None
+        node_hex = None
+
+        if isinstance(node_id, str):
+            if node_id.startswith('!'):
+                try:
+                    node_int = int(node_id[1:], 16)
+                    node_hex = node_id
+                except: pass
+            elif node_id.isdigit():
+                node_int = int(node_id)
+                node_hex = f"!{node_int:08x}"
+        elif isinstance(node_id, int):
+            node_int = node_id
+            node_hex = f"!{node_int:08x}"
+
+        # 3. Try lookup by normalized forms
+        if node_int is not None:
+            info = self.interface.nodes.get(node_int)
+            if info: return info
+            
+        if node_hex is not None:
+            info = self.interface.nodes.get(node_hex)
+            if info: return info
+
+        return None
+
+    def find_node_by_name(self, name):
+        """
+        Find a node by matching its long name or short name.
+        
+        Args:
+            name: Name to search for (case-insensitive)
+            
+        Returns:
+            str or None: Node ID if found, otherwise None
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+            
+        name_lower = name.lower().strip()
+        
+        for n_id, node in self.interface.nodes.items():
+            user = node.get('user', {})
+            long_name = user.get('longName', '').lower()
+            short_name = user.get('shortName', '').lower()
+            
+            if name_lower == long_name or name_lower == short_name:
+                return user.get('id')
+                
+        return None
+
+    def get_all_nodes(self):
+        """
+        Get a list of all known nodes with their names.
+        
+        Returns:
+            list: List of dicts with node info
+        """
+        if not self.interface or not self.interface.nodes:
+            return []
+            
+        nodes = []
+        for n_id, node in self.interface.nodes.items():
+            user = node.get('user', {})
+            nodes.append({
+                'id': user.get('id'),
+                'longName': user.get('longName'),
+                'shortName': user.get('shortName')
+            })
+        return nodes
+
+    def get_node_list_summary(self):
+        """
+        Get a concise summary of the node list for AI context.
+        
+        Returns:
+            str: Formatted string of known nodes
+        """
+        nodes = self.get_all_nodes()
+        if not nodes:
+            return "No neighbors detected on mesh."
+            
+        lines = ["Neighbor nodes on mesh:"]
+        for n in nodes:
+            if not n['id']: continue
+            name = n['longName'] or n['shortName'] or "Unknown"
+            short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
+            lines.append(f"- {n['id']}: {name}{short}")
+            
+        return "\n".join(lines)
     def get_node_metadata(self, node_id):
         """
         Get metadata (location, battery, environment) for a node.
@@ -437,62 +592,27 @@ class MeshtasticHandler:
         Returns:
             str: Formatted metadata string or None
         """
-        if not self.interface or not self.interface.nodes:
+        if not self.interface:
             return None
             
         try:
-            # Check if requesting local node
-            my_info = self.get_node_info()
-            if my_info:
-                my_id_str = my_info.get('user', {}).get('id')
-                my_id_int = my_info.get('num')
-                
-                is_local = False
-                if isinstance(node_id, str) and node_id == my_id_str:
-                    is_local = True
-                elif isinstance(node_id, int) and node_id == my_id_int:
-                    is_local = True
-                elif isinstance(node_id, str) and node_id.isdigit() and int(node_id) == my_id_int:
-                    is_local = True
-                    
-                if is_local:
-                    node_info = my_info
-                else:
-                    # Try direct lookup first
-                    node_info = self.interface.nodes.get(node_id)
-            
-            if not node_info:
-                # Try looking up by converted types
-                node_int = None
-                node_str = None
-                
-                if isinstance(node_id, str):
-                    if node_id.startswith('!'):
-                        try:
-                            node_int = int(node_id[1:], 16)
-                        except: pass
-                    elif node_id.isdigit():
-                        node_int = int(node_id)
-                        node_str = f"!{node_int:08x}"
-                elif isinstance(node_id, int):
-                    node_int = node_id
-                    node_str = f"!{node_int:08x}"
-                
-                # Try int key
-                if node_int is not None:
-                    node_info = self.interface.nodes.get(node_int)
-                
-                # If still not found, try str key
-                if not node_info and node_str is not None:
-                    node_info = self.interface.nodes.get(node_str)
-            
+            node_info = self._get_node_by_id(node_id)
             if not node_info:
                 return None
-            
+        
             # DEBUG: Log raw node structure to diagnose missing environmentMetrics
             logger.debug(f"Raw node_info for {node_id}: deviceMetrics={node_info.get('deviceMetrics')}, environmentMetrics={node_info.get('environmentMetrics')}")
                 
             metadata_parts = []
+            
+            # 0. Identification
+            user = node_info.get('user', {})
+            long_name = user.get('longName')
+            short_name = user.get('shortName')
+            if long_name:
+                metadata_parts.append(f"Name: {long_name}")
+            if short_name:
+                metadata_parts.append(f"ShortName: {short_name}")
             
             # 1. Location
             pos = node_info.get('position', {})
@@ -521,7 +641,15 @@ class MeshtasticHandler:
                 # Convert seconds to simpler format if needed, but seconds is fine for AI
                 metadata_parts.append(f"Uptime: {uptime}s")
 
-            # 3. Environment Metrics
+            # 3. Signal Strength
+            snr = node_info.get('snr')
+            rssi = node_info.get('rssi')
+            if snr is not None:
+                metadata_parts.append(f"SNR: {snr:.1f}dB")
+            if rssi is not None:
+                metadata_parts.append(f"RSSI: {rssi}dBm")
+
+            # 4. Environment Metrics
             # First check direct node info, then fall back to our internal cache
             env = node_info.get('environmentMetrics', {})
             if not env and node_id in self.env_telemetry_cache:
@@ -588,7 +716,20 @@ class MeshtasticHandler:
             return None
         
         try:
-            return self.interface.getMyNodeInfo()
+            # 1. Get static info
+            my_info = self.interface.getMyNodeInfo()
+            if not my_info:
+                return None
+                
+            # 2. Try to supplement with dynamic data from the nodes database
+            my_num = my_info.get('num')
+            if my_num and self.interface.nodes:
+                dynamic_info = self.interface.nodes.get(my_num)
+                if dynamic_info:
+                    # Merge dynamic info into base info, prioritizing dynamic (contains latest position etc)
+                    my_info.update(dynamic_info)
+                    
+            return my_info
         except Exception as e:
             logger.error(f"Failed to get node info: {e}")
             return None

@@ -104,13 +104,16 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.running = True
 
     def test_get_node_metadata(self):
-        """Test extraction of node metadata (telemetry, location, battery)."""
+        """Test extraction of node metadata (telemetry, location, battery, names)."""
         node_id = "!1234abcd"
         node_int = int("1234abcd", 16)
         self.handler.interface.nodes = {
             node_int: {
                 'num': node_int,
+                'user': {'id': node_id, 'longName': 'TestNode', 'shortName': 'TN'},
                 'position': {'latitude': 40.7, 'longitude': -74.0},
+                'snr': 5.5,
+                'rssi': -80,
                 'deviceMetrics': {'batteryLevel': 85},
                 'environmentMetrics': {'temperature': 22.5, 'barometricPressure': 1013.2}
             }
@@ -118,6 +121,10 @@ class TestHandlerMetadata(unittest.TestCase):
         
         metadata = self.handler.get_node_metadata(node_id)
         self.assertIsNotNone(metadata)
+        self.assertIn("Name: TestNode", metadata)
+        self.assertIn("ShortName: TN", metadata)
+        self.assertIn("SNR: 5.5dB", metadata)
+        self.assertIn("RSSI: -80dBm", metadata)
         self.assertIn("Location: 40.7000, -74.0000", metadata)
         self.assertIn("Battery: 85%", metadata)
         self.assertIn("Temp: 22.5C", metadata)
@@ -181,6 +188,17 @@ class TestHandlerMetadata(unittest.TestCase):
             # Should call INFO
             mock_logger.info.assert_called()
 
+    def test_on_packet_activity(self):
+        """Test that received packets update the last_activity timestamp."""
+        self.handler.last_activity = 0
+        self.handler._on_packet_activity({}, None)
+        self.assertGreater(self.handler.last_activity, 0)
+
+    def test_send_probe(self):
+        """Test that send_probe calls interface.sendPosition."""
+        self.handler.send_probe()
+        self.handler.interface.sendPosition.assert_called_once()
+
     def test_on_telemetry_caching(self):
         """Test that incoming telemetry packets are correctly cached."""
         node_id = "!99999999"
@@ -239,6 +257,54 @@ class TestHandlerMetadata(unittest.TestCase):
         
         metadata = self.handler.get_node_metadata(node_id)
         self.assertIsNone(metadata)
+
+    def test_find_node_by_name(self):
+        """Test finding a node by long name or short name."""
+        self.handler.interface.nodes = {
+            123: {'user': {'id': '!123', 'longName': 'LongName1', 'shortName': 'SN1'}},
+            456: {'user': {'id': '!456', 'longName': 'LongName2', 'shortName': 'SN2'}}
+        }
+        
+        # Test long name match
+        self.assertEqual(self.handler.find_node_by_name('LongName1'), '!123')
+        self.assertEqual(self.handler.find_node_by_name('longname2'), '!456') # Case insensitive
+        
+        # Test short name match
+        self.assertEqual(self.handler.find_node_by_name('SN1'), '!123')
+        self.assertEqual(self.handler.find_node_by_name('sn2'), '!456') # Case insensitive
+        
+        # Test no match
+        self.assertIsNone(self.handler.find_node_by_name('NonExistent'))
+
+    def test_get_all_nodes(self):
+        """Test getting all known nodes."""
+        self.handler.interface.nodes = {
+            123: {'user': {'id': '!123', 'longName': 'Node1', 'shortName': 'N1'}},
+            456: {'user': {'id': '!456', 'longName': 'Node2', 'shortName': 'N2'}}
+        }
+        
+        nodes = self.handler.get_all_nodes()
+        self.assertEqual(len(nodes), 2)
+        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1'}, nodes)
+        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2'}, nodes)
+
+    def test_get_node_list_summary(self):
+        """Test node list summary formatting."""
+        # Test with nodes
+        self.handler.interface.nodes = {
+            123: {'user': {'id': '!123', 'longName': 'Alpha Node', 'shortName': 'ALPH'}},
+            456: {'user': {'id': '!456', 'longName': 'Beta', 'shortName': 'BETA'}}
+        }
+        
+        summary = self.handler.get_node_list_summary()
+        self.assertIn("Neighbor nodes on mesh:", summary)
+        self.assertIn("!123: Alpha Node (ALPH)", summary)
+        self.assertIn("!456: Beta", summary)
+        
+        # Test with no nodes
+        self.handler.interface.nodes = {}
+        summary = self.handler.get_node_list_summary()
+        self.assertEqual(summary, "No neighbors detected on mesh.")
 
 
 class TestMessageQueue(unittest.TestCase):
