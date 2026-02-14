@@ -168,6 +168,7 @@ class MeshtasticHandler:
         self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
         self.last_activity = 0
+        self.connection_healthy = False
 
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
@@ -249,6 +250,7 @@ class MeshtasticHandler:
                 pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
 
                 self.running = True
+                self.connection_healthy = True
                 self.last_activity = time.time()
                 logger.info("✅ Connected to Meshtastic")
                 return True
@@ -283,6 +285,7 @@ class MeshtasticHandler:
         # But connect() handles cleanup of previous subscriptions
         
         self.running = False
+        self.connection_healthy = False
         self.interface = None
     
     def is_connected(self):
@@ -293,6 +296,10 @@ class MeshtasticHandler:
             bool: True if connected and interface is healthy
         """
         if not self.interface or not self.running:
+            return False
+            
+        # Check explicit health flag from connection lost events
+        if not self.connection_healthy:
             return False
             
         # Check if serial/tcp interface is actually alive
@@ -342,8 +349,7 @@ class MeshtasticHandler:
     def _on_connection_lost(self, interface):
         """Handle connection lost event."""
         logger.warning("Meshtastic connection reported LOST!")
-        # We don't set running=False here to allow watchdog in ai_responder to handle it
-        # but we can update a state or log it.
+        self.connection_healthy = False
 
     def send_probe(self):
         """Send an active probe to the radio to verify connection."""

@@ -1107,14 +1107,23 @@ class AIResponder:
                 
                 # Check connection status
                 if not self.meshtastic.is_connected():
-                    # If we've been disconnected for more than 60s, force restart
                     if not self.connection_lost:
                         self.connection_lost = True
                         self.last_activity = current_time # Start tracking disconnect duration
+                        logger.warning("Meshtastic connection lost. Attempting to reconnect...")
                     
-                    if current_time - self.last_activity > 60:
+                    # Try to reconnect every 10 seconds
+                    if int(current_time) % 10 == 0:
+                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                            logger.info("✅ Reconnected to Meshtastic successfully.")
+                            self.connection_lost = False
+                        else:
+                            logger.warning("Still disconnected from Meshtastic...")
+
+                    # Fallback to exit/restart if we can't recover for a while
+                    if current_time - self.last_activity > 120: # Increased to 120s to give more reconnect attempts
                         health_ok = False
-                        reasons.append("Connection lost for >60s")
+                        reasons.append("Connection lost for >120s (Reconnection attempts failed)")
                 else:
                     self.connection_lost = False
 
