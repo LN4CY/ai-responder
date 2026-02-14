@@ -354,6 +354,12 @@ After loading, continue the conversation with `!ai <query>` or start a new sessi
 
 Response: `Deleted conversation 'my_project_discussion' (slot 1)`
 
+**Delete All:**
+```
+!ai -c rm all
+```
+Response: `Deleted 5 conversations.`
+
 ### Channel vs DM Behavior
 
 #### Channel Mode

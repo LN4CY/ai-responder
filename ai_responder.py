@@ -583,6 +583,7 @@ class AIResponder:
                 "!ai -c <id> : Load specific\n"
                 "!ai -c ls : List saved\n"
                 "!ai -c rm <id> : Delete\n"
+                "!ai -c rm all : Wipe all\n"
                 "In Channels:\n"
                 "!ai -n <msg> : New topic"
             )
@@ -652,9 +653,20 @@ class AIResponder:
         elif subcmd == 'rm':
             # Delete conversation
             if len(parts) < 2:
-                self.send_response("Usage: !ai -c rm <name/slot>", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("Usage: !ai -c rm <name/slot/all>", from_node, to_node, channel, is_admin_cmd=False)
                 return
             identifier = parts[1]
+            
+            # Handle "rm all"
+            if identifier.lower() == 'all':
+                success, message = self.conversation_manager.delete_all_conversations(from_node)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                # Also clear active session if in one
+                self.session_manager.end_session(from_node)
+                # And in-memory history cache
+                self.history.pop(from_node, None) 
+                return
+
             success, message = self.conversation_manager.delete_conversation(from_node, identifier)
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
         
