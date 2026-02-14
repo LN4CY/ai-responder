@@ -91,9 +91,9 @@ class AnthropicProvider(BaseProvider):
                 # Add assistant message to tracking
                 messages.append({'role': 'assistant', 'content': content_blocks})
 
-                tool_use_blocks = [b for b in content_blocks if b['type'] == 'tool_use']
-                text_blocks = [b for b in content_blocks if b['type'] == 'text']
-                final_text = "".join([b['text'] for b in text_blocks]).strip()
+                tool_use_blocks = [b for b in content_blocks if b.get('type') == 'tool_use']
+                text_blocks = [b for b in content_blocks if b.get('type') == 'text']
+                final_text = "".join([b.get('text', '') for b in text_blocks]).strip()
 
                 if not tool_use_blocks:
                     return final_text if final_text else "⚠️ No response from Anthropic"

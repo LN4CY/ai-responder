@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 import sys
 import os
+import tempfile
+import shutil
 
 # Add parent directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -10,6 +12,7 @@ from ai_responder import AIResponder
 
 class TestAdaptiveTools(unittest.TestCase):
     def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
         self.mock_config = {
             'current_provider': 'ollama',
             'ollama_model': 'llama3'  # Heuristic should return False for tool support
@@ -17,8 +20,11 @@ class TestAdaptiveTools(unittest.TestCase):
         with patch('ai_responder.MeshtasticHandler'), \
              patch('ai_responder.ConversationManager'), \
              patch('ai_responder.SessionManager'):
-            self.responder = AIResponder()
+            self.responder = AIResponder(history_dir=self.test_dir)
             self.responder.config = self.mock_config
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
 
     @patch('ai_responder.get_provider')
     def test_adaptive_injection_no_tools(self, mock_get_provider):
@@ -64,6 +70,9 @@ class TestAdaptiveTools(unittest.TestCase):
         
         query = "What is my status?"
         from_node = "!user123"
+        
+        # Mock node info to prevent 'MagicMock' in string errors
+        self.responder.meshtastic.get_node_info.return_value = {'user': {'id': '!bot'}}
         
         # Process query
         with patch.object(self.responder, 'send_response'), \

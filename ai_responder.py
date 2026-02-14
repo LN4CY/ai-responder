@@ -936,20 +936,51 @@ class AIResponder:
             if not awareness_enabled:
                 logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
                 self.add_to_history(history_key, 'user', query, node_id=from_node)
-            elif provider.supports_tools:
-                logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
-                tools = self.get_tools()
-                # Inject only minimal context for the user who sent the message
-                remote_metadata = self.meshtastic.get_node_metadata(from_node)
-                if remote_metadata:
-                    self.add_to_history(history_key, 'user', query, node_id=from_node, 
-                                      metadata=f"User environment (Node: {from_node}):\n{remote_metadata}")
-                else:
-                    self.add_to_history(history_key, 'user', query, node_id=from_node)
             else:
-                logger.info(f"💾 Provider '{provider.name}' is tool-blind. Injecting legacy metadata block.")
-                final_query = self._inject_legacy_metadata(query, from_node)
-                self.add_to_history(history_key, 'user', query, node_id=from_node)
+                # Awareness is enabled - determine if we need metadata refresh
+                # Standard logic: Inject on first message or if refresh is pending
+                is_first_msg = len(self.history.get(history_key, [])) == 0
+                needs_refresh = (from_node in self._refresh_metadata_nodes)
+                
+                # Intelligent logic: Inject if keywords (battery, location, status) or node names are mentioned
+                keywords = ['battery', 'voltage', 'location', 'where', 'snr', 'rssi', 'distance', 'away', 'status']
+                is_keyword_query = any(k in query.lower() for k in keywords)
+                
+                # Check for mentions of bot or neighbors
+                mentions_bot = False
+                my_node_info = self.meshtastic.get_node_info()
+                if my_node_info:
+                    bot_names = [
+                        my_node_info.get('user', {}).get('longName', '').lower(),
+                        my_node_info.get('user', {}).get('shortName', '').lower(),
+                        'bot', 'you'
+                    ]
+                    mentions_bot = any(n and n in query.lower() for n in bot_names if n)
+
+                must_refresh = is_first_msg or needs_refresh or is_keyword_query or mentions_bot
+                
+                combined_metadata = None
+                if must_refresh:
+                    # Fetch dual metadata for context
+                    my_node_info = self.meshtastic.get_node_info() or {}
+                    my_id = my_node_info.get('user', {}).get('id')
+                    local_metadata = self.meshtastic.get_node_metadata(my_id)
+                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
+                    combined_metadata = self._format_dual_metadata(local_metadata, remote_metadata)
+                    
+                    # Clear refresh flag
+                    if from_node in self._refresh_metadata_nodes:
+                        self._refresh_metadata_nodes.remove(from_node)
+                
+                if provider.supports_tools:
+                    logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
+                    tools = self.get_tools()
+                    # Log to history (metadata may be None if already injected/cached)
+                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                else:
+                    logger.info(f"💾 Provider '{provider.name}' is tool-blind. Injecting legacy metadata block.")
+                    final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
+                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
 
             # 3. Add to history logging
             current_session = self.session_manager.get_session_name(from_node)
@@ -984,12 +1015,11 @@ class AIResponder:
                 self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                 self.session_manager.update_activity(from_node)
             
-            # 8. Send response
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
             
         except Exception as e:
             logger.error(f"Error processing AI query: {e}")
-            self.send_response(f"Error: {str(e)}", from_node, to_node, channel, is_admin_cmd=False)
+            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel, is_dm=is_dm)
     
     # ==================== Meshtastic Message Handler ====================
     
