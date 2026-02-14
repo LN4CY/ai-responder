@@ -104,13 +104,16 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.running = True
 
     def test_get_node_metadata(self):
-        """Test extraction of node metadata (telemetry, location, battery)."""
+        """Test extraction of node metadata (telemetry, location, battery, names)."""
         node_id = "!1234abcd"
         node_int = int("1234abcd", 16)
         self.handler.interface.nodes = {
             node_int: {
                 'num': node_int,
+                'user': {'id': node_id, 'longName': 'TestNode', 'shortName': 'TN'},
                 'position': {'latitude': 40.7, 'longitude': -74.0},
+                'snr': 5.5,
+                'rssi': -80,
                 'deviceMetrics': {'batteryLevel': 85},
                 'environmentMetrics': {'temperature': 22.5, 'barometricPressure': 1013.2}
             }
@@ -118,6 +121,10 @@ class TestHandlerMetadata(unittest.TestCase):
         
         metadata = self.handler.get_node_metadata(node_id)
         self.assertIsNotNone(metadata)
+        self.assertIn("Name: TestNode", metadata)
+        self.assertIn("ShortName: TN", metadata)
+        self.assertIn("SNR: 5.5dB", metadata)
+        self.assertIn("RSSI: -80dBm", metadata)
         self.assertIn("Location: 40.7000, -74.0000", metadata)
         self.assertIn("Battery: 85%", metadata)
         self.assertIn("Temp: 22.5C", metadata)

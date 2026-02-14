@@ -599,6 +599,15 @@ class MeshtasticHandler:
                 
             metadata_parts = []
             
+            # 0. Identification
+            user = node_info.get('user', {})
+            long_name = user.get('longName')
+            short_name = user.get('shortName')
+            if long_name:
+                metadata_parts.append(f"Name: {long_name}")
+            if short_name:
+                metadata_parts.append(f"ShortName: {short_name}")
+            
             # 1. Location
             pos = node_info.get('position', {})
             lat = pos.get('latitude')
@@ -626,7 +635,15 @@ class MeshtasticHandler:
                 # Convert seconds to simpler format if needed, but seconds is fine for AI
                 metadata_parts.append(f"Uptime: {uptime}s")
 
-            # 3. Environment Metrics
+            # 3. Signal Strength
+            snr = node_info.get('snr')
+            rssi = node_info.get('rssi')
+            if snr is not None:
+                metadata_parts.append(f"SNR: {snr:.1f}dB")
+            if rssi is not None:
+                metadata_parts.append(f"RSSI: {rssi}dBm")
+
+            # 4. Environment Metrics
             # First check direct node info, then fall back to our internal cache
             env = node_info.get('environmentMetrics', {})
             if not env and node_id in self.env_telemetry_cache:

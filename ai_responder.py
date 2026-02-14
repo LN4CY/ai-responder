@@ -256,7 +256,14 @@ class AIResponder:
         if remote_metadata:
             parts.append(f"[User: {remote_metadata}]")
         if local_metadata:
-            parts.append(f"[Bot: {local_metadata}]")
+            # Try to get bot's own name for a descriptive label
+            name = "Bot"
+            try:
+                my_info = self.meshtastic.get_node_info()
+                if my_info:
+                    name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
+            except: pass
+            parts.append(f"[{name}: {local_metadata}]")
         
         return " ".join(parts) if parts else None
     
@@ -857,6 +864,9 @@ class AIResponder:
             is_session = self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
             
+            # Detect references in user query (Moved up for self-awareness logic)
+            referenced_nodes = self._detect_node_references(query)
+            
             # 2. Dual Metadata Injection Logic
             local_metadata = None  # Bot's own status
             remote_metadata = None  # User's environmental data
@@ -864,16 +874,18 @@ class AIResponder:
             if is_dm:
                 history_exists = history_key in self.history and len(self.history[history_key]) > 0
                 
-                # Fetch LOCAL node metadata (bot's own status) on session start
-                if not history_exists or (is_session and not history_exists):
+                # Bot identification
+                my_node_info = self.meshtastic.get_node_info()
+                my_id = my_node_info.get('user', {}).get('id') if my_node_info else None
+                
+                # Fetch LOCAL node metadata (bot's own status) on session start OR if bot is mentioned
+                bot_mentioned = (my_id and my_id in referenced_nodes)
+                if not history_exists or (is_session and not history_exists) or bot_mentioned:
                     try:
-                        my_node_info = self.meshtastic.get_node_info()
-                        if my_node_info:
-                            my_node_id = my_node_info.get('user', {}).get('id')
-                            if my_node_id:
-                                local_metadata = self.meshtastic.get_node_metadata(my_node_id)
-                                if local_metadata:
-                                    logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
+                        if my_id:
+                            local_metadata = self.meshtastic.get_node_metadata(my_id)
+                            if local_metadata:
+                                logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
                     except Exception as e:
                         logger.warning(f"Failed to fetch local node metadata: {e}")
                 
@@ -923,8 +935,7 @@ class AIResponder:
             # 4. Extract Multi-Node Metadata and Grounding
             additional_context = []
             
-            # Detect references in user query
-            referenced_nodes = self._detect_node_references(query)
+            # referenced_nodes already detected above
             
             # Check for general mesh status queries
             mesh_keywords = ['mesh', 'nodes', 'neighbors', 'who is online', 'list nodes', 'network']

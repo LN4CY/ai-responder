@@ -585,6 +585,46 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Timed out", mock_send.call_args[0][0])
 
+    def test_bot_metadata_injection(self):
+        """Test that bot's own metadata includes name and is triggered by reference."""
+        from_node = "!sender"
+        to_node = "!bot"
+        
+        # 1. Mock bot info (used by AIResponder internally to get its own ID and name)
+        self.responder.meshtastic.get_node_info.return_value = {
+            'user': {'id': '!bot', 'longName': 'MockBot', 'shortName': 'MB'},
+            'deviceMetrics': {'batteryLevel': 88}
+        }
+        
+        # 2. Mock get_node_metadata to return a string (simulating real handler output)
+        self.responder.meshtastic.get_node_metadata.side_effect = lambda node_id: \
+            f"(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
+
+        # 3. Test metadata formatting (Direct check)
+        meta = self.responder.meshtastic.get_node_metadata("!bot")
+        self.assertIn("Name: MockBot", meta)
+        self.assertIn("SNR: 5.5dB", meta)
+        self.assertIn("RSSI: -80dBm", meta)
+        self.assertIn("Battery: 88%", meta)
+
+        # 4. Test triggering by name reference
+        self.responder.history = {f"DM:{from_node}": [{'role': 'user', 'content': 'hi'}]}
+        # Mock find_node_by_name to return !bot when "MockBot" is used
+        self.responder.meshtastic.find_node_by_name.side_effect = lambda name: "!bot" if name.lower() == "mockbot" else None
+        
+        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+             # Query referencing bot by name
+             self.responder._process_ai_query_thread("How are you, MockBot?", from_node, to_node, 0, is_dm=True)
+             
+             history_key = f"DM:{from_node}"
+             # The metadata is injected into the USER message, which is at index -2 (before assistant response "OK")
+             latest_user_msg = self.responder.history[history_key][-2]['content']
+             
+             self.assertIn("[MockBot: (Name: MockBot", latest_user_msg)
+             self.assertIn("SNR: 5.5dB", latest_user_msg)
+             self.assertIn("RSSI: -80dBm", latest_user_msg)
+             self.assertIn("Battery: 88%", latest_user_msg)
+
 class TestAIProviders(unittest.TestCase):
     """Test AI Provider error handling and edge cases."""
     
