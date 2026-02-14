@@ -54,7 +54,7 @@ System prompts are loaded from external text files, allowing easy customization 
 The responder uses **AI Function Calling** (Adaptive Tools) to proactively query the network. This eliminates noisy metadata injection and allows the AI to only fetch what it needs.
 
 **Provider Implementation:**
-- **Gemini**: Native function calling with multi-turn orchestration.
+- **Gemini**: Native function calling with multi-turn orchestration and **Dynamic Grounding Switch** (simulated mixed mode).
 - **OpenAI / Anthropic**: Multi-turn tool loops using structured API requests.
 - **Ollama**: Conditional tool support (Llama 3.1+, Nemo) with text fallback.
 
