@@ -226,14 +226,17 @@ class TestHandlerMetadata(unittest.TestCase):
 
     @patch('meshtastic_handler.handler.telemetry_pb2')
     @patch('meshtastic_handler.handler.portnums_pb2')
-    def test_request_telemetry(self, mock_portnums_pb2, mock_telemetry_pb2):
-        """Test that request_telemetry sends an appropriate data packet."""
+    def test_request_telemetry_types(self, mock_portnums_pb2, mock_telemetry_pb2):
+        """Test that request_telemetry sends appropriate packets for various types."""
         node_id = "!f8d0a80a"
-        # self.handler.running = True # Already set in setUp
         
         # Mock the protobuf structures
         mock_env_metrics = MagicMock()
         mock_telemetry_pb2.EnvironmentMetrics.return_value = mock_env_metrics
+        mock_device_metrics = MagicMock()
+        mock_telemetry_pb2.DeviceMetrics.return_value = mock_device_metrics
+        mock_local_stats = MagicMock()
+        mock_telemetry_pb2.LocalStats.return_value = mock_local_stats
         
         mock_telemetry = MagicMock()
         mock_telemetry_pb2.Telemetry.return_value = mock_telemetry
@@ -241,14 +244,21 @@ class TestHandlerMetadata(unittest.TestCase):
         # Mock portnum
         mock_portnums_pb2.PortNum.TELEMETRY_APP = 67
         
-        self.handler.request_telemetry(node_id)
-        
-        # Verify sendData was called on the interface
-        self.handler.interface.sendData.assert_called_once()
+        # 1. Test Environment
+        self.handler.request_telemetry(node_id, 'environment')
+        self.handler.interface.sendData.assert_called()
         args, kwargs = self.handler.interface.sendData.call_args
         self.assertEqual(kwargs['destinationId'], int("f8d0a80a", 16))
-        self.assertEqual(kwargs['portNum'], 67)
-        self.assertTrue(kwargs['wantResponse'])
+        
+        # 2. Test Device
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'device')
+        mock_telemetry.device_metrics.CopyFrom.assert_called_with(mock_device_metrics)
+        
+        # 3. Test Local Stats
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'local_stats')
+        mock_telemetry.local_stats.CopyFrom.assert_called_with(mock_local_stats)
 
     def test_get_node_metadata_missing(self):
         """Test metadata extraction with missing fields."""

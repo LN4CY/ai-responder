@@ -364,23 +364,31 @@ class MeshtasticHandler:
             logger.warning(f"Failed to send probe: {e}")
             return False
 
-    def request_telemetry(self, destination_id):
+    def request_telemetry(self, destination_id, telemetry_type='environment'):
         """
-        Request telemetry from a specific node.
+        Request specific telemetry from a node.
         
-        This sends an empty telemetry packet with wantResponse=True
-        to trigger an asynchronous update from the remote node.
+        Args:
+            destination_id: Target node ID.
+            telemetry_type: 'device', 'environment', or 'local_stats'.
+            
+        Returns:
+            bool: True if request sent successfully.
         """
         if not self.interface or not self.running:
             logger.warning(f"Cannot request telemetry: Not connected")
             return False
             
         try:
-            # Create an empty environmental telemetry packet
-            # MeshMonitor uses an empty EnvironmentMetrics packet to request a refresh
-            env_metrics = telemetry_pb2.EnvironmentMetrics()
             telemetry = telemetry_pb2.Telemetry()
-            telemetry.environment_metrics.CopyFrom(env_metrics)
+            
+            # Map type to protobuf field
+            if telemetry_type == 'device':
+                telemetry.device_metrics.CopyFrom(telemetry_pb2.DeviceMetrics())
+            elif telemetry_type == 'local_stats':
+                telemetry.local_stats.CopyFrom(telemetry_pb2.LocalStats())
+            else: # Default to environment
+                telemetry.environment_metrics.CopyFrom(telemetry_pb2.EnvironmentMetrics())
             
             payload = telemetry.SerializeToString()
             
@@ -389,7 +397,7 @@ class MeshtasticHandler:
             if isinstance(destination_id, str) and destination_id.startswith('!'):
                 dest = int(destination_id[1:], 16)
             
-            logger.info(f"📊 Requesting environmental telemetry from {destination_id} ({dest})")
+            logger.info(f"📊 Requesting {telemetry_type} telemetry from {destination_id} ({dest})")
             self.interface.sendData(
                 payload,
                 destinationId=dest,
@@ -398,7 +406,7 @@ class MeshtasticHandler:
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to request telemetry from {destination_id}: {e}")
+            logger.error(f"Failed to request {telemetry_type} telemetry from {destination_id}: {e}")
             return False
 
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):

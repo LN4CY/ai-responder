@@ -892,6 +892,28 @@ class AIResponder:
                     }
                 },
                 "handler": self._get_node_details_tool
+            },
+            "request_node_telemetry": {
+                "declaration": {
+                    "name": "request_node_telemetry",
+                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. Useful if data is stale.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "node_id_or_name": {
+                                "type": "STRING",
+                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
+                            },
+                            "telemetry_type": {
+                                "type": "STRING",
+                                "description": "Type of telemetry to request: 'device', 'environment', or 'local_stats'.",
+                                "enum": ["device", "environment", "local_stats"]
+                            }
+                        },
+                        "required": ["node_id_or_name", "telemetry_type"]
+                    }
+                },
+                "handler": self._request_node_telemetry_tool
             }
         }
 
@@ -909,6 +931,48 @@ class AIResponder:
         if not metadata:
             return f"Error: No information available for {node_id}."
         return metadata
+
+    def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
+        """Internal handler for request_node_telemetry tool with short polling."""
+        node_id = node_id_or_name
+        if not node_id.startswith('!'):
+            found_id = self.meshtastic.find_node_by_name(node_id_or_name)
+            if found_id:
+                node_id = found_id
+            else:
+                return f"Error: Node '{node_id_or_name}' not found."
+
+        # 1. Send Request
+        logger.info(f"📡 AI triggering telemetry refresh ({telemetry_type}) for {node_id}")
+        self.meshtastic.request_telemetry(node_id, telemetry_type)
+
+        # 2. Short Poll (Wait up to 15 seconds for data to arrive in cache)
+        # We check the cache every 3 seconds
+        poll_start = time.time()
+        poll_timeout = 15 
+        
+        while time.time() - poll_start < poll_timeout:
+            time.sleep(3)
+            # Fetch fresh metadata
+            metadata = self.meshtastic.get_node_metadata(node_id)
+            
+            # Check if the requested type is present in the formatted string
+            # This is a bit heuristic but works with our string-based get_node_metadata
+            found_field = False
+            if telemetry_type == 'environment' and ('Temp:' in metadata or 'Hum:' in metadata):
+                found_field = True
+            elif telemetry_type == 'device' and 'Battery:' in metadata:
+                found_field = True
+            elif telemetry_type == 'local_stats' and 'Uptime:' in metadata: # Uptime is in local_stats too
+                found_field = True
+                
+            if found_field:
+                return f"Success! New telemetry received:\n{metadata}"
+
+        # 3. Timeout fallback
+        return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
+                "The mesh is slow—please wait about 60 seconds and ask me again. "
+                "I should have the data in my memory by then.")
 
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""
