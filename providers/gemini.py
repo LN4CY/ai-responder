@@ -25,9 +25,15 @@ class GeminiProvider(BaseProvider):
         """Make internal HTTP request to Gemini API."""
         return requests.post(url, json=payload, timeout=30)
 
-    def get_response(self, prompt, history=None, context_id=None, location=None):
-        """Get response from Gemini with grounding tools and optional fallback."""
-        if not config.GEMINI_API_KEY:
+    @property
+    def supports_tools(self):
+        """Gemini Flash/Pro models support function calling."""
+        return True
+
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
+        """Get response from Gemini with grounding tools, custom tools, and optional fallback."""
+        api_key = self.config.get('gemini_api_key', config.GEMINI_API_KEY)
+        if not api_key:
             return "Error: Gemini API key missing."
         
         system_prompt = load_system_prompt('gemini', context_id=context_id)
@@ -47,29 +53,30 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        model = config.GEMINI_MODEL
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={config.GEMINI_API_KEY}"
+        model = self.config.get('gemini_model', config.GEMINI_MODEL)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         
-        # 1. Prepare Grounding Payload
-        tools = []
-        if config.GEMINI_SEARCH_GROUNDING:
-            tools.append({"google_search": {}})
-        if config.GEMINI_MAPS_GROUNDING:
-            tools.append({"google_maps": {}})
+        # 1. Prepare Tools Payload
+        gemini_tools = []
+        if self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
+            gemini_tools.append({"google_search": {}})
+        if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
+            gemini_tools.append({"google_maps": {}})
             
-        payload = {"contents": contents}
+        # Add custom Meshtastic tools if provided
+        custom_tool_map = {}
         if tools:
-            payload["tools"] = tools
-            tool_config = {}
-            if config.GEMINI_MAPS_GROUNDING and location and 'latitude' in location and 'longitude' in location:
-                tool_config["retrieval_config"] = {
-                    "lat_lng": {
-                        "latitude": location['latitude'],
-                        "longitude": location['longitude']
-                    }
-                }
-            if tool_config:
-                payload["tool_config"] = tool_config
+            function_declarations = []
+            for t_name, t_info in tools.items():
+                function_declarations.append(t_info['declaration'])
+                custom_tool_map[t_name] = t_info['handler']
+            
+            if function_declarations:
+                gemini_tools.append({"function_declarations": function_declarations})
+
+        payload = {"contents": contents}
+        if gemini_tools:
+            payload["tools"] = gemini_tools
 
         # 2. Execute Request with Retries and Fallback
         max_retries = 3
@@ -82,69 +89,103 @@ class GeminiProvider(BaseProvider):
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                 
-                logger.info(f"Calling Gemini model: {model} (Grounding: {bool(tools)})")
-                response = self._make_request(url, payload)
+                logger.info(f"Calling Gemini model: {model} (Tools: {len(gemini_tools)})")
                 
-                # Check for transient errors to retry
-                if response.status_code in [500, 502, 503, 504] and attempt < max_retries:
-                    logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
-                    continue
-
-                # 3. Handle Unsupported Tool Fallback (Surgical Degraded Service)
-                if response.status_code == 400 and tools:
-                    error_data = response.json()
-                    error_msg = error_data.get('error', {}).get('message', '').lower()
-                    logger.warning(f"⚠️ Grounding issue detected: {error_msg}")
-
-                    # Case A: Google Maps is specifically unsupported
-                    if "google maps tool is not enabled" in error_msg or "google_maps" in error_msg:
-                        logger.warning(f"📍 Model {model} rejects Google Maps. Retrying with Search only.")
-                        new_tools = [t for t in tools if "google_maps" not in t]
-                        if new_tools:
-                            payload = payload.copy()
-                            payload["tools"] = new_tools
-                            payload.pop("tool_config", None) 
-                            # Note: This is an internal retry/fallback, not counted against max_retries
-                            response = self._make_request(url, payload)
+                # Turn loop for function calling
+                max_turns = 5
+                for turn in range(max_turns):
+                    response = self._make_request(url, payload)
+                    
+                    # Check for transient errors to retry (outer loop)
+                    if response.status_code in [500, 502, 503, 504] and attempt < max_retries:
+                        logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
+                        break # break turn loop, fall back to attempt retry
+                    
+                    # Process Success
+                    if response.status_code == 200:
+                        data = response.json()
+                        candidates = data.get('candidates', [])
+                        if not candidates:
+                            return "⚠️ No response generated"
+                        
+                        part = candidates[0]['content']['parts'][0]
+                        
+                        # A. Handle Function Call
+                        if "functionCall" in part:
+                            f_call = part["functionCall"]
+                            f_name = f_call["name"]
+                            f_args = f_call.get("args", {})
+                            
+                            logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                            
+                            if f_name in custom_tool_map:
+                                try:
+                                    result = custom_tool_map[f_name](**f_args)
+                                    logger.info(f"✅ Tool result: {str(result)[:100]}...")
+                                except Exception as e:
+                                    logger.error(f"❌ Error executing tool {f_name}: {e}")
+                                    result = f"Error: {str(e)}"
+                            else:
+                                logger.warning(f"⚠️ AI requested unknown tool: {f_name}")
+                                result = "Error: Tool not found"
+                            
+                            # Add function call and response to contents
+                            payload["contents"].append({
+                                "role": "model",
+                                "parts": [part]
+                            })
+                            payload["contents"].append({
+                                "role": "function",
+                                "parts": [{
+                                    "functionResponse": {
+                                        "name": f_name,
+                                        "response": {"name": f_name, "content": result}
+                                    }
+                                }]
+                            })
+                            continue # Next turn in loop
+                        
+                        # B. Handle Text Response
+                        if "text" in part:
+                            text = part["text"].strip()
+                            
+                            # Check for grounding feedback
+                            grounding = candidates[0].get('groundingMetadata', {})
+                            if grounding and (grounding.get('webSearchQueries') or grounding.get('groundingChunks')):
+                                logger.info(f"Gemini used search grounding")
+                                text = f"🌐 {text}"
+                            
+                            return text
+                        
+                        return "⚠️ Unexpected response part from Gemini"
+                    
+                    # Handle Errors (Surgical Fallback or Terminal)
+                    elif response.status_code == 400 and gemini_tools:
+                        # ... grounding fallback logic ...
+                        error_data = response.json()
+                        error_msg = error_data.get('error', {}).get('message', '').lower()
+                        logger.warning(f"⚠️ Tool configuration issue: {error_msg}")
+                        
+                        # Strip problematic tools and retry (internal retry)
+                        if "google_maps" in error_msg:
+                            gemini_tools = [t for t in gemini_tools if "google_maps" not in t]
                         else:
-                            payload = payload.copy()
+                            # If it's not Maps, maybe it's function_declarations or Search
+                            # For safety, let's just strip all tools if it keeps failing
+                            gemini_tools = []
+                        
+                        if not gemini_tools:
                             payload.pop("tools", None)
-                            payload.pop("tool_config", None)
-                            response = self._make_request(url, payload)
-
-                    # Case B: General tool rejection or config rejection
-                    elif any(kw in error_msg for kw in ["tool is not supported", "unknown name", "google_search_retrieval"]):
-                        logger.warning(f"⚠️ Model {model} rejects grounding configuration. Falling back to standard chat.")
-                        payload = payload.copy()
-                        payload.pop("tools", None)
-                        payload.pop("tool_config", None)
-                        response = self._make_request(url, payload)
-
-                # 4. Process Success or Terminal Error
-                if response.status_code == 200:
-                    data = response.json()
-                    candidates = data.get('candidates', [])
-                    if not candidates:
-                        return "⚠️ No response generated (possibly filtered)"
+                        else:
+                            payload["tools"] = gemini_tools
+                        
+                        continue # Internal retry turn
                     
-                    text = candidates[0]['content']['parts'][0]['text'].strip()
-                    
-                    # Check for grounding feedback
-                    grounding = candidates[0].get('groundingMetadata', {})
-                    if grounding and (grounding.get('webSearchQueries') or grounding.get('groundingChunks')):
-                        logger.info(f"Gemini used search grounding")
-                        text = f"🌐 {text}"
-                    
-                    return text
-                else:
-                    try:
-                        error_info = response.json().get('error', {})
-                        error_msg = error_info.get('message', 'Unknown error')
-                        logger.error(f"Gemini API error ({response.status_code}): {error_msg}")
-                        return self.format_error(response.status_code, error_msg)
-                    except:
-                        return f"❌ HTTP {response.status_code} error."
-
+                    else:
+                        # Terminal error for this attempt
+                        break 
+                
+                
             except (requests.exceptions.RequestException, Exception) as e:
                 if attempt < max_retries:
                     logger.warning(f"⚠️ Gemini request failed: {e}. Retrying...")

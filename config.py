@@ -11,7 +11,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-# Environment Variables
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -19,6 +18,7 @@ MESHTASTIC_PORT = int(os.getenv('MESHTASTIC_PORT', '4403'))
 ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
 AI_PROVIDER = os.getenv('AI_PROVIDER', '')
 ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
+MESHTASTIC_AWARENESS = os.getenv('MESHTASTIC_AWARENESS', 'true').lower() == 'true'
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
@@ -53,30 +53,28 @@ SYSTEM_PROMPT_ONLINE_FILE = os.getenv('SYSTEM_PROMPT_ONLINE_FILE', 'system_promp
 
 DEFAULT_SYSTEM_PROMPT_LOCAL = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
-- You are strictly limited to the history provided in this specific conversation.
-- Each device and conversation is a separate sandbox. Never leak data between them.
+- Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-MESH AWARENESS & METADATA:
-- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
-- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
-- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
-- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
-- Use this data specifically to answer telemetry, location, or network status questions.
-- Keep responses concise (under 200 chars) for mesh efficiency."""
+PERSONA:
+- Keep responses concise (under 200 chars) for mesh efficiency.
+- You receive [Node ID] and minimal environment metadata with user messages."""
+
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
-- You are strictly limited to the history provided in this specific conversation.
-- Each device and conversation is a separate sandbox. Never leak data between them.
+- Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-MESH AWARENESS & METADATA:
-- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
-- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
-- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
-- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
-- Use this data specifically to answer telemetry, location, or network status questions.
-- Keep responses concise (under 200 chars) for mesh efficiency."""
+MESHTASTIC TOOLS:
+- You have access to real-time tools to query the Meshtastic network.
+- get_my_info: ALWAYS call this if asked about your identity, name, battery, SNR, or status. Do NOT guess your name from previous context if this tool is available.
+- get_mesh_nodes: Use this to get a list of all nodes currently seen on the mesh. Use this first if a user asks "who is online" or if you need to find a Node ID for a specific name.
+- get_node_details(node_id_or_name): Use this to get telemetry for a specific node. You can pass a name (e.g. "Alice") or a Hex ID (e.g. "!1234abcd").
+- LOGIC: If a user asks about a node by name and you don't have its ID, call `get_mesh_nodes` first, find the ID, then call `get_node_details`.
+
+RESPONSE STYLE:
+- Keep responses concise (under 200 chars) for mesh efficiency.
+- User messages are tagged [Node ID]. Use tools for all other mesh data."""
 
 # Meshtastic Configuration
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
@@ -139,7 +137,8 @@ class Config:
         return {
             'allowed_channels': [0],
             'admin_nodes': [],
-            'current_provider': 'ollama'
+            'current_provider': 'ollama',
+            'meshtastic_awareness': True
         }
     
     def save(self):

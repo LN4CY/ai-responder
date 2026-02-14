@@ -1,46 +1,38 @@
-# PR: Connection Resiliency & Radio Watchdog
+# PR: AI Tool Use & Connection Resiliency
 
-This PR implements a robust health check and reconnection system adopted from the `mqtt-proxy` project. It addresses the issue where `ai-responder` fails to reconnect after the Meshtastic virtual node (`meshmonitor`) is restarted.
+This major update introduces **AI Function Calling** for proactive mesh interaction and implements a robust **Radio Watchdog** system for stable connectivity.
 
 ## Key Changes
 
-### 📡 Radio Watchdog Logic
-- Added `last_activity` tracking to `MeshtasticHandler` which updates on every received packet.
-- Implemented a "Radio Watchdog" in the main loop of `ai_responder.py`.
-- If the radio is silent for more than 5 minutes (`HEALTH_CHECK_ACTIVITY_TIMEOUT`), the bot now sends an active probe (Position Query).
-- If the probe is not acknowledged within 30 seconds, the bot considers the connection "zombie" and exits with `sys.exit(1)`.
+### 🛠️ AI Tool Use (Function Calling)
+- **Gemini Integration**: Implemented a multi-turn function calling loop in `GeminiProvider`.
+- **Meshtastic Tools**: Defined the following tools for the AI to query the network:
+    - `get_my_info`: Returns the bot's own identity, status, and telemetry.
+    - `get_mesh_nodes`: Returns a summary of neighboring nodes currently seen on the mesh.
+    - `get_node_details`: Returns telemetry for a specific node by name or ID.
+- **Strategic Persona**: Refined the system prompt to instruct the AI on "Always Call" identity rules and tool-chaining strategies (e.g., search mesh → resolve ID → get telemetry).
+- **Metadata Refactoring**: Removed over 150 lines of noisy, reactive metadata injection logic. The AI now queries what it needs, when it needs it.
 
-### 🔒 Session Isolation & Location Accuracy
-- **Strict DM Detection**: The bot now strictly identifies DMs by checking `to_node == my_id`. Active DM sessions no longer capture channel traffic.
-- **Session Indicator Isolation**: Responses to channel `!ai` commands no longer include the `[🟢 session_name]` prefix.
-- **Dynamic Node Metadata**: Improved `get_node_info` to pull dynamic data (Position, Metrics) from the Meshtastic `nodes` database for the local node.
-- **Robust Node Lookups**: Added a centralized `_get_node_by_id` helper to correctly handle hex string nodes (e.g., `!1234abcd`).
+### 📡 Radio Watchdog & Resiliency
+- Implemented a "Radio Watchdog" that sends active probes if the radio is silent for 5 minutes.
+- Added a 10s reconnection loop that automatically recovers explicit Meshtastic connection losses.
+- Tracks `connection_healthy` state via library events to detect "zombie" connections.
 
-### 🔍 Mesh Discovery & Multi-Node Queries
-- **Advanced Search**: Added `find_node_by_name` to search nodes by Long/Short name (case-insensitive).
-- **Multi-Node Detection**: AI now detects hex IDs and names in prompts and injects telemetry for all referenced nodes.
-- **Mesh Status**: Users can ask "who is online?" or "list nodes" to see a summary of all active neighbors.
-- **System Prompt Updates**: Revised prompts to guide AI on interpreting multi-node metadata.
-
-### 🔄 Prolonged Connection Loss Handling
-- Detects if the Meshtastic interface reports being disconnected for more than 60 seconds.
-- Forces a process exit if the connection is unrecoverable, relying on the Docker restart policy (`restart: unless-stopped`) to perform a clean reconnection.
-
-### 🏥 Health Diagnostic Improvements
-- Enhanced `/tmp/healthy` heartbeat management.
-- The heartbeat file is now immediately deleted upon any health check failure, ensuring the Docker healthcheck accurately reflects the system state.
-
-### ⚙️ Enhanced Configuration
-- Added new environment variables to `config.py` for fine-tuning the watchdog behavior:
-  - `HEALTH_CHECK_ACTIVITY_TIMEOUT` (Default: 300s)
-  - `HEALTH_CHECK_PROBE_INTERVAL` (Default: 150s)
+### 🔄 Session Isolation & Management
+- **Strict DM Detection**: Sessions are now strictly isolated to DMs (`to_node == my_id`).
+- **Improved History**: Centralized node lookup logic for reliable context management across hex IDs and names.
 
 ## Verification
-- Added new unit tests in `tests/test_handler.py` to verify:
-  - Activity tracking on packet reception.
-  - Radio probe transmission logic.
-- All 14 tests in `tests/test_handler.py` are passing.
-- Manual verification confirms `/tmp/healthy` is correctly managed.
+
+### 🧪 Automated Tests
+- `tests/test_reconnection.py`: Verifies automated recovery of lost connections.
+- `tests/test_tools.py`: Verifies Gemini's function calling logic and Meshtastic tool handlers.
+
+### 📟 Hardware Verification (Live Node)
+- **Environment**: Tested on `COM3` with channel `LN4CY-01` (Indx 1).
+- **Identity**: AI correctly called `get_my_info` to identify itself as `L4TA` and reported battery status.
+- **Mesh Discovery**: AI correctly called `get_mesh_nodes` and reported seeing 81 nodes on the network.
+- **Stability**: Confirmed real-time tool orchestration and connection recovery on physical hardware.
 
 ## Impact
-This change significantly improves the "hands-off" reliability of the `ai-responder` in complex network environments where virtual nodes may restart or become unresponsive.
+This PR significantly elevates the bot's intelligence and reliability. It transitions from a reactive "keyword-guessing" state to a proactive, tool-aware agent capable of maintaining stable connections in complex RF environments.
