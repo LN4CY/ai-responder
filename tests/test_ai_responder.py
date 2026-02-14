@@ -724,6 +724,39 @@ class TestAIProviders(unittest.TestCase):
                     self.assertEqual(list(second_call_payload['tools'][0].keys())[0], 'google_search')
 
     @patch('requests.post')
+    @patch('time.sleep', return_value=None)
+    def test_gemini_retry_logic(self, mock_sleep, mock_post):
+        """Test that Gemini provider retries on 503 errors."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # 1. First two calls fail with 503
+        mock_503 = MagicMock()
+        mock_503.status_code = 503
+        mock_503.json.return_value = {"error": {"message": "Service Unavailable"}}
+        
+        # 2. Third call succeeds
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        mock_success.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Succeeded after retries"}]}}]
+        }
+        
+        mock_post.side_effect = [mock_503, mock_503, mock_success]
+        
+        with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+            
+            # Verify attempts and result
+            self.assertEqual(mock_post.call_count, 3)
+            self.assertEqual(response, "Succeeded after retries")
+            
+            # Verify exponential backoff: 2s then 4s
+            self.assertEqual(mock_sleep.call_count, 2)
+            mock_sleep.assert_any_call(2)
+            mock_sleep.assert_any_call(4)
+
+    @patch('requests.post')
     def test_ollama_error_handling(self, mock_post):
         """Test Ollama provider error scenarios."""
         from providers.ollama import OllamaProvider
