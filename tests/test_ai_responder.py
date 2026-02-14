@@ -131,6 +131,44 @@ class TestAIResponder(unittest.TestCase):
                 
                 self.assertIn("The mesh is slow—please wait about 60 seconds", result)
 
+    def test_session_isolation(self):
+        """Test that active sessions are isolated to DMs and don't spill to channels."""
+        user_id = "!12345678"
+        # 1. Start a session for the user
+        self.responder.session_manager.start_session(user_id, "TestSession")
+        
+        # 2. Check history key for DM (should return session name)
+        dm_key = self.responder._get_history_key(user_id, 0, is_dm=True)
+        self.assertEqual(dm_key, "TestSession")
+        
+        # 3. Check history key for Channel (should return channel-specific key, NOT session)
+        channel_key = self.responder._get_history_key(user_id, 1, is_dm=False)
+        self.assertEqual(channel_key, f"Channel:1:{user_id}")
+        self.assertNotEqual(channel_key, "TestSession")
+
+    def test_session_name_sanitization(self):
+        """Test that bad session names are sanitized correctly."""
+        user_id = "!sanitizeme"
+        
+        # 1. Names with path traversal / bad chars
+        bad_name = "../etc/passwd\\test"
+        success, msg, sanitized_name = self.responder.session_manager.start_session(user_id, bad_name)
+        
+        # Expected: alphanumeric/underscore/hyphen only
+        self.assertEqual(sanitized_name, "etcpasswdtest")
+        self.assertIn("Session started: 'etcpasswdtest'", msg)
+        
+        # 2. Check history path for this sanitized name
+        path = self.responder._get_history_path(sanitized_name)
+        self.assertTrue(path.endswith("etcpasswdtest.json"))
+        # Ensure no path traversal in the final result
+        self.assertNotIn("..", path)
+        
+        # 3. Completely invalid name
+        empty_name = "!!!@@@###"
+        _, _, name3 = self.responder.session_manager.start_session(user_id, empty_name)
+        self.assertEqual(name3, "unnamed_session")
+
     def test_provider_list(self):
         """Test listing providers."""
         # Mock send_response to intercept output

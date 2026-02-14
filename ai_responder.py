@@ -151,11 +151,12 @@ class AIResponder:
         Returns:
             str: Unique key for history
         """
-        session_name = self.session_manager.get_session_name(from_node)
-        if session_name:
-            return session_name
-            
+        # Active sessions are DM-only. If we are in a channel context, 
+        # we MUST ignore any background sessions to prevent cross-context spills.
         if is_dm:
+            session_name = self.session_manager.get_session_name(from_node)
+            if session_name:
+                return session_name
             return f"DM:{from_node}"
         else:
             return f"Channel:{channel}:{from_node}"
@@ -171,7 +172,15 @@ class AIResponder:
             str: Absolute path to history file
         """
         # Sanitize key for filesystem
+        # 1. Replace common delimiters
         safe_key = key.replace(':', '_').replace('^', 'B')
+        # 2. Strict alphanumeric/underscore/hyphen filter for the final filename
+        import re
+        safe_key = re.sub(r'[^a-zA-Z0-9_\-]', '', safe_key)
+        
+        if not safe_key:
+            safe_key = "unknown_history"
+            
         return os.path.join(self.history_dir, f"{safe_key}.json")
     
     def load_history(self, user_id):
@@ -1001,7 +1010,9 @@ class AIResponder:
             time.sleep(2)
 
             # 1. Get History Key and Session Status
-            is_session = self.session_manager.is_active(from_node)
+            # Sessions are strictly DM-only. Ensure is_session is False in public channels
+            # to prevent session indicators or logic from leaking into broadcasts.
+            is_session = is_dm and self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
             
             # 2. Capability Check & Tool Orchestration
