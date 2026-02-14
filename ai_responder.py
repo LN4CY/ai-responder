@@ -19,6 +19,7 @@ import json
 import logging
 import threading
 import sys
+import re
 from pubsub import pub
 
 # Import our modular components
@@ -791,6 +792,31 @@ class AIResponder:
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
     
+    def _detect_node_references(self, text):
+        """
+        Detect node IDs or names in the text.
+        
+        Returns:
+            set: Set of detected node IDs
+        """
+        detected_ids = set()
+        
+        # 1. Direct Hex ID detection (!1234abcd)
+        hex_matches = re.findall(r'![0-9a-f]{8}', text.lower())
+        for match in hex_matches:
+            detected_ids.add(match)
+            
+        # 2. Name-based detection
+        # Split text into words/tokens (simple approach)
+        tokens = re.findall(r'\w+', text)
+        for token in tokens:
+            if len(token) < 2: continue
+            n_id = self.meshtastic.find_node_by_name(token)
+            if n_id:
+                detected_ids.add(n_id)
+                
+        return detected_ids
+    
     def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
         """
         Handle an AI query in a background thread.
@@ -894,7 +920,47 @@ class AIResponder:
             msgs_count = len(self.history.get(history_key, []))
             logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
 
-            # 4. Extract Location for Grounding if available
+            # 4. Extract Multi-Node Metadata and Grounding
+            additional_context = []
+            
+            # Detect references in user query
+            referenced_nodes = self._detect_node_references(query)
+            
+            # Check for general mesh status queries
+            mesh_keywords = ['mesh', 'nodes', 'neighbors', 'who is online', 'list nodes', 'network']
+            if any(k in query.lower() for k in mesh_keywords):
+                summary = self.meshtastic.get_node_list_summary()
+                additional_context.append(summary)
+            
+            # Fetch metadata for referenced nodes (excluding ones already handled)
+            handled_nodes = {from_node}
+            my_node_info = self.meshtastic.get_node_info()
+            if my_node_info: handled_nodes.add(my_node_info.get('user', {}).get('id'))
+            
+            for ref_id in referenced_nodes:
+                if ref_id not in handled_nodes:
+                    node_md = self.meshtastic.get_node_metadata(ref_id)
+                    if node_md:
+                        # Find name for label
+                        node_info = self.meshtastic._get_node_by_id(ref_id)
+                        name = "Unknown"
+                        if node_info:
+                            user = node_info.get('user', {})
+                            name = user.get('longName') or user.get('shortName') or "Unknown"
+                        
+                        additional_context.append(f"Metadata for {name} ({ref_id}):\n{node_md}")
+            
+            # Combine all additional context
+            if additional_context:
+                injected_content = "\n\n---\n" + "\n\n".join(additional_context) + "\n---"
+                # Update history for the current message to include this context for the AI
+                if history_key in self.history and self.history[history_key]:
+                    last_msg = self.history[history_key][-1]
+                    if last_msg['role'] == 'user':
+                        last_msg['content'] += injected_content
+                        logger.info(f"🔗 Injected additional mesh context ({len(additional_context)} items)")
+
+            # Extract Primary Location for Grounding if available
             location = None
             try:
                 node_info = self.meshtastic._get_node_by_id(from_node)
@@ -904,9 +970,9 @@ class AIResponder:
                     lon = pos.get('longitude')
                     if lat is not None and lon is not None:
                         location = {'latitude': lat, 'longitude': lon}
-                        logger.info(f"📍 Location identified for grounding: {lat}, {lon}")
+                        logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
             except Exception as e:
-                logger.debug(f"Could not extract direct location for grounding: {e}")
+                logger.debug(f"Could not extract primary location for grounding: {e}")
 
             # 5. Get AI response with tuned context
             response = self.get_ai_response(query, history_key, is_session=is_session, location=location)

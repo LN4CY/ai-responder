@@ -512,6 +512,70 @@ class MeshtasticHandler:
 
         return None
 
+    def find_node_by_name(self, name):
+        """
+        Find a node by matching its long name or short name.
+        
+        Args:
+            name: Name to search for (case-insensitive)
+            
+        Returns:
+            str or None: Node ID if found, otherwise None
+        """
+        if not self.interface or not self.interface.nodes:
+            return None
+            
+        name_lower = name.lower().strip()
+        
+        for n_id, node in self.interface.nodes.items():
+            user = node.get('user', {})
+            long_name = user.get('longName', '').lower()
+            short_name = user.get('shortName', '').lower()
+            
+            if name_lower == long_name or name_lower == short_name:
+                return user.get('id')
+                
+        return None
+
+    def get_all_nodes(self):
+        """
+        Get a list of all known nodes with their names.
+        
+        Returns:
+            list: List of dicts with node info
+        """
+        if not self.interface or not self.interface.nodes:
+            return []
+            
+        nodes = []
+        for n_id, node in self.interface.nodes.items():
+            user = node.get('user', {})
+            nodes.append({
+                'id': user.get('id'),
+                'longName': user.get('longName'),
+                'shortName': user.get('shortName')
+            })
+        return nodes
+
+    def get_node_list_summary(self):
+        """
+        Get a concise summary of the node list for AI context.
+        
+        Returns:
+            str: Formatted string of known nodes
+        """
+        nodes = self.get_all_nodes()
+        if not nodes:
+            return "No neighbors detected on mesh."
+            
+        lines = ["Neighbor nodes on mesh:"]
+        for n in nodes:
+            if not n['id']: continue
+            name = n['longName'] or n['shortName'] or "Unknown"
+            short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
+            lines.append(f"- {n['id']}: {name}{short}")
+            
+        return "\n".join(lines)
     def get_node_metadata(self, node_id):
         """
         Get metadata (location, battery, environment) for a node.

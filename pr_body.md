@@ -10,10 +10,17 @@ This PR implements a robust health check and reconnection system adopted from th
 - If the radio is silent for more than 5 minutes (`HEALTH_CHECK_ACTIVITY_TIMEOUT`), the bot now sends an active probe (Position Query).
 - If the probe is not acknowledged within 30 seconds, the bot considers the connection "zombie" and exits with `sys.exit(1)`.
 
-### 🔒 Session Isolation Fix (DM vs Channel)
-- Fixed a bug where active DM sessions would incorrectly capture messages sent in channels from the same node.
-- Validated `is_dm` status before allowing session capture in `on_receive`.
-- Corrected a typo in local node ID lookup (`noId` -> `nodeId`).
+### 🔒 Session Isolation & Location Accuracy
+- **Strict DM Detection**: The bot now strictly identifies DMs by checking `to_node == my_id`. Active DM sessions no longer capture channel traffic.
+- **Session Indicator Isolation**: Responses to channel `!ai` commands no longer include the `[🟢 session_name]` prefix.
+- **Dynamic Node Metadata**: Improved `get_node_info` to pull dynamic data (Position, Metrics) from the Meshtastic `nodes` database for the local node.
+- **Robust Node Lookups**: Added a centralized `_get_node_by_id` helper to correctly handle hex string nodes (e.g., `!1234abcd`).
+
+### 🔍 Mesh Discovery & Multi-Node Queries
+- **Advanced Search**: Added `find_node_by_name` to search nodes by Long/Short name (case-insensitive).
+- **Multi-Node Detection**: AI now detects hex IDs and names in prompts and injects telemetry for all referenced nodes.
+- **Mesh Status**: Users can ask "who is online?" or "list nodes" to see a summary of all active neighbors.
+- **System Prompt Updates**: Revised prompts to guide AI on interpreting multi-node metadata.
 
 ### 🔄 Prolonged Connection Loss Handling
 - Detects if the Meshtastic interface reports being disconnected for more than 60 seconds.

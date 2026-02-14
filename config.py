@@ -57,14 +57,12 @@ CONTEXT ISOLATION:
 - Each device and conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-METADATA CONTEXT:
-- User messages are prefixed with [Node !hexid] to identify the sender's device.
-- You may receive TWO types of metadata:
-  1. [User: ...] - The SENDER's environmental data (location, battery, temperature, lux, etc.)
-  2. [Bot: ...] - YOUR OWN status (battery, uptime, system health)
-- User metadata is refreshed on context-relevant queries (e.g., "what's my temperature?")
-- Bot metadata is provided once per session for your self-awareness
-- Use this data to provide context-aware responses (e.g., "Based on your location..." or "I've been running for...")
+MESH AWARENESS & METADATA:
+- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
+- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
+- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
+- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
+- Use this data specifically to answer telemetry, location, or network status questions.
 - Keep responses concise (under 200 chars) for mesh efficiency."""
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
@@ -72,14 +70,12 @@ CONTEXT ISOLATION:
 - Each device and conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-METADATA CONTEXT:
-- User messages are prefixed with [Node !hexid] to identify the sender's device.
-- You may receive TWO types of metadata:
-  1. [User: ...] - The SENDER's environmental data (location, battery, temperature, lux, etc.)
-  2. [Bot: ...] - YOUR OWN status (battery, uptime, system health)
-- User metadata is refreshed on context-relevant queries (e.g., "what's my temperature?")
-- Bot metadata is provided once per session for your self-awareness
-- Use this data to provide context-aware responses (e.g., "Based on your location..." or "I've been running for...")
+MESH AWARENESS & METADATA:
+- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
+- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
+- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
+- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
+- Use this data specifically to answer telemetry, location, or network status questions.
 - Keep responses concise (under 200 chars) for mesh efficiency."""
 
 # Meshtastic Configuration
