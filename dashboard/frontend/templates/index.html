@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Responder | Universal Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">📡</span>
+                <h1>AI Responder</h1>
+            </div>
+            <nav>
+                <ul>
+                    <li class="active" data-page="status">Status</li>
+                    <li data-page="config">Configuration</li>
+                    <li data-page="tools">Discovery</li>
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                <span class="version">v2.0 Modular</span>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <header>
+                <h2 id="page-title">System Status</h2>
+                <div class="system-controls">
+                    <button id="btn-start" class="btn primary">Start Responder</button>
+                    <button id="btn-stop" class="btn danger" style="display:none;">Stop Responder</button>
+                    <div id="status-indicator" class="status-badge stopped">Stopped</div>
+                </div>
+            </header>
+
+            <div class="scroll-area">
+                <!-- Status Page -->
+                <section id="page-status" class="page active">
+                    <div class="card-grid">
+                        <div class="card stat">
+                            <h3>Current Provider</h3>
+                            <p id="stat-provider">Ollama</p>
+                        </div>
+                        <div class="card stat">
+                            <h3>Active Channels</h3>
+                            <p id="stat-channels">None</p>
+                        </div>
+                    </div>
+                    
+                    <div class="card terminal-container">
+                        <h3>Live Mesh Terminal</h3>
+                        <div id="log-output" class="terminal">
+                            <span class="system-msg">Connecting to AI Responder telemetry...</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Configuration Page -->
+                <section id="page-config" class="page">
+                    <div class="card">
+                        <h3>System Configuration</h3>
+                        <form id="config-form">
+                            <div class="form-group">
+                                <label>AI Provider</label>
+                                <select name="current_provider">
+                                    <option value="ollama">Ollama (Local)</option>
+                                    <option value="gemini">Google Gemini</option>
+                                    <option value="openai">OpenAI</option>
+                                    <option value="anthropic">Anthropic</option>
+                                </select>
+                            </div>
+                            <!-- Configuration fields will be injected here -->
+                            <div class="form-actions">
+                                <button type="submit" class="btn secondary">Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>

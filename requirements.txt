@@ -1,4 +1,19 @@
-# Core dependencies
-meshtastic  # LGPL/GPLv3
-requests    # Apache 2.0
-pypubsub    # BSD 2-Clause
+# AI Responder Core
+meshtastic>=2.5.0
+requests
+pypubsub
+python-dotenv
+google-generativeai
+openai
+anthropic
+
+# Universal Web Dashboard
+fastapi
+uvicorn
+jinja2
+python-multipart
+websockets
+
+# Development & Testing
+pytest
+pytest-cov
