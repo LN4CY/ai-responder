@@ -46,8 +46,8 @@ The AI doesn't just respond; it understands its environment:
 | :--- | :--- | :--- |
 | **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
 | **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
-| **One-Click Deploy** | 📅 Q2 2026 | Streamlined setup for Raspberry Pi and low-power hardware. |
-| **Web UI Dashboard** | 📅 Q3 2026 | Manage providers, channels, and admins via a simple web interface. |
+| **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
+| **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
 | **Remote Management** | 📅 Q3 2026 | Encrypted remote configuration over mesh or secondary link. |
 | **Health Analytics** | 📅 Q4 2026 | Visual metrics of mesh health and AI interaction statistics. |
 
@@ -131,66 +131,10 @@ This allows the AI to "piggyback" on the radio connected to MeshMonitor.
 
 ## Multi-Platform Native Execution
 
-You can run the responder directly on Windows, macOS, or Linux without Docker. This is useful for development or if you only need the Cloud (Gemini) provider and don't want to run a local LLM.
+The AI Responder is fully portable and runs on Windows, macOS, or Linux. 
 
-### Prerequisites
-- Python 3.9+
-- Network access to your Meshtastic node (TCP)
-
-### 1. Setup Virtual Environment
-```bash
-# Windows
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Linux/macOS
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 2. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Run (Gemini Provider)
-If you don't have Ollama, you can use Google Gemini.
-
-```bash
-# Windows (PowerShell)
-$env:MESHTASTIC_HOST="192.168.1.50"
-$env:MESHTASTIC_PORT="4403"
-$env:AI_PROVIDER="gemini"
-$env:GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-
-# Linux/macOS
-export MESHTASTIC_HOST="192.168.1.50"
-export MESHTASTIC_PORT="4403"
-export AI_PROVIDER="gemini"
-export GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-```
-
-### 4. Run (Serial / USB)
-
-Connect directly to a radio via USB.
-
-```bash
-# Windows
-$env:INTERFACE_TYPE="serial"
-$env:SERIAL_PORT="COM3"
-$env:AI_PROVIDER="gemini"
-$env:GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-
-# Linux (Raspberry Pi)
-export INTERFACE_TYPE="serial"
-export SERIAL_PORT="/dev/ttyACM0"
-export AI_PROVIDER="gemini"
-export GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-```
+> [!TIP]
+> **Upcoming**: We are building a **Universal Web Management Dashboard** to replace all manual setup steps. For now, use the CLI as described in [CONFIG.md](CONFIG.md).
 
 ## Configuration
 

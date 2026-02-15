@@ -11,8 +11,9 @@ including sending messages, managing connections, and processing incoming packet
 
 import time
 import logging
-import sys
 import threading
+import math
+from datetime import datetime
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -170,6 +171,7 @@ class MeshtasticHandler:
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
         self.last_activity = 0
         self.connection_healthy = False
+        self.pending_acks = set()       # [NEW] Buffer for fast ACKs arriving before expected_ack_id is set
 
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
@@ -313,9 +315,19 @@ class MeshtasticHandler:
         return True
     def _on_ack(self, packetId, interface):
         """Handle incoming ACK events."""
-        if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
-            logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
+        expected_id = getattr(self, 'expected_ack_id', None)
+        
+        # 1. Store in pending buffer if we are waiting for an event
+        if getattr(self, 'current_ack_event', None):
+            self.pending_acks.add(packetId)
+            logger.debug(f"📥 ACK ID {packetId} added to pending buffer")
+
+        # 2. Check for direct match
+        if expected_id is not None and expected_id == packetId:
+            logger.info(f"⚡ Matched expected ACK ID {packetId}")
             self.current_ack_event.set()
+        else:
+            logger.debug(f"📡 Background ACK received: {packetId} (Expected: {expected_id})")
 
     def _on_telemetry(self, packet, interface):
         """Handle incoming telemetry packets to populate the multi-metric cache."""
@@ -579,7 +591,7 @@ class MeshtasticHandler:
 
     def get_all_nodes(self):
         """
-        Get a list of all known nodes with their names.
+        Get a list of all known nodes with names and coordinates.
         
         Returns:
             list: List of dicts with node info
@@ -590,32 +602,58 @@ class MeshtasticHandler:
         nodes = []
         for n_id, node in self.interface.nodes.items():
             user = node.get('user', {})
+            pos = node.get('position', {})
             nodes.append({
                 'id': user.get('id'),
                 'longName': user.get('longName'),
-                'shortName': user.get('shortName')
+                'shortName': user.get('shortName'),
+                'lat': pos.get('latitude'),
+                'lon': pos.get('longitude')
             })
         return nodes
 
     def get_node_list_summary(self):
         """
-        Get a concise summary of the node list for AI context.
+        Get a concise summary of the node list for AI context, including distances.
         
         Returns:
-            str: Formatted string of known nodes
+            str: Formatted string of known nodes with distance data
         """
         nodes = self.get_all_nodes()
         if not nodes:
             return "No neighbors detected on mesh."
             
+        # Get local node position for distance calculation
+        my_node = self.get_node_info()
+        my_pos = my_node.get('position', {}) if my_node else {}
+        my_lat = my_pos.get('latitude')
+        my_lon = my_pos.get('longitude')
+
         lines = ["Neighbor nodes on mesh:"]
         for n in nodes:
             if not n['id']: continue
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
-            lines.append(f"- {n['id']}: {name}{short}")
+            
+            # Calculate distance if positions are available
+            dist_str = ""
+            if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
+                dist = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
+                dist_str = f" [Distance: {dist:.2f}km]"
+                
+            lines.append(f"- {n['id']}: {name}{short}{dist_str}")
             
         return "\n".join(lines)
+
+    def _calculate_haversine(self, lat1, lon1, lat2, lon2):
+        """Calculate the great circle distance between two points in km."""
+        R = 6371.0  # Earth radius in km
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * \
+            math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
     def get_node_metadata(self, node_id):
         """
         Get metadata (location, battery, environment) for a node.
@@ -907,6 +945,7 @@ class MessageQueue:
             # Prepare ACK event
             self.handler.current_ack_event = threading.Event() if not is_broadcast else None
             self.handler.expected_ack_id = None
+            self.handler.pending_acks.clear()  # [NEW] Clear buffer for new attempt
             
             try:
                 # Send
@@ -922,10 +961,14 @@ class MessageQueue:
                 
                 logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1})")
                 
-                # Check ACK
+                # Check for Race Condition: If the ACK already arrived in the microsecond before ID registration
                 if not is_broadcast and pkt_id != 'unknown':
-                    # Wait for ACK
-                    if self.handler.current_ack_event.wait(timeout=20):  # 20s timeout
+                    if pkt_id in self.handler.pending_acks:
+                        logger.info(f"🏁 Fast ACK (Race Condition) already captured for ID: {pkt_id}")
+                        return True
+                        
+                    # Otherwise, Wait for ACK as normal
+                    if self.handler.current_ack_event.wait(timeout=30):  # 30s timeout
                         logger.info(f"✅ ACK received for chunk {chunk_num}")
                         return True
                     else:

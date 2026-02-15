@@ -346,8 +346,8 @@ class TestHandlerMetadata(unittest.TestCase):
         
         nodes = self.handler.get_all_nodes()
         self.assertEqual(len(nodes), 2)
-        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1'}, nodes)
-        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2'}, nodes)
+        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1', 'lat': None, 'lon': None}, nodes)
+        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2', 'lat': None, 'lon': None}, nodes)
 
     def test_get_node_list_summary(self):
         """Test node list summary formatting."""
@@ -413,6 +413,48 @@ class TestMessageQueue(unittest.TestCase):
             
             # Verify send called 2 times (for 2 chunks)
             self.assertEqual(mock_send.call_count, 2)
+
+class TestACKResilience(unittest.TestCase):
+    def setUp(self):
+        self.mock_handler = MagicMock()
+        self.mock_handler.running = True
+        self.mock_handler.interface = MagicMock()
+        self.mock_handler.pending_acks = set()
+        self.mock_handler._split_message.return_value = ["chunk1"]
+        
+        # In real code, _on_ack sets current_ack_event.set()
+        # But here we want to test the RACE condition in _send_chunk_reliable
+        self.queue = MessageQueue(self.mock_handler)
+        self.queue.processing = False # Stop the loop so we can test manually
+
+    def test_ack_race_condition_fix(self):
+        """
+        Test that an ACK already in the buffer is matched immediately.
+        This simulates the Radio/Mesh replying faster than the Python code can 
+        register the Packet ID.
+        """
+        pkt_id = 12345
+        mock_packet = MagicMock()
+        mock_packet.id = pkt_id
+        
+        # SIMULATE REAL RACE: The ACK arrives via background thread WHILE sendText is running
+        # We use a side_effect to add it to pending_acks at the moment of sending.
+        def mock_send_side_effect(*args, **kwargs):
+            self.mock_handler.pending_acks.add(pkt_id)
+            return mock_packet
+            
+        self.mock_handler.interface.sendText.side_effect = mock_send_side_effect
+        
+        # Use precise patching where it is used in handler.py
+        with patch('meshtastic_handler.handler.threading.Event') as MockEvent:
+            mock_event_instance = MagicMock()
+            MockEvent.return_value = mock_event_instance
+            
+            success = self.queue._send_chunk_reliable("payload", "!dest", 0, False, 1, 1)
+            
+            self.assertTrue(success)
+            # The wait() should NOT have been called because it was a "Fast ACK" caught in the buffer
+            mock_event_instance.wait.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

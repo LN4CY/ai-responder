@@ -876,7 +876,7 @@ class AIResponder:
             "get_mesh_nodes": {
                 "declaration": {
                     "name": "get_mesh_nodes",
-                    "description": "Get a list of all nodes currently seen on the Meshtastic network.",
+                    "description": "Get a summary of all nodes currently seen on the network, including their calculated distance from the bot (if coordinates are available).",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {},
