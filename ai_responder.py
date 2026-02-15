@@ -48,6 +48,8 @@ logger = logging.getLogger('AI-Responder')
 logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
 
+__version__ = "1.4.0"
+
 class AIResponder:
     """
     Main AI Responder application.
