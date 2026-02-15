@@ -151,11 +151,12 @@ class AIResponder:
         Returns:
             str: Unique key for history
         """
-        session_name = self.session_manager.get_session_name(from_node)
-        if session_name:
-            return session_name
-            
+        # Active sessions are DM-only. If we are in a channel context, 
+        # we MUST ignore any background sessions to prevent cross-context spills.
         if is_dm:
+            session_name = self.session_manager.get_session_name(from_node)
+            if session_name:
+                return session_name
             return f"DM:{from_node}"
         else:
             return f"Channel:{channel}:{from_node}"
@@ -171,7 +172,15 @@ class AIResponder:
             str: Absolute path to history file
         """
         # Sanitize key for filesystem
+        # 1. Replace common delimiters
         safe_key = key.replace(':', '_').replace('^', 'B')
+        # 2. Strict alphanumeric/underscore/hyphen filter for the final filename
+        import re
+        safe_key = re.sub(r'[^a-zA-Z0-9_\-]', '', safe_key)
+        
+        if not safe_key:
+            safe_key = "unknown_history"
+            
         return os.path.join(self.history_dir, f"{safe_key}.json")
     
     def load_history(self, user_id):
@@ -368,7 +377,7 @@ class AIResponder:
     
     # ==================== AI Provider Interface ====================
     
-    def get_ai_response(self, prompt, history_key, is_session=False, location=None):
+    def get_ai_response(self, prompt, history_key, is_session=False, location=None, tools=None):
         """
         Get AI response using the configured provider with tuned context.
         
@@ -377,6 +386,7 @@ class AIResponder:
             history_key: Key for history context
             is_session: Whether this is an active continuous session
             location: Optional location dict {'latitude': float, 'longitude': float}
+            tools: Optional dict of tools for function calling
             
         Returns:
             str: AI response or error message
@@ -397,7 +407,7 @@ class AIResponder:
                 history = self.history[history_key][-limit:]
             
             # Get response
-            response = provider.get_response(prompt, history, context_id=history_key, location=location)
+            response = provider.get_response(prompt, history, context_id=history_key, location=location, tools=tools)
             return response
             
         except ValueError as e:
@@ -582,6 +592,7 @@ class AIResponder:
                 "!ai -c <id> : Load specific\n"
                 "!ai -c ls : List saved\n"
                 "!ai -c rm <id> : Delete\n"
+                "!ai -c rm all : Wipe all\n"
                 "In Channels:\n"
                 "!ai -n <msg> : New topic"
             )
@@ -651,9 +662,20 @@ class AIResponder:
         elif subcmd == 'rm':
             # Delete conversation
             if len(parts) < 2:
-                self.send_response("Usage: !ai -c rm <name/slot>", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("Usage: !ai -c rm <name/slot/all>", from_node, to_node, channel, is_admin_cmd=False)
                 return
             identifier = parts[1]
+            
+            # Handle "rm all"
+            if identifier.lower() == 'all':
+                success, message = self.conversation_manager.delete_all_conversations(from_node)
+                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                # Also clear active session if in one
+                self.session_manager.end_session(from_node)
+                # And in-memory history cache
+                self.history.pop(from_node, None) 
+                return
+
             success, message = self.conversation_manager.delete_conversation(from_node, identifier)
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -799,31 +821,6 @@ class AIResponder:
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
     
-    def _detect_node_references(self, text):
-        """
-        Detect node IDs or names in the text.
-        
-        Returns:
-            set: Set of detected node IDs
-        """
-        detected_ids = set()
-        
-        # 1. Direct Hex ID detection (!1234abcd)
-        hex_matches = re.findall(r'![0-9a-f]{8}', text.lower())
-        for match in hex_matches:
-            detected_ids.add(match)
-            
-        # 2. Name-based detection
-        # Split text into words/tokens (simple approach)
-        tokens = re.findall(r'\w+', text)
-        for token in tokens:
-            if len(token) < 2: continue
-            n_id = self.meshtastic.find_node_by_name(token)
-            if n_id:
-                detected_ids.add(n_id)
-                
-        return detected_ids
-    
     def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
         """
         Handle an AI query in a background thread.
@@ -854,155 +851,268 @@ class AIResponder:
         thread.daemon = True
         thread.start()
     
+    def get_tools(self):
+        """
+        Define tools available to the AI.
+        
+        Returns:
+            dict: Tool definitions and handlers
+        """
+        return {
+            "get_my_info": {
+                "declaration": {
+                    "name": "get_my_info",
+                    "description": "Get information about the bot itself, including name, battery, and SNR.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                "handler": lambda: self.meshtastic.get_node_metadata(
+                    self.meshtastic.get_node_info().get('user', {}).get('id')
+                )
+            },
+            "get_mesh_nodes": {
+                "declaration": {
+                    "name": "get_mesh_nodes",
+                    "description": "Get a summary of all nodes currently seen on the network, including their calculated distance from the bot (if coordinates are available).",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                "handler": lambda: self.meshtastic.get_node_list_summary()
+            },
+            "get_node_details": {
+                "declaration": {
+                    "name": "get_node_details",
+                    "description": "Get detailed metadata, battery, and environment data for a specific node.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "node_id_or_name": {
+                                "type": "STRING",
+                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
+                            }
+                        },
+                        "required": ["node_id_or_name"]
+                    }
+                },
+                "handler": self._get_node_details_tool
+            },
+            "request_node_telemetry": {
+                "declaration": {
+                    "name": "request_node_telemetry",
+                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. Useful if data is stale.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "node_id_or_name": {
+                                "type": "STRING",
+                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
+                            },
+                            "telemetry_type": {
+                                "type": "STRING",
+                                "description": "Type of telemetry to request: 'device', 'environment', 'local_stats', 'air_quality', 'power', 'health', or 'host'.",
+                                "enum": ["device", "environment", "local_stats", "air_quality", "power", "health", "host"]
+                            }
+                        },
+                        "required": ["node_id_or_name", "telemetry_type"]
+                    }
+                },
+                "handler": self._request_node_telemetry_tool
+            }
+        }
+
+    def _get_node_details_tool(self, node_id_or_name):
+        """Internal handler for get_node_details tool."""
+        node_id = node_id_or_name
+        if not node_id.startswith('!'):
+            found_id = self.meshtastic.find_node_by_name(node_id_or_name)
+            if found_id:
+                node_id = found_id
+            else:
+                return f"Error: Node '{node_id_or_name}' not found."
+        
+        metadata = self.meshtastic.get_node_metadata(node_id)
+        if not metadata:
+            return f"Error: No information available for {node_id}."
+        return metadata
+
+    def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
+        """Internal handler for request_node_telemetry tool with short polling."""
+        node_id = node_id_or_name
+        if not node_id.startswith('!'):
+            found_id = self.meshtastic.find_node_by_name(node_id_or_name)
+            if found_id:
+                node_id = found_id
+            else:
+                return f"Error: Node '{node_id_or_name}' not found."
+
+        # 1. Map type to internal metric key
+        type_map = {
+            'device': 'device_metrics',
+            'environment': 'environment_metrics',
+            'local_stats': 'local_stats',
+            'air_quality': 'air_quality_metrics',
+            'power': 'power_metrics',
+            'health': 'health_metrics',
+            'host': 'host_metrics'
+        }
+        metric_key = type_map.get(telemetry_type, 'environment_metrics')
+
+        # 2. Send Request
+        request_time = time.time()
+        logger.info(f"📡 AI triggering telemetry refresh ({telemetry_type}) for {node_id}")
+        self.meshtastic.request_telemetry(node_id, telemetry_type)
+
+        # 3. Short Poll (Wait up to 15 seconds for data to arrive in cache)
+        # We check the cache every 3 seconds
+        poll_start = time.time()
+        poll_timeout = 15 
+        
+        while time.time() - poll_start < poll_timeout:
+            time.sleep(3)
+            # Check timestamps in the handler
+            node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id, {})
+            last_received = node_timestamps.get(metric_key, 0)
+            
+            if last_received > request_time:
+                # Fresh data arrived!
+                metadata = self.meshtastic.get_node_metadata(node_id)
+                return f"Success! New telemetry received:\n{metadata}"
+
+        # 4. Timeout fallback
+        return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
+                "The mesh is slow—please wait about 60 seconds and ask me again. "
+                "I should have the data in my memory by then.")
+
+    def _inject_legacy_metadata(self, query, from_node):
+        """Helper to inject a clean metadata block for tool-blind models."""
+        my_info = self.meshtastic.get_node_metadata(self.meshtastic.get_node_info().get('user', {}).get('id'))
+        neighbor_summary = self.meshtastic.get_node_list_summary()
+        user_info = self.meshtastic.get_node_metadata(from_node)
+        
+        metadata_block = "\n\n[RADIO CONTEXT]\n"
+        if my_info: metadata_block += f"Self: {my_info}\n"
+        if user_info: metadata_block += f"User ({from_node}): {user_info}\n"
+        if neighbor_summary: metadata_block += f"{neighbor_summary}\n"
+        metadata_block += "[/RADIO CONTEXT]"
+        
+        return f"{query}{metadata_block}"
+
     def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False):
-        """Background thread for processing AI queries."""
+        """Background thread for processing AI queries with adaptive tool support."""
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
             time.sleep(2)
 
             # 1. Get History Key and Session Status
-            is_session = self.session_manager.is_active(from_node)
+            # Sessions are strictly DM-only. Ensure is_session is False in public channels
+            # to prevent session indicators or logic from leaking into broadcasts.
+            is_session = is_dm and self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
             
-            # Detect references in user query (Moved up for self-awareness logic)
-            referenced_nodes = self._detect_node_references(query)
+            # 2. Capability Check & Tool Orchestration
+            provider_name = self.config.get('current_provider', 'ollama')
+            provider = get_provider(provider_name, self.config)
             
-            # 2. Dual Metadata Injection Logic
-            local_metadata = None  # Bot's own status
-            remote_metadata = None  # User's environmental data
+            # User-controlled awareness toggle
+            awareness_enabled = self.config.get('meshtastic_awareness', config.MESHTASTIC_AWARENESS)
             
-            if is_dm:
-                history_exists = history_key in self.history and len(self.history[history_key]) > 0
+            # Adaptive Logic: Tools vs Metadata Injection
+            tools = None
+            final_query = query
+            
+            if not awareness_enabled:
+                logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
+                self.add_to_history(history_key, 'user', query, node_id=from_node)
+            else:
+                # Awareness is enabled - determine if we need metadata refresh
+                # Standard logic: Inject on first message or if refresh is pending
+                is_first_msg = len(self.history.get(history_key, [])) == 0
+                needs_refresh = (from_node in self._refresh_metadata_nodes)
                 
-                # Bot identification
+                # Intelligent logic: Inject if keywords (battery, location, status) or node names are mentioned
+                keywords = ['battery', 'voltage', 'location', 'where', 'snr', 'rssi', 'distance', 'away', 'status']
+                is_keyword_query = any(k in query.lower() for k in keywords)
+                
+                # Check for mentions of bot or neighbors
+                mentions_bot = False
                 my_node_info = self.meshtastic.get_node_info()
-                my_id = my_node_info.get('user', {}).get('id') if my_node_info else None
-                
-                # Fetch LOCAL node metadata (bot's own status) on session start OR if bot is mentioned
-                bot_mentioned = (my_id and my_id in referenced_nodes)
-                if not history_exists or (is_session and not history_exists) or bot_mentioned:
-                    try:
-                        if my_id:
-                            local_metadata = self.meshtastic.get_node_metadata(my_id)
-                            if local_metadata:
-                                logger.info(f"🤖 Bot metadata fetched: {local_metadata}")
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch local node metadata: {e}")
-                
-                # Determine if we should inject REMOTE metadata (user's data)
-                inject_remote_metadata = False
-                if not history_exists:
-                    inject_remote_metadata = True
-                else:
-                    # Check if specifically indicated for refresh
-                    if getattr(self, '_refresh_metadata_nodes', set()) and from_node in self._refresh_metadata_nodes:
-                        inject_remote_metadata = True
-                        self._refresh_metadata_nodes.discard(from_node)
-                    
-                    # Check for context-related queries (location, battery, environment)
-                    context_keywords = [
-                        'location', 'where am i', 'gps', 'coords', 'coordinates', 'position', 'map',
-                        'battery', 'voltage', 'power',
-                        'temp', 'temperature', 'humidity', 'pressure', 'air', 'env',
-                        'lux', 'light', 'brightness'
+                if my_node_info:
+                    bot_names = [
+                        my_node_info.get('user', {}).get('longName', '').lower(),
+                        my_node_info.get('user', {}).get('shortName', '').lower(),
+                        'bot', 'you'
                     ]
-                    if any(k in query.lower() for k in context_keywords):
-                        logger.info(f"📍 Context query detected from {from_node}, injecting remote metadata.")
-                        inject_remote_metadata = True
-                
-                # Fetch REMOTE node metadata (user's environmental data)
-                if inject_remote_metadata:
-                    # Trigger an asynchronous telemetry request to refresh our cache
-                    # for future messages, while still fetching whatever we have now.
-                    self.meshtastic.request_telemetry(from_node)
-                    
-                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
-            
-            # Combine metadata with clear labels
-            metadata = self._format_dual_metadata(local_metadata, remote_metadata)
+                    mentions_bot = any(n and n in query.lower() for n in bot_names if n)
 
-            # 3. Add user message to history
-            self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=metadata)
-            
-            # Log what we are sending
-            if metadata:
-                logger.info(f"💾 Metadata Injected: {metadata}")
-            
+                must_refresh = is_first_msg or needs_refresh or is_keyword_query or mentions_bot
+                
+                combined_metadata = None
+                if must_refresh:
+                    # Fetch dual metadata for context
+                    my_node_info = self.meshtastic.get_node_info() or {}
+                    my_id = my_node_info.get('user', {}).get('id')
+                    local_metadata = self.meshtastic.get_node_metadata(my_id)
+                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
+                    combined_metadata = self._format_dual_metadata(local_metadata, remote_metadata)
+                    
+                    # Clear refresh flag
+                    if from_node in self._refresh_metadata_nodes:
+                        self._refresh_metadata_nodes.remove(from_node)
+                
+                if provider.supports_tools:
+                    logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
+                    tools = self.get_tools()
+                    # Log to history (metadata may be None if already injected/cached)
+                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                else:
+                    logger.info(f"💾 Provider '{provider.name}' is tool-blind. Injecting legacy metadata block.")
+                    final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
+                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+
+            # 3. Add to history logging
             current_session = self.session_manager.get_session_name(from_node)
             msgs_count = len(self.history.get(history_key, []))
             logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
 
-            # 4. Extract Multi-Node Metadata and Grounding
-            additional_context = []
-            
-            # referenced_nodes already detected above
-            
-            # Check for general mesh status queries
-            mesh_keywords = ['mesh', 'nodes', 'neighbors', 'who is online', 'list nodes', 'network']
-            if any(k in query.lower() for k in mesh_keywords):
-                summary = self.meshtastic.get_node_list_summary()
-                additional_context.append(summary)
-            
-            # Fetch metadata for referenced nodes (excluding ones already handled)
-            handled_nodes = {from_node}
-            my_node_info = self.meshtastic.get_node_info()
-            if my_node_info: handled_nodes.add(my_node_info.get('user', {}).get('id'))
-            
-            for ref_id in referenced_nodes:
-                if ref_id not in handled_nodes:
-                    node_md = self.meshtastic.get_node_metadata(ref_id)
-                    if node_md:
-                        # Find name for label
-                        node_info = self.meshtastic._get_node_by_id(ref_id)
-                        name = "Unknown"
-                        if node_info:
-                            user = node_info.get('user', {})
-                            name = user.get('longName') or user.get('shortName') or "Unknown"
-                        
-                        additional_context.append(f"Metadata for {name} ({ref_id}):\n{node_md}")
-            
-            # Combine all additional context
-            if additional_context:
-                injected_content = "\n\n---\n" + "\n\n".join(additional_context) + "\n---"
-                # Update history for the current message to include this context for the AI
-                if history_key in self.history and self.history[history_key]:
-                    last_msg = self.history[history_key][-1]
-                    if last_msg['role'] == 'user':
-                        last_msg['content'] += injected_content
-                        logger.info(f"🔗 Injected additional mesh context ({len(additional_context)} items)")
-
-            # Extract Primary Location for Grounding if available
+            # 4. Extract Primary Location for Grounding if available (only if awareness is enabled)
             location = None
-            try:
-                node_info = self.meshtastic._get_node_by_id(from_node)
-                if node_info:
-                    pos = node_info.get('position', {})
-                    lat = pos.get('latitude')
-                    lon = pos.get('longitude')
-                    if lat is not None and lon is not None:
-                        location = {'latitude': lat, 'longitude': lon}
-                        logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
-            except Exception as e:
-                logger.debug(f"Could not extract primary location for grounding: {e}")
+            if awareness_enabled:
+                try:
+                    node_info = self.meshtastic._get_node_by_id(from_node)
+                    if node_info:
+                        pos = node_info.get('position', {})
+                        lat = pos.get('latitude')
+                        lon = pos.get('longitude')
+                        if lat is not None and lon is not None:
+                            location = {'latitude': lat, 'longitude': lon}
+                            logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
+                except Exception as e:
+                    logger.debug(f"Could not extract primary location for grounding: {e}")
 
-            # 5. Get AI response with tuned context
-            response = self.get_ai_response(query, history_key, is_session=is_session, location=location)
+            # 5. Get AI response
+            response = provider.get_response(final_query, self.history.get(history_key, [])[-30:], 
+                                          context_id=history_key, location=location, tools=tools)
             
-            # 5. Add assistant response to history
+            # 6. Add assistant response to history
             self.add_to_history(history_key, 'assistant', response)
             
-            # 6. Save to conversation if in session
+            # 7. Save to conversation if in session
             session_name = self.session_manager.get_session_name(from_node)
             if session_name:
                 self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                 self.session_manager.update_activity(from_node)
             
-            # 7. Send response
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
             
         except Exception as e:
             logger.error(f"Error processing AI query: {e}")
-            self.send_response(f"Error: {str(e)}", from_node, to_node, channel, is_admin_cmd=False)
+            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel, is_dm=is_dm)
     
     # ==================== Meshtastic Message Handler ====================
     

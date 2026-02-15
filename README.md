@@ -1,20 +1,59 @@
 # AI Responder for Meshtastic
+> **Autonomous Mesh Intelligence for the Off-Grid World.**
 
-A powerful, plugin-based AI assistant for Meshtastic nodes. It connects to your mesh via TCP (like MeshMonitor) and processes `!ai` commands, responding using either a local LLM (Ollama) or a cloud provider (Gemini).
+The AI Responder is a powerful, plugin-based agentic AI designed specifically for Meshtastic mesh networks. It transforms a standard radio node into an intelligent participant capable of real-time network analysis, situational awareness, and automated responder capabilities. Whether running a light-weight local LLM on a Raspberry Pi or leveraging massive frontier models like Gemini, the AI Responder bridges the gap between off-grid LoRa communication and modern artificial intelligence.
 
-## Features
+## 🚀 Key Features & Capabilities
 
--   **Multi-Provider Support**: Switch between **Ollama** (Local), **Gemini**, **OpenAI**, or **Anthropic** on the fly.
--   **Admin Controls**: Restrict sensitive commands (changing providers, managing channels) to specific node IDs.
--   **Channel Management**: Configure which channels the bot listens on.
--   **Smart Rate Limiting**: Splits long responses into chunks and waits (30s) between sends to prevent mesh congestion.
--   **Context Isolation**: Robustly separates conversation history by Node ID and Channel to prevent data leaks.
--   **Situational Awareness**: Injects user metadata (Location, Battery, Environmental data, etc.) into sessions for context-aware responses.
--   **Gemini Grounding**: Optional Google Search and Google Maps grounding for real-time and location-based information.
--   **On-Demand Telemetry**: Proactively requests fresh environmental metrics from remote nodes on session start or specific queries.
--   **Proactive Notifications**: Alerts users when their DM session times out, ensuring they know when context is reset.
--   **Reliability**: Retries connections, verifying message acknowledgments, and implementing exponential backoff.
--   **Architecture**: [See ARCHITECTURE.md](ARCHITECTURE.md) for design details.
+### 🧠 Adaptive Intelligence Controller
+The system automatically scales its intelligence based on the selected provider.
+- **Function Calling (Tools)**: Frontier models (Gemini, Claude, GPT) proactively query the mesh for telemetry, identify neighbors, and manage their own status using real-time API tools.
+- **Fallback Metadata Injection**: For tool-blind or local models (Ollama), the controller automatically injects structured `[RADIO CONTEXT]` blocks, ensuring the AI remains mesh-aware even without native function calling support.
+
+### 📡 Multi-Provider Agnostic
+One agent, many brains. Choose the provider that fits your deployment:
+- **Local (Ollama)**: Full privacy and off-grid autonomy using models like Llama 3.2.
+- **Cloud (Gemini, OpenAI, Anthropic)**: High-reasoning capabilities with advanced tool orchestration and grounding.
+
+### 🔗 Industrial-Grade Resiliency
+Designed for 24/7 autonomous operation in remote environments:
+- **Radio Watchdog**: Automatically detects and recovers from "zombie" connections where the radio hardware is active but the logic link has failed.
+- **Proactive Reconnection**: Universal 10-second retry loop ensuring the bot recovers from service restarts or power cycles without manual intervention.
+- **Adaptive Rate Limiting**: Intelligent message chunking (30s intervals) and ACK verification to prevent mesh congestion while ensuring delivery.
+
+### 📍 Strategic Situational Awareness
+The AI doesn't just respond; it understands its environment:
+- **Real-time Telemetry**: Access to battery, SNR, RSSI, temperature, and humidity for the local node and neighbors.
+- **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
+
+### 👤 Persona-Driven Mesh Agent
+- **Context Isolation**: Every user and channel has a secure sandbox, preventing data leakage between conversations.
+- **Mesh Efficiency**: System prompts are tuned for LoRa—delivering high-density, concise information (typically <200 chars).
+- **Session Management**: Direct Message (DM) support for continuous, stateful conversations with proactive timeout alerts.
+
+## 🛠️ Why AI Responder? (Strengths)
+
+- **Privacy First**: With Ollama support, your mesh data never has to leave your local network.
+- **Low Barrier to Entry**: Runs on everything from a Windows desktop to a Raspberry Pi Zero 2W.
+- **Zero-Config Mesh Discovery**: The AI automatically discovers neighboring nodes and can explain the network topology to users.
+- **Extensible**: Architecture allows for easy addition of new Meshtastic tools and AI providers.
+
+---
+
+## 🗺️ Roadmap: The Future of Mesh AI
+
+| Feature | Status | Description |
+| :--- | :--- | :--- |
+| **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
+| **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
+| **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
+| **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
+| **Remote Management** | 📅 Q3 2026 | Encrypted remote configuration over mesh or secondary link. |
+| **Health Analytics** | 📅 Q4 2026 | Visual metrics of mesh health and AI interaction statistics. |
+
+---
+
+## Architecture: [See ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Quick Start
 
@@ -33,10 +72,10 @@ Add to your `docker-compose.yml`:
     environment:
       - MESHTASTIC_HOST=meshmonitor
       - MESHTASTIC_PORT=4404
-      - AI_PROVIDER=ollama # or 'gemini'
-      - OLLAMA_HOST=ollama
-      - OLLAMA_PORT=11434
+      - AI_PROVIDER=gemini
       - GEMINI_API_KEY=your_key_here
+      - GEMINI_SEARCH_GROUNDING=true # Optional
+      - GEMINI_MAPS_GROUNDING=true   # Optional
       - ADMIN_NODE_ID=!your_admin_id
     volumes:
       - ai-data:/app/data
@@ -92,66 +131,10 @@ This allows the AI to "piggyback" on the radio connected to MeshMonitor.
 
 ## Multi-Platform Native Execution
 
-You can run the responder directly on Windows, macOS, or Linux without Docker. This is useful for development or if you only need the Cloud (Gemini) provider and don't want to run a local LLM.
+The AI Responder is fully portable and runs on Windows, macOS, or Linux. 
 
-### Prerequisites
-- Python 3.9+
-- Network access to your Meshtastic node (TCP)
-
-### 1. Setup Virtual Environment
-```bash
-# Windows
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Linux/macOS
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 2. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Run (Gemini Provider)
-If you don't have Ollama, you can use Google Gemini.
-
-```bash
-# Windows (PowerShell)
-$env:MESHTASTIC_HOST="192.168.1.50"
-$env:MESHTASTIC_PORT="4403"
-$env:AI_PROVIDER="gemini"
-$env:GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-
-# Linux/macOS
-export MESHTASTIC_HOST="192.168.1.50"
-export MESHTASTIC_PORT="4403"
-export AI_PROVIDER="gemini"
-export GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-```
-
-### 4. Run (Serial / USB)
-
-Connect directly to a radio via USB.
-
-```bash
-# Windows
-$env:INTERFACE_TYPE="serial"
-$env:SERIAL_PORT="COM3"
-$env:AI_PROVIDER="gemini"
-$env:GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-
-# Linux (Raspberry Pi)
-export INTERFACE_TYPE="serial"
-export SERIAL_PORT="/dev/ttyACM0"
-export AI_PROVIDER="gemini"
-export GEMINI_API_KEY="your_api_key"
-python ai_responder.py
-```
+> [!TIP]
+> **Upcoming**: We are building a **Universal Web Management Dashboard** to replace all manual setup steps. For now, use the CLI as described in [CONFIG.md](CONFIG.md).
 
 ## Configuration
 
@@ -314,6 +297,12 @@ After loading, continue the conversation with `!ai <query>` or start a new sessi
 ```
 
 Response: `Deleted conversation 'my_project_discussion' (slot 1)`
+
+**Delete All:**
+```
+!ai -c rm all
+```
+Response: `Deleted 5 conversations.`
 
 ### Channel vs DM Behavior
 

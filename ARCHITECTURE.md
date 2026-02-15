@@ -25,10 +25,10 @@ graph TD
 
     Radio <--> MM
     MM <-->|TCP :4404| AI
-    AI <-->|HTTP API| Ollama
-    AI <-->|REST API| Gemini
-    AI <-->|REST API| OpenAI
-    AI <-->|REST API| Claude
+    AI <--Multi-Turn Loop-->|HTTP API| Ollama
+    AI <--Multi-Turn Loop-->|REST API| Gemini
+    AI <--Multi-Turn Loop-->|REST API| OpenAI
+    AI <--Multi-Turn Loop-->|REST API| Claude
     Nodes <--> Radio
 ```
 
@@ -42,14 +42,25 @@ The application abstracts the connection to the radio via the `MeshtasticHandler
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:
-- **`SessionManager`**: Handles DM-only continuous sessions. Tracks user inactivity (timeout: 5 min) and manages session state. Now includes **Routing Memory** to persist channel and node ID for proactive timeout notifications.
+- **`SessionManager`**: Handles **DM-only** continuous sessions.
+    - **Strict Isolation**: Sessions are strictly tied to DM context. Public channel messages for a user with an active session will trigger a separate channel-specific history to prevent private context leaks.
+    - **Name Sanitization**: All session names are strictly sanitized (alphanumeric/hyphen/underscore) to ensure filesystem safety and prevent path traversal.
+    - **Timeout**: Tracks user inactivity (timeout: 5 min).
+    - **Routing Memory**: Persists channel and node ID for proactive timeout notifications.
 - **`ConversationManager`**: Handles long-term persistence. Stores up to 10 conversations per user as compressed JSON files (`.json.gz`), managing slots and metadata.
 
-### 3. AI Provider System
-An abstract base class (`BaseProvider`) defines the interface for all AI models. The factory pattern (`get_provider`) instantiates the configured provider:
-- **Ollama**: Connects to local LLM inference.
-- **Gemini / OpenAI / Anthropic**: Connects to cloud APIs.
-- **Error Handling**: Standardized error reporting across all providers.
+### 3. Adaptive Context Controller
+The `AIResponder` acts as a dynamic orchestration layer between the mesh and the AI models.
+- **Capability Discovery**: On every query, the system checks `provider.supports_tools`. This is a hardware-aware check (e.g., checking Ollama model versions or Cloud API capabilities).
+- **Orchestration Logic**:
+    - **Fully-Aware Mode**: If tools are supported, the bot provides no proactive metadata, allowing the AI to "reach out" and query the mesh as needed.
+    - **Fallback Mode**: If tools are unsupported, the controller switches to "Broadcast-Push" mode, injecting location and neighbor metadata automatically into the prompt.
+    - **Stealth Mode (`MESHTASTIC_AWARENESS=False`)**: Completely disables all mesh-specific injections for generic AI interactions.
+
+### 4. AI Provider System (Multi-Turn Loops)
+An abstract base class (`BaseProvider`) defines the interface for all AI models.
+- **Provider-Native Tool Loops**: The `OpenAIProvider`, `AnthropicProvider`, and `OllamaProvider` implement internal multi-turn loops. They intercept tool-call requests from the model, execute them via the `MeshtasticHandler`, and return the results in a single non-blocking session until a final text response is achieved.
+- **Gemini**: Supports native function calling and advanced grounding for internet/maps context.
 
 ### 4. Event Loop & Packet Processing
 The system uses a publish-subscribe model (`pubsub`) to handle incoming mesh packets.
@@ -66,20 +77,19 @@ sequenceDiagram
     participant Worker as Worker Thread
     participant AI as AI Provider
 
-    Mesh->>Main: !ai question
-    Main->>Main: Parse Command
-    Main->>Worker: Spawn Thread(prompt)
-    Main-->>Mesh: (Returns immediately)
+    Mesh->>Main: !ai Who is online?
+    Main->>Worker: Spawn Process(prompt)
+    Worker->>Mesh: "Thinking... 🤖"
     
-    rect rgb(240, 240, 240)
-        Note over Worker: Background Processing
-        Worker->>Mesh: "Thinking... 🤖"
-        Worker->>AI: Generate Response
-        AI-->>Worker: Response Text
-        Worker->>Worker: Chunk & Rate Limit
-        Worker->>Mesh: Send Chunk 1
-        Worker->>Mesh: Send Chunk 2...
+    loop Tool Turn
+        Worker->>AI: generateContent(prompt + context)
+        AI-->>Worker: functionCall: get_mesh_nodes()
+        Worker->>Main: Call Meshtastic API
+        Main-->>Worker: [NodeA, NodeB, ...]
     end
+    
+    AI-->>Worker: Final Text: "L4TA and 80 others are online."
+    Worker->>Mesh: Send Chunks
 ```
 
 ### 6. Admin & Security

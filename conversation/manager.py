@@ -150,6 +150,18 @@ class ConversationManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"chat_{timestamp}"
     
+    def _sanitize_name(self, name):
+        """
+        Sanitize conversation name to be filesystem safe.
+        Allows alphanumeric, underscores, and hyphens.
+        """
+        import re
+        # Remove any non-alphanumeric/underscore/hyphen chars
+        safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '', name)
+        if not safe_name:
+            safe_name = "unnamed_session"
+        return safe_name
+
     def save_conversation(self, user_id, conversation_name, history):
         """
         Save conversation history to a compressed file.
@@ -164,6 +176,9 @@ class ConversationManager:
         """
         if not history:
             return False, "No conversation history to save."
+        
+        # Sanitize name
+        conversation_name = self._sanitize_name(conversation_name)
         
         metadata = self._load_metadata(user_id)
         
@@ -341,6 +356,48 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"Failed to delete conversation: {e}")
             return False, f"Failed to delete: {str(e)}"
+
+    def delete_all_conversations(self, user_id):
+        """
+        Delete ALL conversations for a specific user.
+        
+        Args:
+            user_id: Unique identifier for the user
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        metadata = self._load_metadata(user_id)
+        
+        if not metadata:
+            return False, "No conversations to delete."
+        
+        user_dir = self._get_user_dir(user_id)
+        success_count = 0
+        fail_count = 0
+        
+        # Create a list of keys to avoid runtime error during iteration
+        conv_names = list(metadata.keys())
+        
+        for name in conv_names:
+            conv_path = os.path.join(user_dir, f"{name}.json.gz")
+            try:
+                if os.path.exists(conv_path):
+                    os.remove(conv_path)
+                del metadata[name]
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to delete {name}: {e}")
+                fail_count += 1
+                
+        # Save wiped metadata
+        self._save_metadata(user_id, metadata)
+        
+        if success_count > 0:
+            logger.info(f"Wiped {success_count} conversations for {user_id}")
+            return True, f"Deleted {success_count} conversations."
+        else:
+            return False, "Failed to delete conversations."
     
     def get_channel_conversation_name(self, channel_index):
         """

@@ -11,8 +11,9 @@ including sending messages, managing connections, and processing incoming packet
 
 import time
 import logging
-import sys
 import threading
+import math
+from datetime import datetime
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -165,10 +166,12 @@ class MeshtasticHandler:
         self.interface = None
         self.running = False
         
-        self.env_telemetry_cache = {}  # {node_id: {temperature, humidity, ...}}
+        self.telemetry_cache = {}      # {node_id: {type: {metrics}}}
+        self.telemetry_timestamps = {} # {node_id: {type: timestamp}}
         self.interesting_nodes = set() # Nodes to log telemetry for (e.g. active conversations)
         self.last_activity = 0
         self.connection_healthy = False
+        self.pending_acks = set()       # [NEW] Buffer for fast ACKs arriving before expected_ack_id is set
 
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
@@ -312,33 +315,60 @@ class MeshtasticHandler:
         return True
     def _on_ack(self, packetId, interface):
         """Handle incoming ACK events."""
-        if getattr(self, 'current_ack_event', None) and getattr(self, 'expected_ack_id', None) == packetId:
-            logger.debug(f"⚡ Event-driven ACK received for ID {packetId}")
+        expected_id = getattr(self, 'expected_ack_id', None)
+        
+        # 1. Store in pending buffer if we are waiting for an event
+        if getattr(self, 'current_ack_event', None):
+            self.pending_acks.add(packetId)
+            logger.debug(f"📥 ACK ID {packetId} added to pending buffer")
+
+        # 2. Check for direct match
+        if expected_id is not None and expected_id == packetId:
+            logger.info(f"⚡ Matched expected ACK ID {packetId}")
             self.current_ack_event.set()
+        else:
+            logger.debug(f"📡 Background ACK received: {packetId} (Expected: {expected_id})")
 
     def _on_telemetry(self, packet, interface):
-        """Handle incoming telemetry packets specifically to populate the cache."""
+        """Handle incoming telemetry packets to populate the multi-metric cache."""
         try:
             from_id_raw = packet.get('fromId')
-            # Handle int/str mix
             from_id = from_id_raw
             if isinstance(from_id_raw, int):
                 from_id = f"!{from_id_raw:08x}"
                 
             decoded = packet.get('decoded', {})
-            
-            # telemetry data is usually inside 'telemetry' key in decoded dictionary
             telemetry = decoded.get('telemetry', {})
-            env_data = telemetry.get('environmentMetrics')
             
-            if env_data and from_id:
-                self.env_telemetry_cache[from_id] = env_data
-                
+            if not from_id or not telemetry:
+                return
+
+            if from_id not in self.telemetry_cache:
+                self.telemetry_cache[from_id] = {}
+            if from_id not in self.telemetry_timestamps:
+                self.telemetry_timestamps[from_id] = {}
+
+            # Capture all recognized telemetry types
+            metric_types = [
+                'device_metrics', 'environment_metrics', 'air_quality_metrics', 
+                'power_metrics', 'local_stats', 'health_metrics', 'host_metrics'
+            ]
+            
+            updated_any = False
+            now = time.time()
+            for m_type in metric_types:
+                data = telemetry.get(m_type)
+                if data:
+                    self.telemetry_cache[from_id][m_type] = data
+                    self.telemetry_timestamps[from_id][m_type] = now
+                    updated_any = True
+            
+            if updated_any:
                 # Only log INFO if we care about this node, otherwise DEBUG
                 if from_id in self.interesting_nodes:
-                    logger.info(f"📊 Cached telemetry for {from_id}: {env_data}")
+                    logger.info(f"📊 Cached telemetry for {from_id}")
                 else:
-                    logger.debug(f"📊 Cached telemetry for {from_id}: {env_data}")
+                    logger.debug(f"📊 Cached telemetry for {from_id}")
         except Exception as e:
             logger.warning(f"Error caching telemetry: {e}")
 
@@ -364,23 +394,39 @@ class MeshtasticHandler:
             logger.warning(f"Failed to send probe: {e}")
             return False
 
-    def request_telemetry(self, destination_id):
+    def request_telemetry(self, destination_id, telemetry_type='environment'):
         """
-        Request telemetry from a specific node.
+        Request specific telemetry from a node.
         
-        This sends an empty telemetry packet with wantResponse=True
-        to trigger an asynchronous update from the remote node.
+        Args:
+            destination_id: Target node ID.
+            telemetry_type: 'device', 'environment', or 'local_stats'.
+            
+        Returns:
+            bool: True if request sent successfully.
         """
         if not self.interface or not self.running:
             logger.warning(f"Cannot request telemetry: Not connected")
             return False
             
         try:
-            # Create an empty environmental telemetry packet
-            # MeshMonitor uses an empty EnvironmentMetrics packet to request a refresh
-            env_metrics = telemetry_pb2.EnvironmentMetrics()
             telemetry = telemetry_pb2.Telemetry()
-            telemetry.environment_metrics.CopyFrom(env_metrics)
+            
+            # Map tool type to protobuf field
+            if telemetry_type == 'device':
+                telemetry.device_metrics.CopyFrom(telemetry_pb2.DeviceMetrics())
+            elif telemetry_type == 'local_stats':
+                telemetry.local_stats.CopyFrom(telemetry_pb2.LocalStats())
+            elif telemetry_type == 'air_quality':
+                telemetry.air_quality_metrics.CopyFrom(telemetry_pb2.AirQualityMetrics())
+            elif telemetry_type == 'power':
+                telemetry.power_metrics.CopyFrom(telemetry_pb2.PowerMetrics())
+            elif telemetry_type == 'health':
+                telemetry.health_metrics.CopyFrom(telemetry_pb2.HealthMetrics())
+            elif telemetry_type == 'host':
+                telemetry.host_metrics.CopyFrom(telemetry_pb2.HostMetrics())
+            else: # Default to environment
+                telemetry.environment_metrics.CopyFrom(telemetry_pb2.EnvironmentMetrics())
             
             payload = telemetry.SerializeToString()
             
@@ -389,7 +435,7 @@ class MeshtasticHandler:
             if isinstance(destination_id, str) and destination_id.startswith('!'):
                 dest = int(destination_id[1:], 16)
             
-            logger.info(f"📊 Requesting environmental telemetry from {destination_id} ({dest})")
+            logger.info(f"📊 Requesting {telemetry_type} telemetry from {destination_id} ({dest})")
             self.interface.sendData(
                 payload,
                 destinationId=dest,
@@ -398,7 +444,7 @@ class MeshtasticHandler:
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to request telemetry from {destination_id}: {e}")
+            logger.error(f"Failed to request {telemetry_type} telemetry from {destination_id}: {e}")
             return False
 
     def send_message(self, text, destination_id, channel_index=0, session_indicator=""):
@@ -545,7 +591,7 @@ class MeshtasticHandler:
 
     def get_all_nodes(self):
         """
-        Get a list of all known nodes with their names.
+        Get a list of all known nodes with names and coordinates.
         
         Returns:
             list: List of dicts with node info
@@ -556,32 +602,58 @@ class MeshtasticHandler:
         nodes = []
         for n_id, node in self.interface.nodes.items():
             user = node.get('user', {})
+            pos = node.get('position', {})
             nodes.append({
                 'id': user.get('id'),
                 'longName': user.get('longName'),
-                'shortName': user.get('shortName')
+                'shortName': user.get('shortName'),
+                'lat': pos.get('latitude'),
+                'lon': pos.get('longitude')
             })
         return nodes
 
     def get_node_list_summary(self):
         """
-        Get a concise summary of the node list for AI context.
+        Get a concise summary of the node list for AI context, including distances.
         
         Returns:
-            str: Formatted string of known nodes
+            str: Formatted string of known nodes with distance data
         """
         nodes = self.get_all_nodes()
         if not nodes:
             return "No neighbors detected on mesh."
             
+        # Get local node position for distance calculation
+        my_node = self.get_node_info()
+        my_pos = my_node.get('position', {}) if my_node else {}
+        my_lat = my_pos.get('latitude')
+        my_lon = my_pos.get('longitude')
+
         lines = ["Neighbor nodes on mesh:"]
         for n in nodes:
             if not n['id']: continue
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
-            lines.append(f"- {n['id']}: {name}{short}")
+            
+            # Calculate distance if positions are available
+            dist_str = ""
+            if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
+                dist = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
+                dist_str = f" [Distance: {dist:.2f}km]"
+                
+            lines.append(f"- {n['id']}: {name}{short}{dist_str}")
             
         return "\n".join(lines)
+
+    def _calculate_haversine(self, lat1, lon1, lat2, lon2):
+        """Calculate the great circle distance between two points in km."""
+        R = 6371.0  # Earth radius in km
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * \
+            math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
     def get_node_metadata(self, node_id):
         """
         Get metadata (location, battery, environment) for a node.
@@ -649,53 +721,95 @@ class MeshtasticHandler:
             if rssi is not None:
                 metadata_parts.append(f"RSSI: {rssi}dBm")
 
-            # 4. Environment Metrics
-            # First check direct node info, then fall back to our internal cache
-            env = node_info.get('environmentMetrics', {})
-            if not env and node_id in self.env_telemetry_cache:
-                env = self.env_telemetry_cache[node_id]
-                logger.debug(f"Using cached telemetry for {node_id}")
-
-            # Map API keys to Display labels
-            env_map = {
-                'temperature': 'Temp',
-                'relativeHumidity': 'Hum',
-                'barometricPressure': 'Press',
-                'lux': 'Lux',
-                'white_lux': 'WhiteLux',
-                'ir_lux': 'IRLux',
-                'gas_resistance': 'Gas',
-                'iaq': 'IAQ',
-                'distance': 'Dist',
-                'wind_speed': 'Wind',
-                'wind_gust': 'Gust',
-                'wind_direction': 'WindDir',
-                'rainfall_1h': 'Rain1h',
-                'rainfall_24h': 'Rain24h',
-                'soil_moisture': 'SoilMoist',
-                'soil_temperature': 'SoilTemp'
-            }
+            # 4. Comprehensive Telemetry (All 7 types)
+            # Use data from packet if available, otherwise fall back to cache
             
-            for key, label in env_map.items():
-                val = env.get(key)
-                if val is not None:
-                    # Format floats to 1 or 2 decimal places
-                    if isinstance(val, float):
-                         if key in ['lux', 'white_lux', 'ir_lux', 'gas_resistance']:
-                             val_str = f"{val:.1f}"
-                         elif key == 'barometricPressure':
-                             val_str = f"{val:.1f}hPa"
-                         elif key == 'temperature' or key == 'soil_temperature':
-                             val_str = f"{val:.1f}C"
-                         elif key == 'relativeHumidity' or key == 'soil_moisture':
-                             val_str = f"{val:.1f}%"
-                         else:
-                             val_str = f"{val:.2f}"
-                    else:
-                        val_str = str(val)
-                    
-                    metadata_parts.append(f"{label}: {val_str}")
+            # Map metrics to their display categories
+            telemetry_to_show = {
+                'environment_metrics': {
+                    'temperature': ('Temp', 'C'),
+                    'relative_humidity': ('Hum', '%'),
+                    'barometric_pressure': ('Press', 'hPa'),
+                    'lux': ('Lux', ''),
+                    'white_lux': ('WhiteLux', ''),
+                    'ir_lux': ('IRLux', ''),
+                    'gas_resistance': ('Gas', 'ohm'),
+                    'iaq': ('IAQ', ''),
+                    'distance': ('Dist', 'm'),
+                    'wind_speed': ('Wind', 'm/s'),
+                    'wind_gust': ('Gust', 'm/s'),
+                    'wind_direction': ('WindDir', 'deg'),
+                    'rainfall_1h': ('Rain1h', 'mm'),
+                    'rainfall_24h': ('Rain24h', 'mm'),
+                    'soil_moisture': ('SoilMoist', '%'),
+                    'soil_temperature': ('SoilTemp', 'C'),
+                    'voltage': ('EnvVolt', 'V'),
+                    'current': ('EnvCurr', 'mA')
+                },
+                'air_quality_metrics': {
+                    'pm10_standard': ('PM1.0', 'ug/m3'),
+                    'pm25_standard': ('PM2.5', 'ug/m3'),
+                    'pm100_standard': ('PM10.0', 'ug/m3'),
+                    'pm_voc_idx': ('VOCIdx', ''),
+                    'pm_nox_idx': ('NOXIdx', '')
+                },
+                'power_metrics': {
+                    'ch1_voltage': ('V1', 'V'), 'ch1_current': ('A1', 'mA'),
+                    'ch2_voltage': ('V2', 'V'), 'ch2_current': ('A2', 'mA'),
+                    'ch3_voltage': ('V3', 'V'), 'ch3_current': ('A3', 'mA')
+                },
+                'health_metrics': {
+                    'heart_bpm': ('HR', 'bpm'),
+                    'spO2': ('SpO2', '%'),
+                    'temperature': ('BodyTemp', 'C')
+                },
+                'local_stats': {
+                    'num_packets_tx': ('TX_Pkt', ''),
+                    'num_packets_rx': ('RX_Pkt', ''),
+                    'num_pkts_rx_bad': ('RX_Err', ''),
+                    'uptime_seconds': ('StatsUptime', 's')
+                },
+                'host_metrics': {
+                    'load1': ('Load1', ''),
+                    'free_mem_bytes': ('FreeMem', 'B'),
+                    'uptime': ('HostUptime', 's')
+                }
+            }
+
+            # Gather data from current packet AND cache
+            # Cache keys are the same as protobuf fields (snake_case)
+            cached_data = self.telemetry_cache.get(node_id, {})
+            
+            for m_type, field_map in telemetry_to_show.items():
+                # Check current node_info (API usually snake_case or camelCase depending on library version)
+                # Meshtastic python lib uses camelCase for the top-level keys in the node dict
+                msg_key = m_type
+                if m_type == 'environment_metrics': msg_key = 'environmentMetrics'
+                elif m_type == 'air_quality_metrics': msg_key = 'airQualityMetrics'
+                elif m_type == 'power_metrics': msg_key = 'powerMetrics'
+                elif m_type == 'health_metrics': msg_key = 'healthMetrics'
+                elif m_type == 'local_stats': msg_key = 'localStats'
+                elif m_type == 'host_metrics': msg_key = 'hostMetrics'
                 
+                # Get the best source of data
+                data = node_info.get(msg_key) or cached_data.get(m_type)
+                if not data: continue
+                
+                if isinstance(data, dict):
+                    for field, (label, unit) in field_map.items():
+                        # Try both snake_case (protobuf) and camelCase (library API)
+                        val = data.get(field)
+                        if val is None:
+                            camel_field = "".join(word.capitalize() if i > 0 else word for i, word in enumerate(field.split("_")))
+                            val = data.get(camel_field)
+                            
+                        if val is not None:
+                            if isinstance(val, float):
+                                val_str = f"{val:.1f}{unit}"
+                            else:
+                                val_str = f"{val}{unit}"
+                            metadata_parts.append(f"{label}: {val_str}")
+
             if not metadata_parts:
                 return None
                 
@@ -831,6 +945,7 @@ class MessageQueue:
             # Prepare ACK event
             self.handler.current_ack_event = threading.Event() if not is_broadcast else None
             self.handler.expected_ack_id = None
+            self.handler.pending_acks.clear()  # [NEW] Clear buffer for new attempt
             
             try:
                 # Send
@@ -846,10 +961,14 @@ class MessageQueue:
                 
                 logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1})")
                 
-                # Check ACK
+                # Check for Race Condition: If the ACK already arrived in the microsecond before ID registration
                 if not is_broadcast and pkt_id != 'unknown':
-                    # Wait for ACK
-                    if self.handler.current_ack_event.wait(timeout=20):  # 20s timeout
+                    if pkt_id in self.handler.pending_acks:
+                        logger.info(f"🏁 Fast ACK (Race Condition) already captured for ID: {pkt_id}")
+                        return True
+                        
+                    # Otherwise, Wait for ACK as normal
+                    if self.handler.current_ack_event.wait(timeout=30):  # 30s timeout
                         logger.info(f"✅ ACK received for chunk {chunk_num}")
                         return True
                     else:

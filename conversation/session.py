@@ -40,6 +40,18 @@ class SessionManager:
         self.session_timeout = session_timeout
         self.active_sessions = {}  # {user_id: session_data}
     
+    def _sanitize_name(self, name):
+        """
+        Sanitize conversation name to be filesystem safe.
+        Allows alphanumeric, underscores, and hyphens.
+        """
+        import re
+        # Remove any non-alphanumeric/underscore/hyphen chars
+        safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '', name)
+        if not safe_name:
+            safe_name = "unnamed_session"
+        return safe_name
+    
     def start_session(self, user_id, conversation_name=None, channel=0, to_node=None):
         """
         Start a new AI session for a user.
@@ -56,6 +68,9 @@ class SessionManager:
         # Generate name if not provided
         if not conversation_name:
             conversation_name = self.conversation_manager.generate_conversation_name()
+        else:
+            # Sanitize user-provided name
+            conversation_name = self._sanitize_name(conversation_name)
         
         # Create session data
         current_time = time.time()

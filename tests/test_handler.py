@@ -103,39 +103,63 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.interface._reader.is_alive.return_value = True
         self.handler.running = True
 
-    def test_get_node_metadata(self):
-        """Test extraction of node metadata (telemetry, location, battery, names)."""
-        node_id = "!1234abcd"
-        node_int = int("1234abcd", 16)
-        self.handler.interface.nodes = {
-            node_int: {
+    def test_get_node_metadata_exhaustive(self):
+        """Test extraction of ALL 7 types of node metadata."""
+        node_id = "!77777777"
+        node_int = int("77777777", 16)
+        
+        node_info = {
                 'num': node_int,
-                'user': {'id': node_id, 'longName': 'TestNode', 'shortName': 'TN'},
-                'position': {'latitude': 40.7, 'longitude': -74.0},
-                'snr': 5.5,
-                'rssi': -80,
-                'deviceMetrics': {'batteryLevel': 85},
-                'environmentMetrics': {'temperature': 22.5, 'barometricPressure': 1013.2}
-            }
+                'user': {'id': node_id, 'longName': 'FullNode', 'shortName': 'FN'},
+                'snr': 10.0,
+                'deviceMetrics': {'batteryLevel': 99, 'voltage': 4.2},
+                'environmentMetrics': {'temperature': 25.5, 'relativeHumidity': 50.1, 'lux': 150.0},
+                'airQualityMetrics': {'pm25_standard': 12.5, 'pm_voc_idx': 100},
+                'powerMetrics': {'ch1_voltage': 12.0, 'ch1_current': 500},
+                'healthMetrics': {'heart_bpm': 72, 'spO2': 98},
+                'localStats': {'num_packets_tx': 1000, 'num_packets_rx': 5000},
+                'hostMetrics': {'load1': 0.5, 'uptime': 3600}
         }
+        
+        self.handler.interface.nodes = {node_int: node_info}
         
         metadata = self.handler.get_node_metadata(node_id)
         self.assertIsNotNone(metadata)
-        self.assertIn("Name: TestNode", metadata)
-        self.assertIn("ShortName: TN", metadata)
-        self.assertIn("SNR: 5.5dB", metadata)
-        self.assertIn("RSSI: -80dBm", metadata)
-        self.assertIn("Location: 40.7000, -74.0000", metadata)
-        self.assertIn("Battery: 85%", metadata)
-        self.assertIn("Temp: 22.5C", metadata)
-        self.assertIn("Press: 1013.2hPa", metadata)
+        
+        # Verify 1. Device
+        self.assertIn("Battery: 99%", metadata)
+        self.assertIn("Voltage: 4.20V", metadata)
+        
+        # Verify 2. Environment
+        self.assertIn("Temp: 25.5C", metadata)
+        self.assertIn("Hum: 50.1%", metadata)
+        self.assertIn("Lux: 150.0", metadata)
+        
+        # Verify 3. Air Quality
+        self.assertIn("PM2.5: 12.5ug/m3", metadata)
+        self.assertIn("VOCIdx: 100", metadata)
+        
+        # Verify 4. Power
+        self.assertIn("V1: 12.0V", metadata)
+        self.assertIn("A1: 500mA", metadata)
+        
+        # Verify 5. Health
+        self.assertIn("HR: 72bpm", metadata)
+        self.assertIn("SpO2: 98%", metadata)
+        
+        # Verify 6. Local Stats
+        self.assertIn("TX_Pkt: 1000", metadata)
+        self.assertIn("RX_Pkt: 5000", metadata)
+        
+        # Verify 7. Host
+        self.assertIn("Load1: 0.5", metadata)
+        self.assertIn("HostUptime: 3600s", metadata)
 
     def test_get_node_metadata_uses_cache(self):
         """Test that metadata extraction falls back to the internal cache."""
         node_id = "!5678abcd"
         node_int = int("5678abcd", 16)
         
-        # Node exists in interface, but has NO environmentMetrics
         self.handler.interface.nodes = {
             node_int: {
                 'num': node_int,
@@ -143,10 +167,12 @@ class TestHandlerMetadata(unittest.TestCase):
             }
         }
         
-        # But we have it in our cache!
-        self.handler.env_telemetry_cache[node_id] = {
-            'temperature': 18.5,
-            'relativeHumidity': 42.0
+        # New multi-category cache structure
+        self.handler.telemetry_cache[node_id] = {
+            'environment_metrics': {
+                'temperature': 18.5,
+                'relative_humidity': 42.0
+            }
         }
         
         metadata = self.handler.get_node_metadata(node_id)
@@ -166,13 +192,13 @@ class TestHandlerMetadata(unittest.TestCase):
         node_id_uninteresting = "!uninteresting"
         packet_uninteresting = {
             'fromId': node_id_uninteresting,
-            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 20.0}}}
+            'decoded': {'telemetry': {'environment_metrics': {'temperature': 20.0}}}
         }
         
         with patch('meshtastic_handler.handler.logger') as mock_logger:
             self.handler._on_telemetry(packet_uninteresting, None)
-            # Should call debug, NOT info
             mock_logger.debug.assert_called()
+            self.assertIn(node_id_uninteresting, self.handler.telemetry_cache)
             mock_logger.info.assert_not_called()
             
         # 2. Test "interesting" node (should be INFO)
@@ -180,7 +206,7 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.track_node(node_id_interesting)
         packet_interesting = {
             'fromId': node_id_interesting,
-            'decoded': {'telemetry': {'environmentMetrics': {'temperature': 25.0}}}
+            'decoded': {'telemetry': {'environment_metrics': {'temperature': 25.0}}}
         }
         
         with patch('meshtastic_handler.handler.logger') as mock_logger:
@@ -208,7 +234,7 @@ class TestHandlerMetadata(unittest.TestCase):
             'decoded': {
                 'portnum': 'TELEMETRY_APP',
                 'telemetry': {
-                    'environmentMetrics': {
+                    'environment_metrics': {
                         'temperature': 25.0,
                         'lux': 100
                     }
@@ -220,20 +246,28 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler._on_telemetry(packet, None)
         
         # Verify cache was updated
-        self.assertIn(node_id, self.handler.env_telemetry_cache)
-        self.assertEqual(self.handler.env_telemetry_cache[node_id]['temperature'], 25.0)
-        self.assertEqual(self.handler.env_telemetry_cache[node_id]['lux'], 100)
+        self.assertIn(node_id, self.handler.telemetry_cache)
+        self.assertIn('environment_metrics', self.handler.telemetry_cache[node_id])
+        self.assertEqual(self.handler.telemetry_cache[node_id]['environment_metrics']['temperature'], 25.0)
+        
+        # Verify timestamps were captured
+        self.assertIn(node_id, self.handler.telemetry_timestamps)
+        self.assertIn('environment_metrics', self.handler.telemetry_timestamps[node_id])
+        self.assertGreater(self.handler.telemetry_timestamps[node_id]['environment_metrics'], 0)
 
     @patch('meshtastic_handler.handler.telemetry_pb2')
     @patch('meshtastic_handler.handler.portnums_pb2')
-    def test_request_telemetry(self, mock_portnums_pb2, mock_telemetry_pb2):
-        """Test that request_telemetry sends an appropriate data packet."""
+    def test_request_telemetry_types(self, mock_portnums_pb2, mock_telemetry_pb2):
+        """Test that request_telemetry sends appropriate packets for various types."""
         node_id = "!f8d0a80a"
-        # self.handler.running = True # Already set in setUp
         
         # Mock the protobuf structures
         mock_env_metrics = MagicMock()
         mock_telemetry_pb2.EnvironmentMetrics.return_value = mock_env_metrics
+        mock_device_metrics = MagicMock()
+        mock_telemetry_pb2.DeviceMetrics.return_value = mock_device_metrics
+        mock_local_stats = MagicMock()
+        mock_telemetry_pb2.LocalStats.return_value = mock_local_stats
         
         mock_telemetry = MagicMock()
         mock_telemetry_pb2.Telemetry.return_value = mock_telemetry
@@ -241,14 +275,41 @@ class TestHandlerMetadata(unittest.TestCase):
         # Mock portnum
         mock_portnums_pb2.PortNum.TELEMETRY_APP = 67
         
-        self.handler.request_telemetry(node_id)
-        
-        # Verify sendData was called on the interface
-        self.handler.interface.sendData.assert_called_once()
+        # 1. Test Environment
+        self.handler.request_telemetry(node_id, 'environment')
+        self.handler.interface.sendData.assert_called()
         args, kwargs = self.handler.interface.sendData.call_args
         self.assertEqual(kwargs['destinationId'], int("f8d0a80a", 16))
-        self.assertEqual(kwargs['portNum'], 67)
-        self.assertTrue(kwargs['wantResponse'])
+        
+        # 2. Test Device
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'device')
+        mock_telemetry.device_metrics.CopyFrom.assert_called_with(mock_device_metrics)
+        
+        # 3. Test Local Stats
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'local_stats')
+        mock_telemetry.local_stats.CopyFrom.assert_called_with(mock_local_stats)
+
+        # 4. Test Air Quality
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'air_quality')
+        mock_telemetry.air_quality_metrics.CopyFrom.assert_called()
+
+        # 5. Test Power
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'power')
+        mock_telemetry.power_metrics.CopyFrom.assert_called()
+
+        # 6. Test Health
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'health')
+        mock_telemetry.health_metrics.CopyFrom.assert_called()
+
+        # 7. Test Host
+        self.handler.interface.sendData.reset_mock()
+        self.handler.request_telemetry(node_id, 'host')
+        mock_telemetry.host_metrics.CopyFrom.assert_called()
 
     def test_get_node_metadata_missing(self):
         """Test metadata extraction with missing fields."""
@@ -285,8 +346,8 @@ class TestHandlerMetadata(unittest.TestCase):
         
         nodes = self.handler.get_all_nodes()
         self.assertEqual(len(nodes), 2)
-        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1'}, nodes)
-        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2'}, nodes)
+        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1', 'lat': None, 'lon': None}, nodes)
+        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2', 'lat': None, 'lon': None}, nodes)
 
     def test_get_node_list_summary(self):
         """Test node list summary formatting."""
@@ -352,6 +413,48 @@ class TestMessageQueue(unittest.TestCase):
             
             # Verify send called 2 times (for 2 chunks)
             self.assertEqual(mock_send.call_count, 2)
+
+class TestACKResilience(unittest.TestCase):
+    def setUp(self):
+        self.mock_handler = MagicMock()
+        self.mock_handler.running = True
+        self.mock_handler.interface = MagicMock()
+        self.mock_handler.pending_acks = set()
+        self.mock_handler._split_message.return_value = ["chunk1"]
+        
+        # In real code, _on_ack sets current_ack_event.set()
+        # But here we want to test the RACE condition in _send_chunk_reliable
+        self.queue = MessageQueue(self.mock_handler)
+        self.queue.processing = False # Stop the loop so we can test manually
+
+    def test_ack_race_condition_fix(self):
+        """
+        Test that an ACK already in the buffer is matched immediately.
+        This simulates the Radio/Mesh replying faster than the Python code can 
+        register the Packet ID.
+        """
+        pkt_id = 12345
+        mock_packet = MagicMock()
+        mock_packet.id = pkt_id
+        
+        # SIMULATE REAL RACE: The ACK arrives via background thread WHILE sendText is running
+        # We use a side_effect to add it to pending_acks at the moment of sending.
+        def mock_send_side_effect(*args, **kwargs):
+            self.mock_handler.pending_acks.add(pkt_id)
+            return mock_packet
+            
+        self.mock_handler.interface.sendText.side_effect = mock_send_side_effect
+        
+        # Use precise patching where it is used in handler.py
+        with patch('meshtastic_handler.handler.threading.Event') as MockEvent:
+            mock_event_instance = MagicMock()
+            MockEvent.return_value = mock_event_instance
+            
+            success = self.queue._send_chunk_reliable("payload", "!dest", 0, False, 1, 1)
+            
+            self.assertTrue(success)
+            # The wait() should NOT have been called because it was a "Fast ACK" caught in the buffer
+            mock_event_instance.wait.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

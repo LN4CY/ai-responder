@@ -16,6 +16,8 @@ The application is configured primarily via environment variables passed to the 
 | `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface. |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds to wait between reconnection attempts. |
 | `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
+| `MESHTASTIC_AWARENESS` | `true` | Enable/Disable all mesh context injection (metadata & tools). |
+| `ACK_TIMEOUT` | `60` | Max seconds to wait for radio acknowledgment before retry. |
 | `HEALTH_CHECK_ACTIVITY_TIMEOUT` | `300` | Seconds of silence before sending a probe (Radio Watchdog). |
 | `HEALTH_CHECK_PROBE_INTERVAL` | `150` | Seconds between active probes when silent. |
 
@@ -48,13 +50,25 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
-### Situational Awareness (Metadata)
+### Situational Awareness (AI Tool Use)
 
-The responder automatically injects helpful metadata into the AI's context for direct messages and context-relevant broadcast queries:
-- **Location**: Injected as GPS coordinates (latitude, longitude).
-- **Battery**: Node battery level and voltage.
-- **Environment**: Temperature, Humidity, Barometric Pressure, and Air Quality (IAQ).
-- **On-Demand Requests**: When a session starts or an environmental query is detected, the bot proactively sends an asynchronous telemetry request to the user's node to ensure and cache fresh data for subsequent messages.
+The responder uses **AI Function Calling** (Adaptive Tools) to proactively query the network. This eliminates noisy metadata injection and allows the AI to only fetch what it needs.
+
+**Provider Implementation:**
+- **Gemini**: Native function calling with multi-turn orchestration and **Dynamic Grounding Switch** (simulated mixed mode).
+- **OpenAI / Anthropic**: Multi-turn tool loops using structured API requests.
+- **Ollama**: Conditional tool support (Llama 3.1+, Nemo) with text fallback.
+
+**Available AI Tools:**
+- **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
+- **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh.
+- **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
+
+**Adaptive Fallback Logic:**
+If `MESHTASTIC_AWARENESS` is enabled but the model doesn't support tools, the system automatically injects:
+- **Location**: GPS coordinates (latitude, longitude) for grounding.
+- **Node Metadata**: A clean `[RADIO CONTEXT]` block describing the user's environment.
+- **On-Demand Telemetry**: Proactive requests for fresh neighbor data during active sessions.
 
 You can mount custom prompt files in Docker:
 ```yaml

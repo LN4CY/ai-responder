@@ -17,8 +17,14 @@ class BaseProvider(ABC):
         """Initialize provider with configuration."""
         self.config = config
     
+    @property
     @abstractmethod
-    def get_response(self, prompt, history=None, context_id=None, location=None):
+    def supports_tools(self):
+        """Returns True if the current model/config supports function calling."""
+        pass
+
+    @abstractmethod
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
         """
         Get AI response for the given prompt.
         
@@ -26,6 +32,8 @@ class BaseProvider(ABC):
             prompt: User's input text
             history: List of previous messages [{'role': 'user/assistant', 'content': '...'}]
             context_id: Unique identifier for the conversation context
+            location: Optional location metadata
+            tools: Optional list of tool definitions for function calling
         
         Returns:
             str: AI response text or error message

@@ -11,7 +11,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-# Environment Variables
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -19,6 +18,7 @@ MESHTASTIC_PORT = int(os.getenv('MESHTASTIC_PORT', '4403'))
 ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
 AI_PROVIDER = os.getenv('AI_PROVIDER', '')
 ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
+MESHTASTIC_AWARENESS = os.getenv('MESHTASTIC_AWARENESS', 'true').lower() == 'true'
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
@@ -27,7 +27,7 @@ OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
 OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
 GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
@@ -53,30 +53,46 @@ SYSTEM_PROMPT_ONLINE_FILE = os.getenv('SYSTEM_PROMPT_ONLINE_FILE', 'system_promp
 
 DEFAULT_SYSTEM_PROMPT_LOCAL = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
-- You are strictly limited to the history provided in this specific conversation.
-- Each device and conversation is a separate sandbox. Never leak data between them.
+- Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-MESH AWARENESS & METADATA:
-- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
-- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
-- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
-- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
-- Use this data specifically to answer telemetry, location, or network status questions.
-- Keep responses concise (under 200 chars) for mesh efficiency."""
+PERSONA:
+- Keep responses concise (under 200 chars) for mesh efficiency.
+- You receive [Node ID] and minimal environment metadata with user messages."""
+
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
-- You are strictly limited to the history provided in this specific conversation.
-- Each device and conversation is a separate sandbox. Never leak data between them.
+- Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
 
-MESH AWARENESS & METADATA:
-- User messages are [Node !hexid]. You may see additional metadata blocks surrounded by ---.
-- TELEMETRY: You receive [User: ...] (sender), [Bot: ...] (self), or [Metadata for Name (!id): ...] for nodes mentioned in the prompt.
-- MESH STATUS: If the query is about the network (e.g., "who is online?"), you receive a list of "Neighbor nodes on mesh".
-- MULTI-NODE: You can query status for any node if the user provides its HexID (!hexid) or Name.
-- Use this data specifically to answer telemetry, location, or network status questions.
-- Keep responses concise (under 200 chars) for mesh efficiency."""
+TOOL USAGE PROTOCOL:
+1. MESHTASTIC TOOLS (Data Gathering Only):
+   - Use these ONLY to fetch raw data from the mesh (nodes, telemetry, status).
+   - "get_my_info": Call for your own identity/status.
+    - "get_mesh_nodes": "Who is online" or find Node IDs. Now includes calculated distances from the bot.
+    - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
+    - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale.
+
+2. INTERNAL REASONING (Calculations & Logic):
+   - You MUST use your own internal capabilities for math, analysis, and logic.
+   - DO NOT look for tools to calculate distance, convert units, or format data.
+   - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
+   - LATENCY GUIDANCE: Never tell a user to "use a tool." If you call `request_node_telemetry` and it times out, tell the user to **ask you again in 60 seconds** while you wait for the mesh.
+
+3. GOOGLE SEARCH (New/External Info Only):
+   - "google_search(query)": Use this ONLY for real-time info (weather, news, sports) or specific data too new for your training.
+   - OR if the user explicitly asks you to "search for" or "Google" something.
+   - DO NOT use search for general knowledge (history, science, definitions, common facts). Use your internal model for that.
+
+LOGIC FLOW:
+- User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.
+- User asks about General Knowledge -> Use Internal Model -> Respond.
+- User asks about Real-time/New Info OR Explicitly asks to Search -> Call Google Search -> Respond.
+- User asks for Math/Distance -> Use Internal Reasoning.
+
+RESPONSE STYLE:
+- Keep responses concise (under 200 chars) for mesh efficiency.
+- User messages are tagged [Node ID]. Use tools for all other mesh data."""
 
 # Meshtastic Configuration
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
@@ -139,7 +155,8 @@ class Config:
         return {
             'allowed_channels': [0],
             'admin_nodes': [],
-            'current_provider': 'ollama'
+            'current_provider': 'ollama',
+            'meshtastic_awareness': True
         }
     
     def save(self):
