@@ -10,13 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      contents: read
     steps:
       - name: Delete untagged images
         uses: snok/container-retention-policy@v2
         with:
           image-names: ai-responder
           cut-off: 14 days ago UTC
-          account-type: org
+          account-type: personal
           org-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           untagged-only: true
@@ -26,7 +27,7 @@ jobs:
         with:
           image-names: ai-responder
           cut-off: 14 days ago UTC
-          account-type: org
+          account-type: personal
           org-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           filter-tags: fix-*,feat-*,pr-*
@@ -37,7 +38,7 @@ jobs:
         with:
           image-names: ai-responder
           cut-off: 30 days ago UTC
-          account-type: org
+          account-type: personal
           org-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           filter-tags: main
