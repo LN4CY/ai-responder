@@ -18,7 +18,7 @@ jobs:
           image-names: ai-responder
           cut-off: 14 days ago UTC
           account-type: personal
-          org-name: ${{ github.repository_owner }}
+          account-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           untagged-only: true
 
@@ -28,7 +28,7 @@ jobs:
           image-names: ai-responder
           cut-off: 14 days ago UTC
           account-type: personal
-          org-name: ${{ github.repository_owner }}
+          account-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           filter-tags: fix-*,feat-*,pr-*
           keep-at-least: 3
@@ -39,7 +39,7 @@ jobs:
           image-names: ai-responder
           cut-off: 30 days ago UTC
           account-type: personal
-          org-name: ${{ github.repository_owner }}
+          account-name: ${{ github.repository_owner }}
           token: ${{ secrets.GITHUB_TOKEN }}
           filter-tags: main
           keep-at-least: 5
