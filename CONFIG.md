@@ -18,6 +18,7 @@ The application is configured primarily via environment variables passed to the 
 | `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
 | `MESHTASTIC_AWARENESS` | `true` | Enable/Disable all mesh context injection (metadata & tools). |
 | `ACK_TIMEOUT` | `60` | Max seconds to wait for radio acknowledgment before retry. |
+| `CHUNK_DELAY` | `15` | Seconds to wait before sending the next chunk of a split message. |
 | `HEALTH_CHECK_ACTIVITY_TIMEOUT` | `300` | Seconds of silence before sending a probe (Radio Watchdog). |
 | `HEALTH_CHECK_PROBE_INTERVAL` | `150` | Seconds between active probes when silent. |
 

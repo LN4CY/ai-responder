@@ -61,16 +61,19 @@ class SafeTCPInterface(TCPInterface):
                                 routing = debug_decoded.packet.decoded
                                 rid = routing.request_id
                                 error = getattr(routing, 'error_reason', 0)
-                                sender = getattr(debug_decoded.packet, 'from', None)
+                                
+                                # FIX: Use 'from' (getattr handles reserved keyword conflict if any)
+                                sender = getattr(debug_decoded.packet, 'from', 0)
                                 
                                 # Get own ID
                                 my_id = getattr(self, 'myNodeNum', None)
                                 
                                 if rid:
-                                    # Ignore echoes (only if sender matches my_id explicitly)
-                                    # We MUST accept sender=None because legitimate ACKs are arriving without source ID
-                                    if my_id and sender and sender == my_id:
-                                         logger.debug(f"⚡ Ignored implicit ACK for ID {rid} (Source: {sender} - is self)")
+                                    # Ignore echoes (sender == my_id) OR local routing msgs (sender=0)
+                                    if (my_id and sender == my_id) or sender == 0:
+                                         logger.debug(f"⚡ Ignored implicit ACK for ID {rid} (Source: {sender})")
+                                    
+                                    # Accept valid ACKs from remote nodes (sender != 0)
                                     elif error == 0:
                                         logger.debug(f"⚡ Found implicit ACK/Routing in MeshPacket for ID {rid} from {sender} - Forcing event")
                                         pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
@@ -934,7 +937,9 @@ class MessageQueue:
                 
             # 3. Rate limiting/Pacing between chunks
             if i < total_chunks - 1:
-                time.sleep(2)  # Small delay between chunks
+                import config
+                logger.debug(f"Waiting {config.CHUNK_DELAY}s before sending next chunk...")
+                time.sleep(config.CHUNK_DELAY)  # Configurable delay between chunks
                 
     def _send_chunk_reliable(self, payload, dest, chan, is_broadcast, chunk_num, total_chunks):
         """Send a single chunk with retries."""

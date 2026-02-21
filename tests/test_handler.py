@@ -81,7 +81,7 @@ class TestSafeTCPInterface(unittest.TestCase):
         self.mock_pub.sendMessage.assert_not_called()
 
     def test_implicit_ack_none_sender(self):
-        """Test implicit ACK with None sender (should be ACCEPTED per fix)."""
+        """Test implicit ACK with None/0 sender (should be IGNORED as local routing confirmation)."""
         packet = mesh_pb2.MeshPacket(**{'from': 0}) # 0/None
         packet.decoded.portnum = 5
         packet.decoded.request_id = 666
@@ -91,8 +91,8 @@ class TestSafeTCPInterface(unittest.TestCase):
         
         self.interface._handleFromRadio(from_radio.SerializeToString())
         
-    # Verify ACK event FIRED
-        self.mock_pub.sendMessage.assert_any_call("meshtastic.ack", packetId=666, interface=self.interface)
+        # Verify ACK event IGNORED
+        self.mock_pub.sendMessage.assert_not_called()
 
 class TestHandlerMetadata(unittest.TestCase):
     def setUp(self):

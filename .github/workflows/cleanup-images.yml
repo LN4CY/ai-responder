@@ -10,37 +10,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      contents: read
     steps:
       - name: Delete untagged images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 14 days ago UTC
-          account-type: org
-          org-name: ${{ github.repository_owner }}
+          cut-off: 14d
+          account: user
           token: ${{ secrets.GITHUB_TOKEN }}
-          untagged-only: true
+          tag-selection: untagged
 
       - name: Delete old feature branch images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 14 days ago UTC
-          account-type: org
-          org-name: ${{ github.repository_owner }}
+          cut-off: 14d
+          account: user
           token: ${{ secrets.GITHUB_TOKEN }}
-          filter-tags: fix-*,feat-*,pr-*
-          keep-at-least: 3
+          image-tags: fix-*,feat-*,pr-*
+          keep-n-most-recent: 3
 
       - name: Delete old main branch images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 30 days ago UTC
-          account-type: org
-          org-name: ${{ github.repository_owner }}
+          cut-off: 30d
+          account: user
           token: ${{ secrets.GITHUB_TOKEN }}
-          filter-tags: main
-          keep-at-least: 5
+          image-tags: main
+          keep-n-most-recent: 5
 
 

@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Environment Variables
+VERSION = "1.4.0"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -98,6 +99,7 @@ RESPONSE STYLE:
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
 CONNECTION_RETRY_INTERVAL = int(os.getenv('CONNECTION_RETRY_INTERVAL', '10')) # Seconds between reconnections
 CONNECTION_MAX_RETRIES = int(os.getenv('CONNECTION_MAX_RETRIES', '3')) # Initial connection retries
+CHUNK_DELAY = int(os.getenv('CHUNK_DELAY', '15')) # Seconds to delay between sending split message chunks
 
 # Health check and Radio Watchdog
 HEALTH_CHECK_ACTIVITY_TIMEOUT = int(os.getenv('HEALTH_CHECK_ACTIVITY_TIMEOUT', '300')) # 5 minutes default
