@@ -13,35 +13,32 @@ jobs:
       contents: read
     steps:
       - name: Delete untagged images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 14 days ago UTC
-          account-type: personal
-          org-name: ${{ github.repository_owner }}
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          untagged-only: true
+          cut-off: 14d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag-selection: untagged
 
       - name: Delete old feature branch images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 14 days ago UTC
-          account-type: personal
-          org-name: ${{ github.repository_owner }}
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          filter-tags: fix-*,feat-*,pr-*
-          keep-at-least: 3
+          cut-off: 14d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: fix-*,feat-*,pr-*
+          keep-n-most-recent: 3
 
       - name: Delete old main branch images
-        uses: snok/container-retention-policy@v2
+        uses: snok/container-retention-policy@v3.0.0
         with:
           image-names: ai-responder
-          cut-off: 30 days ago UTC
-          account-type: personal
-          org-name: ${{ github.repository_owner }}
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          filter-tags: main
-          keep-at-least: 5
+          cut-off: 30d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: main
+          keep-n-most-recent: 5
 
 
