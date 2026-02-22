@@ -48,7 +48,7 @@ logger = logging.getLogger('AI-Responder')
 logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 class AIResponder:
     """

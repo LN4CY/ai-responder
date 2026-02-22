@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
