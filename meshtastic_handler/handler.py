@@ -888,6 +888,14 @@ class MessageQueue:
     def enqueue(self, text, destination_id, channel_index, session_indicator):
         """Add a message to the queue."""
         with self.lock:
+            # Enforce max queue size
+            import config
+            max_size = getattr(config, 'MESH_MAX_QUEUE_SIZE', 100)
+            
+            if len(self.queue) >= max_size:
+                logger.error(f"Queue FULL ({max_size} msgs). Dropping new message for {destination_id}")
+                return False
+                
             self.queue.append({
                 'text': text,
                 'dest': destination_id,
@@ -895,7 +903,13 @@ class MessageQueue:
                 'sess': session_indicator,
                 'time': time.time()
             })
-            logger.debug(f"Message queued for {destination_id} (Queue size: {len(self.queue)})")
+            
+            qsize = len(self.queue)
+            if qsize >= (max_size * 0.8):
+                logger.warning(f"Queue nearly full: {qsize}/{max_size} messages pending")
+            
+            logger.debug(f"Message queued for {destination_id} (Queue size: {qsize})")
+            return True
             
     def _process_loop(self):
         """Main processing loop."""

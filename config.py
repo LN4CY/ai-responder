@@ -96,6 +96,7 @@ RESPONSE STYLE:
 - User messages are tagged [Node ID]. Use tools for all other mesh data."""
 
 # Meshtastic Configuration
+MESH_MAX_QUEUE_SIZE = int(os.getenv('MESH_MAX_QUEUE_SIZE', '100'))
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
 CONNECTION_RETRY_INTERVAL = int(os.getenv('CONNECTION_RETRY_INTERVAL', '10')) # Seconds between reconnections
 CONNECTION_MAX_RETRIES = int(os.getenv('CONNECTION_MAX_RETRIES', '3')) # Initial connection retries
