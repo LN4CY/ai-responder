@@ -1191,11 +1191,13 @@ class AIResponder:
                 self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                 self.session_manager.update_activity(from_node)
             
+            logger.info(f"💬 Gemini response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
+            logger.info(f"✅ Response queued to {from_node} on ch{channel}")
             
         except Exception as e:
-            logger.error(f"Error processing AI query: {e}")
-            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel, is_dm=is_dm)
+            logger.error(f"Error processing AI query: {e}", exc_info=True)
+            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel)
         finally:
             with self._workers_lock:
                 self._active_workers.pop(thread_id, None)
@@ -1344,7 +1346,7 @@ class AIResponder:
                     self._last_health_log = current_time
                     with self._workers_lock:
                         active_count = len(self._active_workers)
-                    queue = getattr(self.meshtastic, 'queue', None)
+                    queue = getattr(self.meshtastic, '_message_queue', None)
                     q_age = int(current_time - queue.last_heartbeat) if queue else -1
                     connected = self.meshtastic.is_connected()
                     logger.info(
