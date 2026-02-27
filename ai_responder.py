@@ -21,6 +21,7 @@ import threading
 import sys
 import re
 import requests
+import pathlib
 from pubsub import pub
 
 # Import our modular components
@@ -138,7 +139,17 @@ class AIResponder:
                 self.config.save()
                 logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
         
-        # Provider logging moved to connect()
+        # Admin and Channel init...
+        
+        # Touch health file initially
+        self.touch_health()
+
+    def touch_health(self):
+        """Touch the healthy file to indicate the service is running."""
+        try:
+            pathlib.Path("/tmp/healthy").touch()
+        except Exception:
+            pass
     
     # ==================== History Management ====================
     
@@ -1177,13 +1188,9 @@ class AIResponder:
     # ==================== Meshtastic Message Handler ====================
     
     def on_receive(self, packet, interface):
-        """
-        Callback for incoming Meshtastic messages.
+        """Callback for incoming Meshtastic messages."""
+        self.touch_health()
         
-        Args:
-            packet: Meshtastic packet
-            interface: Meshtastic interface instance
-        """
         try:
             # Update activity timestamp
             self.last_activity = time.time()
@@ -1298,6 +1305,12 @@ class AIResponder:
                     self.connection_lost = False
 
                 # 3. Update Heartbeat / Health Check
+                # Also check message queue heartbeat (should tick every 500ms when idle)
+                queue_heartbeat = getattr(self.meshtastic, 'queue', None)
+                if queue_heartbeat and (current_time - queue_heartbeat.last_heartbeat > 300):
+                    health_ok = False
+                    reasons.append("Message queue thread stalled (>300s)")
+
                 if health_ok:
                     try:
                         with open("/tmp/healthy", "w") as f:

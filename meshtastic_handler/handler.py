@@ -887,6 +887,7 @@ class MessageQueue:
         self.lock = threading.Lock()
         self.processing = False
         self.thread = None
+        self.last_heartbeat = time.time()
         
         # Start background thread
         self.start()
@@ -938,6 +939,7 @@ class MessageQueue:
             if item:
                 self._send_item(item)
             else:
+                self.last_heartbeat = time.time()
                 time.sleep(0.5)
                 
     def _send_item(self, item):
@@ -953,6 +955,7 @@ class MessageQueue:
         is_broadcast = (dest == '^all')
         
         for i, chunk in enumerate(chunks):
+            self.last_heartbeat = time.time()
             # 1. Format Payload
             payload = chunk
             if total_chunks > 1:
