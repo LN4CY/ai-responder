@@ -22,8 +22,18 @@ class GeminiProvider(BaseProvider):
         return "Gemini"
     
     def _make_request(self, url, payload):
-        """Make internal HTTP request to Gemini API."""
-        return requests.post(url, json=payload, timeout=30)
+        """Make internal HTTP request to Gemini API.
+        
+        Uses a fresh session per request to avoid stale connection pool issues
+        after Docker network changes (e.g., meshmonitor restarts).
+        """
+        session = requests.Session()
+        # Disable keep-alive to prevent reusing stale connections
+        session.headers.update({'Connection': 'close'})
+        try:
+            return session.post(url, json=payload, timeout=(10, 30))  # (connect, read)
+        finally:
+            session.close()
 
     @property
     def supports_tools(self):
