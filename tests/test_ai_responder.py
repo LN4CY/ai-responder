@@ -283,28 +283,29 @@ class TestAIResponder(unittest.TestCase):
         args, _ = mock_post.call_args
         self.assertIn('/api/chat', args[0])
 
-    @patch('requests.post')
-    def test_gemini_provider(self, mock_post):
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_provider(self, mock_session_cls):
         """Test Gemini provider logic."""
         self.responder.config['current_provider'] = 'gemini'
         self.responder.config.save()
         
-        # Patch API key and Model
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
+        }
+        mock_session = MagicMock()
+        mock_session.post.return_value = mock_response
+        mock_session_cls.return_value = mock_session
+
         with patch('providers.gemini.config.GEMINI_API_KEY', 'test-key'):
             with patch('providers.gemini.config.GEMINI_MODEL', 'gemini-test-model'):
-                mock_response = MagicMock()
-                mock_response.status_code = 200
-                mock_response.json.return_value = {
-                    "candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]
-                }
-                mock_post.return_value = mock_response
-
                 with patch('providers.gemini.config.GEMINI_SEARCH_GROUNDING', True):
                     response = self.responder.get_ai_response("hi", "test_gemini")
                     self.assertEqual(response, "Gemini says hi")
                     
                     # Check URL uses configured model
-                    call_args = mock_post.call_args
+                    call_args = mock_session.post.call_args
                     url = call_args[0][0]
                     payload = call_args[1]['json']
                     self.assertIn('gemini-test-model', url)
@@ -767,8 +768,8 @@ class TestAIProviders(unittest.TestCase):
             response = provider.get_response("test")
             self.assertIn("timed out", response)
 
-    @patch('requests.post')
-    def test_gemini_error_handling(self, mock_post):
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_error_handling(self, mock_session_cls):
         """Test Gemini provider error scenarios."""
         from providers.gemini import GeminiProvider
         provider = GeminiProvider(self.config)
@@ -777,14 +778,16 @@ class TestAIProviders(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.status_code = 500
         mock_response.json.return_value = {"error": {"message": "Internal Server Error"}}
-        mock_post.return_value = mock_response
+        mock_session = MagicMock()
+        mock_session.post.return_value = mock_response
+        mock_session_cls.return_value = mock_session
         
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
             self.assertIn("Failed to get response", response)
 
-    @patch('requests.post')
-    def test_gemini_grounding_feedback(self, mock_post):
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_grounding_feedback(self, mock_session_cls):
         """Test that Gemini provider correctly handles grounding metadata."""
         from providers.gemini import GeminiProvider
         provider = GeminiProvider(self.config)
@@ -798,15 +801,17 @@ class TestAIProviders(unittest.TestCase):
                 "groundingMetadata": {"webSearchQueries": ["capital of france"]}
             }]
         }
-        mock_post.return_value = mock_response
+        mock_session = MagicMock()
+        mock_session.post.return_value = mock_response
+        mock_session_cls.return_value = mock_session
         
         with patch('providers.gemini.config.GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("What is the capital of France?")
             self.assertTrue(response.startswith("🌐"))
             self.assertIn("Paris", response)
 
-    @patch('requests.post')
-    def test_gemini_surgical_fallback(self, mock_post):
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_surgical_fallback(self, mock_session_cls):
         """Test that Gemini provider surgically falls back if Maps is unsupported."""
         from providers.gemini import GeminiProvider
         provider = GeminiProvider(self.config)
@@ -826,7 +831,9 @@ class TestAIProviders(unittest.TestCase):
             }]
         }
         
-        mock_post.side_effect = [mock_error, mock_success]
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_error, mock_success]
+        mock_session_cls.return_value = mock_session
         
         # Use patch.object to ensure we are patching the exact module object
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
@@ -834,25 +841,20 @@ class TestAIProviders(unittest.TestCase):
                 with patch.object(config, 'GEMINI_SEARCH_GROUNDING', True):
                     response = provider.get_response("test", location={'latitude': 1, 'longitude': 2})
                     
-                    self.assertEqual(mock_post.call_count, 2)
+                    self.assertEqual(mock_session.post.call_count, 2)
                     self.assertTrue(response.startswith("🌐"))
                     self.assertIn("Degraded but online", response)
                     
-                    # Note: Because mocks capture references to mutable dicts, 
-                    # we verify that tools were present in the sequence.
-                    first_call_payload = mock_post.call_args_list[0][1]['json']
+                    first_call_payload = mock_session.post.call_args_list[0][1]['json']
                     self.assertIn('tools', first_call_payload)
-                    # Verify first call had BOTH search and function_declarations (if added)
-                    # or at least the tool that was surgically removed later.
                     
-                    # Verify second call had only search
-                    second_call_payload = mock_post.call_args_list[1][1]['json']
+                    second_call_payload = mock_session.post.call_args_list[1][1]['json']
                     self.assertEqual(len(second_call_payload['tools']), 1)
                     self.assertEqual(list(second_call_payload['tools'][0].keys())[0], 'google_search')
 
-    @patch('requests.post')
+    @patch('providers.gemini.requests.Session')
     @patch('time.sleep', return_value=None)
-    def test_gemini_retry_logic(self, mock_sleep, mock_post):
+    def test_gemini_retry_logic(self, mock_sleep, mock_session_cls):
         """Test that Gemini provider retries on 503 errors."""
         from providers.gemini import GeminiProvider
         provider = GeminiProvider(self.config)
@@ -869,13 +871,15 @@ class TestAIProviders(unittest.TestCase):
             "candidates": [{"content": {"parts": [{"text": "Succeeded after retries"}]}}]
         }
         
-        mock_post.side_effect = [mock_503, mock_503, mock_success]
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_503, mock_503, mock_success]
+        mock_session_cls.return_value = mock_session
         
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
             
             # Verify attempts and result
-            self.assertEqual(mock_post.call_count, 3)
+            self.assertEqual(mock_session.post.call_count, 3)
             self.assertEqual(response, "Succeeded after retries")
             
             # Verify exponential backoff: 2s then 4s
