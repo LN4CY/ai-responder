@@ -11,6 +11,8 @@ from .base import BaseProvider
 import config
 from config import load_system_prompt
 
+import threading as _threading
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,16 +26,35 @@ class GeminiProvider(BaseProvider):
     def _make_request(self, url, payload):
         """Make internal HTTP request to Gemini API.
         
-        Uses a fresh session per request to avoid stale connection pool issues
-        after Docker network changes (e.g., meshmonitor restarts).
+        Runs inside a daemon thread with a hard wall-clock timeout to guard
+        against Python's getaddrinfo() DNS hang, which bypasses socket and
+        requests timeouts on Linux when Docker's internal DNS is unreachable.
         """
-        session = requests.Session()
-        # Disable keep-alive to prevent reusing stale connections
-        session.headers.update({'Connection': 'close'})
-        try:
-            return session.post(url, json=payload, timeout=(10, 30))  # (connect, read)
-        finally:
-            session.close()
+        result = [None]
+        exc = [None]
+
+        def _do_request():
+            session = requests.Session()
+            session.headers.update({'Connection': 'close'})
+            try:
+                result[0] = session.post(url, json=payload, timeout=(10, 30))
+            except Exception as e:
+                exc[0] = e
+            finally:
+                session.close()
+
+        t = _threading.Thread(target=_do_request, daemon=True)
+        t.start()
+        t.join(timeout=45)  # Hard wall-clock limit (survives getaddrinfo hang)
+
+        if t.is_alive():
+            raise requests.exceptions.Timeout(
+                "Gemini request timed out after 45s (possible DNS hang)"
+            )
+        if exc[0] is not None:
+            raise exc[0]
+        return result[0]
+
 
     @property
     def supports_tools(self):

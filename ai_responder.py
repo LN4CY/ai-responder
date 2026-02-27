@@ -1312,10 +1312,12 @@ class AIResponder:
                         else:
                             logger.warning("Still disconnected from Meshtastic...")
 
-                    # Fallback to exit/restart if we can't recover for a while
-                    if current_time - self.last_activity > 120: # Increased to 120s to give more reconnect attempts
+                    # Fallback to exit/restart if we can't recover quickly.
+                    # Match mqtt-proxy's pattern: exit fast and let Docker restart us cleanly.
+                    # This ensures hung DNS/Gemini threads are cleaned up by the OS.
+                    if current_time - self.last_activity > 60:
                         health_ok = False
-                        reasons.append("Connection lost for >120s (Reconnection attempts failed)")
+                        reasons.append("Connection lost for >60s (Reconnection attempts failed)")
                 else:
                     self.connection_lost = False
 
@@ -1329,9 +1331,9 @@ class AIResponder:
                 # Check for stalled worker threads
                 with self._workers_lock:
                     for tid, start_time in list(self._active_workers.items()):
-                        if current_time - start_time > 300: # 5 minute limit for any single AI call
+                        if current_time - start_time > 90: # 90s > 45s hard thread timeout
                             health_ok = False
-                            reasons.append(f"AI Worker thread {tid} stalled (>300s)")
+                            reasons.append(f"AI Worker thread {tid} stalled (>90s)")
                             break
 
                 if health_ok:
