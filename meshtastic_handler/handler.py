@@ -997,7 +997,10 @@ class MessageQueue:
                 pkt_id = getattr(packet, 'id', 'unknown')
                 self.handler.expected_ack_id = pkt_id
                 
-                logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1})")
+                import config
+                max_size = getattr(config, 'MESH_MAX_QUEUE_SIZE', 100)
+                q_ratio = f"{len(self.queue)}/{max_size}"
+                logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1}, Queue: {q_ratio})")
                 
                 # Check for Race Condition: If the ACK already arrived in the microsecond before ID registration
                 if not is_broadcast and pkt_id != 'unknown':
@@ -1007,7 +1010,7 @@ class MessageQueue:
                         
                     # Otherwise, Wait for ACK as normal
                     if self.handler.current_ack_event.wait(timeout=30):  # 30s timeout
-                        logger.info(f"✅ ACK received for chunk {chunk_num}")
+                        logger.info(f"✅ ACK received for chunk {chunk_num} (Queue: {q_ratio})")
                         return True
                     else:
                         logger.warning(f"⚠️ ACK timeout for chunk {chunk_num} (ID: {pkt_id})")
