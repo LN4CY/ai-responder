@@ -1275,6 +1275,7 @@ class AIResponder:
         
         # Main loop
         try:
+            self._last_health_log = 0  # track periodic health status
             while self.running:
                 # 2. Radio Watchdog & Health Check
                 current_time = time.time()
@@ -1331,10 +1332,26 @@ class AIResponder:
                 # Check for stalled worker threads
                 with self._workers_lock:
                     for tid, start_time in list(self._active_workers.items()):
-                        if current_time - start_time > 90: # 90s > 45s hard thread timeout
+                        age = int(current_time - start_time)
+                        if age > 90: # 90s > 45s hard thread timeout
                             health_ok = False
-                            reasons.append(f"AI Worker thread {tid} stalled (>90s)")
+                            reasons.append(f"AI Worker thread {tid} stalled ({age}s > 90s limit)")
+                            logger.warning(f"🐛 Worker thread {tid} has been running for {age}s — likely stuck in DNS/network hang.")
                             break
+
+                # Periodic health status log (every 60s, always)
+                if current_time - self._last_health_log > 60:
+                    self._last_health_log = current_time
+                    with self._workers_lock:
+                        active_count = len(self._active_workers)
+                    queue = getattr(self.meshtastic, 'queue', None)
+                    q_age = int(current_time - queue.last_heartbeat) if queue else -1
+                    connected = self.meshtastic.is_connected()
+                    logger.info(
+                        f"💓 Health: connected={connected} | "
+                        f"active_workers={active_count} | "
+                        f"queue_last_heartbeat={q_age}s ago"
+                    )
 
                 if health_ok:
                     try:
