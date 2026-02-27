@@ -22,11 +22,9 @@ import sys
 import re
 import requests
 import pathlib
-import socket
 from pubsub import pub
 
-# Prevent infinite hangs in socket operations (DNS, etc)
-socket.setdefaulttimeout(60)
+
 
 # Import our modular components
 import config
