@@ -20,9 +20,12 @@ import logging
 import threading
 import sys
 import re
-import requests
 import pathlib
+import socket
 from pubsub import pub
+
+# Prevent infinite hangs in socket operations (DNS, etc)
+socket.setdefaulttimeout(60)
 
 # Import our modular components
 import config
@@ -90,6 +93,10 @@ class AIResponder:
         # In-memory history cache
         # Structure: {user_id: [{'role': 'user'/'assistant', 'content': '...'}]}
         self.history = {}
+        
+        # Worker tracking
+        self._active_workers = {} # {thread_id: start_time}
+        self._workers_lock = threading.Lock()
         
         # Ensure history directory exists
         # Ensure history directory exists
@@ -1072,6 +1079,10 @@ class AIResponder:
 
     def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False):
         """Background thread for processing AI queries with adaptive tool support."""
+        thread_id = threading.get_ident()
+        with self._workers_lock:
+            self._active_workers[thread_id] = time.time()
+            
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
             time.sleep(2)
@@ -1184,6 +1195,9 @@ class AIResponder:
         except Exception as e:
             logger.error(f"Error processing AI query: {e}")
             self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel, is_dm=is_dm)
+        finally:
+            with self._workers_lock:
+                self._active_workers.pop(thread_id, None)
     
     # ==================== Meshtastic Message Handler ====================
     
@@ -1310,6 +1324,14 @@ class AIResponder:
                 if queue_heartbeat and (current_time - queue_heartbeat.last_heartbeat > 300):
                     health_ok = False
                     reasons.append("Message queue thread stalled (>300s)")
+                
+                # Check for stalled worker threads
+                with self._workers_lock:
+                    for tid, start_time in list(self._active_workers.items()):
+                        if current_time - start_time > 300: # 5 minute limit for any single AI call
+                            health_ok = False
+                            reasons.append(f"AI Worker thread {tid} stalled (>300s)")
+                            break
 
                 if health_ok:
                     try:
