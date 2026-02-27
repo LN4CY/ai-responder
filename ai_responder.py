@@ -1090,10 +1090,14 @@ class AIResponder:
                     if node_info:
                         pos = node_info.get('position', {})
                         lat = pos.get('latitude')
+                        if lat is None and pos.get('latitudeI') is not None:
+                            lat = pos.get('latitudeI') / 1e7
                         lon = pos.get('longitude')
+                        if lon is None and pos.get('longitudeI') is not None:
+                            lon = pos.get('longitudeI') / 1e7
                         if lat is not None and lon is not None:
                             location = {'latitude': lat, 'longitude': lon}
-                            logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
+                            logger.info(f"📍 Primary location identified for grounding: {lat:.6f}, {lon:.6f}")
                 except Exception as e:
                     logger.debug(f"Could not extract primary location for grounding: {e}")
 

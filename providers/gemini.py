@@ -106,11 +106,13 @@ class GeminiProvider(BaseProvider):
         
         for attempt in range(max_retries + 1):
             try:
-                # Dynamic Switching: If forced, REPLACE tools with only Google Search
+                # Dynamic Switching: If forced, REPLACE tools with only Google Search/Maps
                 current_tools = gemini_tools
                 if force_grounding_turn:
-                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Search Grounding for this turn.")
+                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Grounding for this turn.")
                     current_tools = [{"google_search": {}}]
+                    if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
+                        current_tools.append({"google_maps": {}})
                     payload["tools"] = current_tools
                 
                 if attempt > 0 and not force_grounding_turn:

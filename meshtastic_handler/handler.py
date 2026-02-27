@@ -606,12 +606,20 @@ class MeshtasticHandler:
         for n_id, node in self.interface.nodes.items():
             user = node.get('user', {})
             pos = node.get('position', {})
+            
+            lat = pos.get('latitude')
+            if lat is None and pos.get('latitudeI') is not None:
+                lat = pos.get('latitudeI') / 1e7
+            lon = pos.get('longitude')
+            if lon is None and pos.get('longitudeI') is not None:
+                lon = pos.get('longitudeI') / 1e7
+                
             nodes.append({
                 'id': user.get('id'),
                 'longName': user.get('longName'),
                 'shortName': user.get('shortName'),
-                'lat': pos.get('latitude'),
-                'lon': pos.get('longitude')
+                'lat': lat,
+                'lon': lon
             })
         return nodes
 
@@ -630,7 +638,11 @@ class MeshtasticHandler:
         my_node = self.get_node_info()
         my_pos = my_node.get('position', {}) if my_node else {}
         my_lat = my_pos.get('latitude')
+        if my_lat is None and my_pos.get('latitudeI') is not None:
+            my_lat = my_pos.get('latitudeI') / 1e7
         my_lon = my_pos.get('longitude')
+        if my_lon is None and my_pos.get('longitudeI') is not None:
+            my_lon = my_pos.get('longitudeI') / 1e7
 
         lines = ["Neighbor nodes on mesh:"]
         for n in nodes:
@@ -692,9 +704,13 @@ class MeshtasticHandler:
             # 1. Location
             pos = node_info.get('position', {})
             lat = pos.get('latitude')
+            if lat is None and pos.get('latitudeI') is not None:
+                lat = pos.get('latitudeI') / 1e7
             lon = pos.get('longitude')
+            if lon is None and pos.get('longitudeI') is not None:
+                lon = pos.get('longitudeI') / 1e7
             if lat is not None and lon is not None:
-                metadata_parts.append(f"Location: {lat:.4f}, {lon:.4f}")
+                metadata_parts.append(f"Location: {lat:.6f}, {lon:.6f}")
             
             # 2. Device Metrics
             metrics = node_info.get('deviceMetrics', {})
