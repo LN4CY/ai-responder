@@ -20,6 +20,7 @@ import logging
 import threading
 import sys
 import re
+import requests
 from pubsub import pub
 
 # Import our modular components
@@ -925,8 +926,61 @@ class AIResponder:
                     }
                 },
                 "handler": self._request_node_telemetry_tool
+            },
+            "get_location_address": {
+                "declaration": {
+                    "name": "get_location_address",
+                    "description": "Convert latitude and longitude coordinates into a real-world street address, city, and state.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "lat": {
+                                "type": "NUMBER",
+                                "description": "The latitude coordinate."
+                            },
+                            "lon": {
+                                "type": "NUMBER",
+                                "description": "The longitude coordinate."
+                            }
+                        },
+                        "required": ["lat", "lon"]
+                    }
+                },
+                "handler": self._get_location_address_tool
             }
         }
+
+    def _get_location_address_tool(self, lat, lon):
+        """Tool to reverse geocode lat/lon to a physical address using OpenStreetMap"""
+        logger.info(f"📍 Reverse geocoding requested for {lat}, {lon}")
+        url = "https://nominatim.openstreetmap.org/reverse"
+        
+        # Nominatim requires a user-agent
+        headers = {
+            "User-Agent": "AI-Responder-Meshtastic/1.5 (https://github.com/LN4CY/ai-responder)"
+        }
+        
+        params = {
+            "format": "json",
+            "lat": lat,
+            "lon": lon,
+            "zoom": 18,
+            "addressdetails": 1
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if "display_name" in data:
+                    return f"Address found: {data['display_name']}"
+                else:
+                    return "No address found for these coordinates."
+            else:
+                return f"Error geocoding: HTTP {response.status_code}"
+        except Exception as e:
+            logger.error(f"Geocoding error: {e}")
+            return f"Error contacting geocoding service: {e}"
 
     def _get_node_details_tool(self, node_id_or_name):
         """Internal handler for get_node_details tool."""
