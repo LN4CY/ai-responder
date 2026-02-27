@@ -470,9 +470,14 @@ class MeshtasticHandler:
             logger.error("Cannot send message: Not connected to Meshtastic")
             return False
             
-        # Initialize queue if needed
+        # Initialize queue if needed, or restart its thread if it died during a reconnect.
+        # disconnect() sets self.running=False which exits _process_loop.
+        # On reconnect, the queue object persists but the thread is dead.
         if not hasattr(self, '_message_queue'):
             self._message_queue = MessageQueue(self)
+        elif not self._message_queue.thread or not self._message_queue.thread.is_alive():
+            logger.warning("MessageQueue processor thread is dead — restarting after reconnect.")
+            self._message_queue.start()
             
         self._message_queue.enqueue(text, destination_id, channel_index, session_indicator)
         return True
