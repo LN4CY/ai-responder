@@ -20,7 +20,11 @@ def responder(tmp_path, mock_config, mock_meshtastic):
     history_dir = tmp_path / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
     
-    with patch('config.HISTORY_DIR', str(history_dir)):
+    conversations_dir = tmp_path / "conversations"
+    
+    with patch('config.HISTORY_DIR', str(history_dir)), \
+         patch('config.CONVERSATIONS_DIR', str(conversations_dir)), \
+         patch('conversation.manager.config.CONVERSATIONS_DIR', str(conversations_dir)):
         from ai_responder import AIResponder
         responder = AIResponder(history_dir=str(history_dir))
         responder._active_workers = {
@@ -42,7 +46,10 @@ def test_proactive_persistence(responder, tmp_path):
     assert file_path.exists()
     
     # Load into a new responder instance
-    with patch('config.HISTORY_DIR', str(tmp_path / "history")):
+    conversations_dir = tmp_path / "conversations"
+    with patch('config.HISTORY_DIR', str(tmp_path / "history")), \
+         patch('config.CONVERSATIONS_DIR', str(conversations_dir)), \
+         patch('conversation.manager.config.CONVERSATIONS_DIR', str(conversations_dir)):
         from ai_responder import AIResponder
         new_responder = AIResponder(history_dir=str(tmp_path / "history"))
         
