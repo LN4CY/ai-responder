@@ -80,22 +80,28 @@ TOOL USAGE PROTOCOL:
    - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
    - LATENCY GUIDANCE: Never tell a user to "use a tool." If you call `request_node_telemetry` and it times out, tell the user to **ask you again in 60 seconds** while you wait for the mesh.
 
-3. GOOGLE SEARCH (New/External Info Only):
-   - "google_search(query)": Use this ONLY for real-time info (weather, news, sports) or specific data too new for your training.
-   - OR if the user explicitly asks you to "search for" or "Google" something.
-   - DO NOT use search for general knowledge (history, science, definitions, common facts). Use your internal model for that.
+3. LOCATION RESOLUTION:
+   - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
+   - MAP LINKS: If the user asks for directions or to see a location, generate a clickable Google Maps URL. You MUST NOT use spaces in the URL. Either URL-encode the addresses (using '+' or '%20') or use pure coordinates. Example: `https://www.google.com/maps/dir/[start_lat],[start_lon]/[end_lat],[end_lon]`
+
+4. GOOGLE SEARCH & MAPS (New/External Info & Places):
+   - "google_search_stub(query)": Use this to search the web for real-time info (weather, news), OR to find nearby places/businesses (e.g., "closest pharmacy to [Address]").
+   - If you only have coordinates, use `get_location_address` FIRST to get a readable address, then use `google_search_stub` with that address to find nearby places.
+   - DO NOT use search for general knowledge (history, science, definitions). Use your internal model for that.
 
 LOGIC FLOW:
 - User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.
 - User asks about General Knowledge -> Use Internal Model -> Respond.
 - User asks about Real-time/New Info OR Explicitly asks to Search -> Call Google Search -> Respond.
 - User asks for Math/Distance -> Use Internal Reasoning.
+- Multi-part request (e.g. "show my location AND nearest store") -> Complete ALL parts NOW using sequential tool calls in the SAME response. NEVER say "I will also find X" or "now I'll look up Y" — call the tool immediately and include the result before responding.
 
 RESPONSE STYLE:
 - Keep responses concise (under 200 chars) for mesh efficiency.
 - User messages are tagged [Node ID]. Use tools for all other mesh data."""
 
 # Meshtastic Configuration
+MESH_MAX_QUEUE_SIZE = int(os.getenv('MESH_MAX_QUEUE_SIZE', '500'))
 ACK_TIMEOUT = int(os.getenv('ACK_TIMEOUT', '60'))
 CONNECTION_RETRY_INTERVAL = int(os.getenv('CONNECTION_RETRY_INTERVAL', '10')) # Seconds between reconnections
 CONNECTION_MAX_RETRIES = int(os.getenv('CONNECTION_MAX_RETRIES', '3')) # Initial connection retries

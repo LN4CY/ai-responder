@@ -346,8 +346,8 @@ class TestHandlerMetadata(unittest.TestCase):
         
         nodes = self.handler.get_all_nodes()
         self.assertEqual(len(nodes), 2)
-        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1', 'lat': None, 'lon': None}, nodes)
-        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2', 'lat': None, 'lon': None}, nodes)
+        self.assertIn({'id': '!123', 'longName': 'Node1', 'shortName': 'N1', 'lat': None, 'lon': None, 'altitude': None}, nodes)
+        self.assertIn({'id': '!456', 'longName': 'Node2', 'shortName': 'N2', 'lat': None, 'lon': None, 'altitude': None}, nodes)
 
     def test_get_node_list_summary(self):
         """Test node list summary formatting."""
@@ -366,6 +366,33 @@ class TestHandlerMetadata(unittest.TestCase):
         self.handler.interface.nodes = {}
         summary = self.handler.get_node_list_summary()
         self.assertEqual(summary, "No neighbors detected on mesh.")
+
+    def test_get_channels(self):
+        """Test getting channels from local node."""
+        # 1. Test when no localNode exists
+        self.handler.interface.localNode = None
+        channels = self.handler.get_channels()
+        self.assertEqual(channels, [])
+        
+        # 2. Test with channels
+        class MockSettings:
+            def __init__(self, name):
+                self.name = name
+
+        class MockChannel:
+            def __init__(self, name):
+                self.settings = MockSettings(name)
+                
+        class MockNode:
+            def __init__(self):
+                self.channels = [MockChannel("Primary"), MockChannel(""), MockChannel("Secondary")]
+                
+        self.handler.interface.localNode = MockNode()
+        channels = self.handler.get_channels()
+        self.assertEqual(len(channels), 3)
+        self.assertEqual(channels[0], {'index': 0, 'name': 'Primary'})
+        self.assertEqual(channels[1], {'index': 1, 'name': ''})
+        self.assertEqual(channels[2], {'index': 2, 'name': 'Secondary'})
 
 
 class TestMessageQueue(unittest.TestCase):

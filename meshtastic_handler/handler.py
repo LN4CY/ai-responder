@@ -470,9 +470,14 @@ class MeshtasticHandler:
             logger.error("Cannot send message: Not connected to Meshtastic")
             return False
             
-        # Initialize queue if needed
+        # Initialize queue if needed, or restart its thread if it died during a reconnect.
+        # disconnect() sets self.running=False which exits _process_loop.
+        # On reconnect, the queue object persists but the thread is dead.
         if not hasattr(self, '_message_queue'):
             self._message_queue = MessageQueue(self)
+        elif not self._message_queue.thread or not self._message_queue.thread.is_alive():
+            logger.warning("MessageQueue processor thread is dead — restarting after reconnect.")
+            self._message_queue.start()
             
         self._message_queue.enqueue(text, destination_id, channel_index, session_indicator)
         return True
@@ -606,12 +611,22 @@ class MeshtasticHandler:
         for n_id, node in self.interface.nodes.items():
             user = node.get('user', {})
             pos = node.get('position', {})
+            
+            lat = pos.get('latitude')
+            if lat is None and pos.get('latitudeI') is not None:
+                lat = pos.get('latitudeI') / 1e7
+            lon = pos.get('longitude')
+            if lon is None and pos.get('longitudeI') is not None:
+                lon = pos.get('longitudeI') / 1e7
+            altitude = pos.get('altitude')
+                
             nodes.append({
                 'id': user.get('id'),
                 'longName': user.get('longName'),
                 'shortName': user.get('shortName'),
-                'lat': pos.get('latitude'),
-                'lon': pos.get('longitude')
+                'lat': lat,
+                'lon': lon,
+                'altitude': altitude
             })
         return nodes
 
@@ -630,7 +645,11 @@ class MeshtasticHandler:
         my_node = self.get_node_info()
         my_pos = my_node.get('position', {}) if my_node else {}
         my_lat = my_pos.get('latitude')
+        if my_lat is None and my_pos.get('latitudeI') is not None:
+            my_lat = my_pos.get('latitudeI') / 1e7
         my_lon = my_pos.get('longitude')
+        if my_lon is None and my_pos.get('longitudeI') is not None:
+            my_lon = my_pos.get('longitudeI') / 1e7
 
         lines = ["Neighbor nodes on mesh:"]
         for n in nodes:
@@ -638,13 +657,14 @@ class MeshtasticHandler:
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
             
-            # Calculate distance if positions are available
-            dist_str = ""
+            # Calculate distance and get coordinates if positions are available
+            location_str = ""
             if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
                 dist = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
-                dist_str = f" [Distance: {dist:.2f}km]"
+                alt_str = f", {n['altitude']}m alt" if n.get('altitude') is not None else ""
+                location_str = f" [Distance: {dist:.2f}km, Pos: {n['lat']:.6f}, {n['lon']:.6f}{alt_str}]"
                 
-            lines.append(f"- {n['id']}: {name}{short}{dist_str}")
+            lines.append(f"- {n['id']}: {name}{short}{location_str}")
             
         return "\n".join(lines)
 
@@ -692,9 +712,16 @@ class MeshtasticHandler:
             # 1. Location
             pos = node_info.get('position', {})
             lat = pos.get('latitude')
+            if lat is None and pos.get('latitudeI') is not None:
+                lat = pos.get('latitudeI') / 1e7
             lon = pos.get('longitude')
+            if lon is None and pos.get('longitudeI') is not None:
+                lon = pos.get('longitudeI') / 1e7
+            altitude = pos.get('altitude')
+            
             if lat is not None and lon is not None:
-                metadata_parts.append(f"Location: {lat:.4f}, {lon:.4f}")
+                alt_str = f", Altitude: {altitude}m" if altitude is not None else ""
+                metadata_parts.append(f"Location: {lat:.6f}, {lon:.6f}{alt_str}")
             
             # 2. Device Metrics
             metrics = node_info.get('deviceMetrics', {})
@@ -851,6 +878,26 @@ class MeshtasticHandler:
             logger.error(f"Failed to get node info: {e}")
             return None
 
+    def get_channels(self):
+        """
+        Get a list of configured channels from the local node.
+        
+        Returns:
+            list: List of dicts representing channels {'index': i, 'name': name}
+        """
+        channels = []
+        try:
+            if self.interface and hasattr(self.interface, 'localNode'):
+                node = self.interface.localNode
+                if hasattr(node, 'channels'):
+                    for i, ch in enumerate(node.channels):
+                        name = getattr(ch.settings, 'name', '')
+                        channels.append({'index': i, 'name': name})
+        except Exception as e:
+            logger.error(f"Failed to get channels: {e}")
+            
+        return channels
+
 
 
 
@@ -871,6 +918,7 @@ class MessageQueue:
         self.lock = threading.Lock()
         self.processing = False
         self.thread = None
+        self.last_heartbeat = time.time()
         
         # Start background thread
         self.start()
@@ -888,6 +936,14 @@ class MessageQueue:
     def enqueue(self, text, destination_id, channel_index, session_indicator):
         """Add a message to the queue."""
         with self.lock:
+            # Enforce max queue size
+            import config
+            max_size = getattr(config, 'MESH_MAX_QUEUE_SIZE', 100)
+            
+            if len(self.queue) >= max_size:
+                logger.error(f"Queue FULL ({max_size} msgs). Dropping new message for {destination_id}")
+                return False
+                
             self.queue.append({
                 'text': text,
                 'dest': destination_id,
@@ -895,7 +951,13 @@ class MessageQueue:
                 'sess': session_indicator,
                 'time': time.time()
             })
-            logger.debug(f"Message queued for {destination_id} (Queue size: {len(self.queue)})")
+            
+            qsize = len(self.queue)
+            if qsize >= (max_size * 0.8):
+                logger.warning(f"Queue nearly full: {qsize}/{max_size} messages pending")
+            
+            logger.debug(f"Message queued for {destination_id} (Queue size: {qsize})")
+            return True
             
     def _process_loop(self):
         """Main processing loop."""
@@ -908,6 +970,7 @@ class MessageQueue:
             if item:
                 self._send_item(item)
             else:
+                self.last_heartbeat = time.time()
                 time.sleep(0.5)
                 
     def _send_item(self, item):
@@ -923,6 +986,7 @@ class MessageQueue:
         is_broadcast = (dest == '^all')
         
         for i, chunk in enumerate(chunks):
+            self.last_heartbeat = time.time()
             # 1. Format Payload
             payload = chunk
             if total_chunks > 1:
@@ -964,7 +1028,10 @@ class MessageQueue:
                 pkt_id = getattr(packet, 'id', 'unknown')
                 self.handler.expected_ack_id = pkt_id
                 
-                logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1})")
+                import config
+                max_size = getattr(config, 'MESH_MAX_QUEUE_SIZE', 100)
+                q_ratio = f"{len(self.queue)}/{max_size}"
+                logger.info(f"Sending chunk {chunk_num}/{total_chunks} (ID: {pkt_id}, Try: {attempt+1}, Queue: {q_ratio})")
                 
                 # Check for Race Condition: If the ACK already arrived in the microsecond before ID registration
                 if not is_broadcast and pkt_id != 'unknown':
@@ -974,7 +1041,7 @@ class MessageQueue:
                         
                     # Otherwise, Wait for ACK as normal
                     if self.handler.current_ack_event.wait(timeout=30):  # 30s timeout
-                        logger.info(f"✅ ACK received for chunk {chunk_num}")
+                        logger.info(f"✅ ACK received for chunk {chunk_num} (Queue: {q_ratio})")
                         return True
                     else:
                         logger.warning(f"⚠️ ACK timeout for chunk {chunk_num} (ID: {pkt_id})")

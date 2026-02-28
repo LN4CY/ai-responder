@@ -11,6 +11,8 @@ from .base import BaseProvider
 import config
 from config import load_system_prompt
 
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,8 +24,18 @@ class GeminiProvider(BaseProvider):
         return "Gemini"
     
     def _make_request(self, url, payload):
-        """Make internal HTTP request to Gemini API."""
-        return requests.post(url, json=payload, timeout=30)
+        """Make internal HTTP request to Gemini API.
+        
+        Uses a fresh session per request with Connection: close to avoid
+        reusing stale connections after Docker network changes.
+        """
+        session = requests.Session()
+        session.headers.update({'Connection': 'close'})
+        try:
+            return session.post(url, json=payload, timeout=(10, 30))
+        finally:
+            session.close()
+
 
     @property
     def supports_tools(self):
@@ -106,11 +118,13 @@ class GeminiProvider(BaseProvider):
         
         for attempt in range(max_retries + 1):
             try:
-                # Dynamic Switching: If forced, REPLACE tools with only Google Search
+                # Dynamic Switching: If forced, REPLACE tools with only Google Search/Maps
                 current_tools = gemini_tools
                 if force_grounding_turn:
-                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Search Grounding for this turn.")
+                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Grounding for this turn.")
                     current_tools = [{"google_search": {}}]
+                    if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
+                        current_tools.append({"google_maps": {}})
                     payload["tools"] = current_tools
                 
                 if attempt > 0 and not force_grounding_turn:
@@ -225,7 +239,12 @@ class GeminiProvider(BaseProvider):
                         break 
                 
                 
-            except (requests.exceptions.RequestException, Exception) as e:
+            except requests.exceptions.Timeout as e:
+                # Timeout means network is broken (likely DNS hang). Retrying won't help.
+                # Return immediately so the worker thread exits within the 45s deadline.
+                logger.error(f"⏱️ Gemini request timed out (DNS/network hang): {e}")
+                return "❌ Request timed out. The AI is temporarily unreachable."
+            except Exception as e:
                 if attempt < max_retries:
                     logger.warning(f"⚠️ Gemini request failed: {e}. Retrying...")
                     continue

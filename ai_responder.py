@@ -20,7 +20,11 @@ import logging
 import threading
 import sys
 import re
+import requests
+import pathlib
 from pubsub import pub
+
+
 
 # Import our modular components
 import config
@@ -89,6 +93,10 @@ class AIResponder:
         # Structure: {user_id: [{'role': 'user'/'assistant', 'content': '...'}]}
         self.history = {}
         
+        # Worker tracking
+        self._active_workers = {} # {thread_id: start_time}
+        self._workers_lock = threading.Lock()
+        
         # Ensure history directory exists
         # Ensure history directory exists
         if not os.path.exists(self.history_dir):
@@ -114,6 +122,31 @@ class AIResponder:
             except Exception as e:
                 logger.warning(f"Failed to parse ADMIN_NODE_ID '{ENV_ADMIN_NODE_ID}': {e}")
         
+        # Auto-cleanup corrupted config entries
+        # If a past bug (or direct ENV injection) inserted "!node1,!node2" as a single string,
+        # we flatten and re-save the list here so permissions work correctly.
+        current_admins = self.config.get('admin_nodes', [])
+        cleaned_admins = []
+        needs_cleanup = False
+        
+        for item in current_admins:
+            if ',' in item:
+                needs_cleanup = True
+                cleaned_admins.extend([n.strip() for n in item.split(',') if n.strip()])
+            else:
+                cleaned_admins.append(item.strip())
+                
+        if needs_cleanup:
+            # Deduplicate while preserving order
+            final_admins = []
+            for item in cleaned_admins:
+                if item not in final_admins:
+                    final_admins.append(item)
+            
+            logger.info(f"🧹 Auto-cleaned corrupted admin_nodes list from config: {final_admins}")
+            self.config['admin_nodes'] = final_admins
+            self.config.save()
+        
         # Initialize allowed channels from environment variable
         if ALLOWED_CHANNELS:
             try:
@@ -137,7 +170,17 @@ class AIResponder:
                 self.config.save()
                 logger.info(f"Initialized AI provider from environment: {AI_PROVIDER}")
         
-        # Provider logging moved to connect()
+        # Admin and Channel init...
+        
+        # Touch health file initially
+        self.touch_health()
+
+    def touch_health(self):
+        """Touch the healthy file to indicate the service is running."""
+        try:
+            pathlib.Path("/tmp/healthy").touch()
+        except Exception:
+            pass
     
     # ==================== History Management ====================
     
@@ -615,7 +658,7 @@ class AIResponder:
                     "⚙️ Admin (DM Only)\n"
                     "!ai -p [name] : Provider\n"
                     "  (local/gemini/openai)\n"
-                    "!ai -ch [ls/add/rm] : Channels\n"
+                    "!ai -ch [add/rm] : Channels\n"
                     "!ai -a [ls/add/rm] : Admins"
                 )
             else:
@@ -738,26 +781,41 @@ class AIResponder:
     
     def _handle_channel_command(self, args, from_node, to_node, channel):
         """Handle channel management."""
-        if not args:
+        parts = args.split(maxsplit=1) if args else []
+        action = parts[0].lower() if parts else ""
+        
+        if not action:
             # List channels
             allowed = self.config.get('allowed_channels', [0])
-            message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}"
+            available_channels = self.meshtastic.get_channels()
+            
+            if not available_channels:
+                message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve available channels from node)"
+            else:
+                lines = ["📡 Channels:"]
+                for ch in available_channels:
+                    idx = ch['index']
+                    name = ch['name']
+                    if not name:
+                        name = "Unnamed"
+                    status = "✅" if idx in allowed else "❌"
+                    lines.append(f"{status} [{idx}] {name}")
+                message = "\n".join(lines)
+            
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        parts = args.split(maxsplit=1)
-        if len(parts) < 2:
+        if len(parts) < 2 or action not in ['add', 'rm']:
             self.send_response("Usage: !ai -ch add/rm <channel_id>", from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        action = parts[0].lower()
-        channel_id = parts[1]
+        channel_id_str = parts[1]
         
-        if not channel_id.isdigit():
+        if not channel_id_str.isdigit():
             self.send_response("Channel ID must be a number", from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        channel_id = int(channel_id)
+        channel_id = int(channel_id_str)
         allowed_channels = self.config.get('allowed_channels', [0])
         
         if action == 'add':
@@ -799,26 +857,47 @@ class AIResponder:
             return
         
         action = parts[0].lower()
-        node_id = parts[1]
+        node_input = parts[1]
+        
+        # Handle comma-separated list of nodes
+        nodes_to_process = [n.strip() for n in node_input.split(',') if n.strip()]
+        if not nodes_to_process:
+            self.send_response("No valid node IDs provided.", from_node, to_node, channel, is_admin_cmd=True)
+            return
+
         admin_nodes = self.config.get('admin_nodes', [])
+        messages = []
+        updated = False
         
         if action == 'add':
-            if node_id not in admin_nodes:
-                admin_nodes.append(node_id)
+            for nid in nodes_to_process:
+                if nid not in admin_nodes:
+                    admin_nodes.append(nid)
+                    messages.append(f"✅ Added {nid}")
+                    updated = True
+                else:
+                    messages.append(f"ℹ️ {nid} is already admin")
+            
+            if updated:
                 self.config['admin_nodes'] = admin_nodes
                 self.config.save()
-                self.send_response(f"✅ Added admin {node_id}", from_node, to_node, channel, is_admin_cmd=True)
-            else:
-                self.send_response(f"{node_id} is already an admin", from_node, to_node, channel, is_admin_cmd=True)
+            
+            self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
         
         elif action == 'rm':
-            if node_id in admin_nodes:
-                admin_nodes.remove(node_id)
+            for nid in nodes_to_process:
+                if nid in admin_nodes:
+                    admin_nodes.remove(nid)
+                    messages.append(f"✅ Removed {nid}")
+                    updated = True
+                else:
+                    messages.append(f"ℹ️ {nid} not in admin list")
+            
+            if updated:
                 self.config['admin_nodes'] = admin_nodes
                 self.config.save()
-                self.send_response(f"✅ Removed admin {node_id}", from_node, to_node, channel, is_admin_cmd=True)
-            else:
-                self.send_response(f"{node_id} is not an admin", from_node, to_node, channel, is_admin_cmd=True)
+            
+            self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
         
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
@@ -853,6 +932,13 @@ class AIResponder:
         thread.daemon = True
         thread.start()
     
+    def _touch_worker(self):
+        """Update the active worker timestamp to prevent false-positive hang detection during long tools."""
+        thread_id = threading.get_ident()
+        with self._workers_lock:
+            if thread_id in self._active_workers:
+                self._active_workers[thread_id]['start_time'] = time.time()
+
     def get_tools(self):
         """
         Define tools available to the AI.
@@ -907,7 +993,7 @@ class AIResponder:
             "request_node_telemetry": {
                 "declaration": {
                     "name": "request_node_telemetry",
-                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. Useful if data is stale.",
+                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 60 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -925,8 +1011,62 @@ class AIResponder:
                     }
                 },
                 "handler": self._request_node_telemetry_tool
+            },
+            "get_location_address": {
+                "declaration": {
+                    "name": "get_location_address",
+                    "description": "Convert latitude and longitude coordinates into a real-world street address, city, and state.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "lat": {
+                                "type": "NUMBER",
+                                "description": "The latitude coordinate."
+                            },
+                            "lon": {
+                                "type": "NUMBER",
+                                "description": "The longitude coordinate."
+                            }
+                        },
+                        "required": ["lat", "lon"]
+                    }
+                },
+                "handler": self._get_location_address_tool
             }
         }
+
+    def _get_location_address_tool(self, lat, lon):
+        """Tool to reverse geocode lat/lon to a physical address using OpenStreetMap"""
+        logger.info(f"📍 Reverse geocoding requested for {lat}, {lon}")
+        url = "https://nominatim.openstreetmap.org/reverse"
+        
+        # Nominatim requires a user-agent
+        headers = {
+            "User-Agent": "AI-Responder-Meshtastic/1.5 (https://github.com/LN4CY/ai-responder)"
+        }
+        
+        params = {
+            "format": "json",
+            "lat": lat,
+            "lon": lon,
+            "zoom": 18,
+            "addressdetails": 1
+        }
+        
+        try:
+            self._touch_worker()
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if "display_name" in data:
+                    return f"Address found: {data['display_name']}"
+                else:
+                    return "No address found for these coordinates."
+            else:
+                return f"Error geocoding: HTTP {response.status_code}"
+        except Exception as e:
+            logger.error(f"Geocoding error: {e}")
+            return f"Error contacting geocoding service: {e}"
 
     def _get_node_details_tool(self, node_id_or_name):
         """Internal handler for get_node_details tool."""
@@ -945,6 +1085,7 @@ class AIResponder:
 
     def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
         """Internal handler for request_node_telemetry tool with short polling."""
+        self._touch_worker()
         node_id = node_id_or_name
         if not node_id.startswith('!'):
             found_id = self.meshtastic.find_node_by_name(node_id_or_name)
@@ -976,6 +1117,7 @@ class AIResponder:
         poll_timeout = 15 
         
         while time.time() - poll_start < poll_timeout:
+            self._touch_worker()
             time.sleep(3)
             # Check timestamps in the handler
             node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id, {})
@@ -1007,6 +1149,15 @@ class AIResponder:
 
     def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False):
         """Background thread for processing AI queries with adaptive tool support."""
+        thread_id = threading.get_ident()
+        with self._workers_lock:
+            self._active_workers[thread_id] = {
+                'start_time': time.time(),
+                'from_node': from_node,
+                'to_node': to_node,
+                'channel': channel
+            }
+            
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
             time.sleep(2)
@@ -1090,10 +1241,14 @@ class AIResponder:
                     if node_info:
                         pos = node_info.get('position', {})
                         lat = pos.get('latitude')
+                        if lat is None and pos.get('latitudeI') is not None:
+                            lat = pos.get('latitudeI') / 1e7
                         lon = pos.get('longitude')
+                        if lon is None and pos.get('longitudeI') is not None:
+                            lon = pos.get('longitudeI') / 1e7
                         if lat is not None and lon is not None:
                             location = {'latitude': lat, 'longitude': lon}
-                            logger.info(f"📍 Primary location identified for grounding: {lat}, {lon}")
+                            logger.info(f"📍 Primary location identified for grounding: {lat:.6f}, {lon:.6f}")
                 except Exception as e:
                     logger.debug(f"Could not extract primary location for grounding: {e}")
 
@@ -1110,22 +1265,23 @@ class AIResponder:
                 self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                 self.session_manager.update_activity(from_node)
             
+            logger.info(f"💬 Gemini response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
+            logger.info(f"✅ Response queued to {from_node} on ch{channel}")
             
         except Exception as e:
-            logger.error(f"Error processing AI query: {e}")
-            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel, is_dm=is_dm)
+            logger.error(f"Error processing AI query: {e}", exc_info=True)
+            self.send_response(f"❌ Error: {str(e)[:50]}", from_node, to_node, channel)
+        finally:
+            with self._workers_lock:
+                self._active_workers.pop(thread_id, None)
     
     # ==================== Meshtastic Message Handler ====================
     
     def on_receive(self, packet, interface):
-        """
-        Callback for incoming Meshtastic messages.
+        """Callback for incoming Meshtastic messages."""
+        self.touch_health()
         
-        Args:
-            packet: Meshtastic packet
-            interface: Meshtastic interface instance
-        """
         try:
             # Update activity timestamp
             self.last_activity = time.time()
@@ -1195,6 +1351,7 @@ class AIResponder:
         
         # Main loop
         try:
+            self._last_health_log = 0  # track periodic health status
             while self.running:
                 # 2. Radio Watchdog & Health Check
                 current_time = time.time()
@@ -1232,14 +1389,68 @@ class AIResponder:
                         else:
                             logger.warning("Still disconnected from Meshtastic...")
 
-                    # Fallback to exit/restart if we can't recover for a while
-                    if current_time - self.last_activity > 120: # Increased to 120s to give more reconnect attempts
+                    # Fallback to exit/restart if we can't recover quickly.
+                    # Match mqtt-proxy's pattern: exit fast and let Docker restart us cleanly.
+                    # This ensures hung DNS/Gemini threads are cleaned up by the OS.
+                    if current_time - self.last_activity > 60:
                         health_ok = False
-                        reasons.append("Connection lost for >120s (Reconnection attempts failed)")
+                        reasons.append("Connection lost for >60s (Reconnection attempts failed)")
                 else:
                     self.connection_lost = False
 
                 # 3. Update Heartbeat / Health Check
+                # Also check message queue heartbeat (should tick every 500ms when idle)
+                queue_heartbeat = getattr(self.meshtastic, 'queue', None)
+                if queue_heartbeat and (current_time - queue_heartbeat.last_heartbeat > 300):
+                    health_ok = False
+                    reasons.append("Message queue thread stalled (>300s)")
+                
+                # Check for stalled worker threads
+                with self._workers_lock:
+                    for tid, worker_data in list(self._active_workers.items()):
+                        # Backwards compatibility check in case of mid-run reload
+                        if isinstance(worker_data, dict):
+                            start_time = worker_data.get('start_time', 0)
+                            from_node = worker_data.get('from_node')
+                            to_node = worker_data.get('to_node')
+                            channel = worker_data.get('channel')
+                        else:
+                            start_time = worker_data
+                            from_node = to_node = channel = None
+
+                        age = int(current_time - start_time)
+                        if age > 90: # 90s > 45s hard thread timeout
+                            health_ok = False
+                            reasons.append(f"AI Worker thread {tid} stalled ({age}s > 90s limit)")
+                            logger.warning(f"🐛 Worker thread {tid} has been running for {age}s — likely stuck in DNS/network hang.")
+                            
+                            if from_node and to_node and channel is not None:
+                                logger.info(f"Sending timeout notification to {from_node}")
+                                self.send_response(
+                                    "⚠️ AI request timed out due to network congestion or API failure.",
+                                    from_node,
+                                    to_node,
+                                    channel,
+                                    is_admin_cmd=False
+                                )
+                                # Wait a moment to try and ensure the message is queued before exiting
+                                time.sleep(2)
+                            break
+
+                # Periodic health status log (every 60s, always)
+                if current_time - self._last_health_log > 60:
+                    self._last_health_log = current_time
+                    with self._workers_lock:
+                        active_count = len(self._active_workers)
+                    queue = getattr(self.meshtastic, '_message_queue', None)
+                    q_age = int(current_time - queue.last_heartbeat) if queue else -1
+                    connected = self.meshtastic.is_connected()
+                    logger.info(
+                        f"💓 Health: connected={connected} | "
+                        f"active_workers={active_count} | "
+                        f"queue_last_heartbeat={q_age}s ago"
+                    )
+
                 if health_ok:
                     try:
                         with open("/tmp/healthy", "w") as f:

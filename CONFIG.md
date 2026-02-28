@@ -19,6 +19,7 @@ The application is configured primarily via environment variables passed to the 
 | `MESHTASTIC_AWARENESS` | `true` | Enable/Disable all mesh context injection (metadata & tools). |
 | `ACK_TIMEOUT` | `60` | Max seconds to wait for radio acknowledgment before retry. |
 | `CHUNK_DELAY` | `15` | Seconds to wait before sending the next chunk of a split message. |
+| `MESH_MAX_QUEUE_SIZE` | `500` | Maximum outgoing messages buffered in RAM to absorb bursts of AI dialogue. Size is kept small as messages are processed sequentially via chunks. Memory impact is negligible. |
 | `HEALTH_CHECK_ACTIVITY_TIMEOUT` | `300` | Seconds of silence before sending a probe (Radio Watchdog). |
 | `HEALTH_CHECK_PROBE_INTERVAL` | `150` | Seconds between active probes when silent. |
 
@@ -62,7 +63,7 @@ The responder uses **AI Function Calling** (Adaptive Tools) to proactively query
 
 **Available AI Tools:**
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
-- **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh.
+- **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
 
 **Adaptive Fallback Logic:**
