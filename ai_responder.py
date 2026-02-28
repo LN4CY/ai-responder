@@ -112,6 +112,11 @@ class AIResponder:
         # Keyed by node_id -> {from_node, to_node, channel, context_note}
         self.pending_telemetry_requests = {}
         
+        # Node-online watchers: fire when any packet arrives from a watched node
+        # Each entry: {node_id, context_note, from_node, to_node, channel}
+        self.node_online_watchers = []
+        self._node_online_watchers_lock = threading.Lock()
+        
         # Ensure history directory exists
         # Ensure history directory exists
         if not os.path.exists(self.history_dir):
@@ -1091,6 +1096,27 @@ class AIResponder:
                 },
                 "handler": self._watch_condition_tool
             },
+            "watch_node_online": {
+                "declaration": {
+                    "name": "watch_node_online",
+                    "description": "Register a watcher that fires when a specific mesh node sends any packet (i.e. comes online or is heard for the first time). Use when the user asks to be alerted when a node appears on the mesh.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "node_id_or_name": {
+                                "type": "STRING",
+                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
+                            },
+                            "context_note": {
+                                "type": "STRING",
+                                "description": "Short description, e.g. 'L4B1 came online'."
+                            }
+                        },
+                        "required": ["node_id_or_name", "context_note"]
+                    }
+                },
+                "handler": self._watch_node_online_tool
+            },
             "get_location_address": {
                 "declaration": {
                     "name": "get_location_address",
@@ -1287,6 +1313,36 @@ class AIResponder:
         
         logger.info(f"👁️ Condition watcher registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ Watching {node_id_or_name}: will alert you when {metric} {operator} {threshold} ({context_note})"
+
+    def _watch_node_online_tool(self, node_id_or_name, context_note):
+        """Tool handler: add a node-online watcher."""
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        
+        if not thread_data:
+            return "Error: Could not determine requester context."
+        
+        node_id = node_id_or_name
+        if not node_id.startswith('!'):
+            found_id = self.meshtastic.find_node_by_name(node_id_or_name)
+            if found_id:
+                node_id = found_id
+            else:
+                return f"Error: Node '{node_id_or_name}' not found. Make sure I've seen it at least once before."
+        
+        watcher = {
+            'node_id': node_id,
+            'context_note': context_note,
+            'from_node': thread_data.get('from_node'),
+            'to_node': thread_data.get('to_node'),
+            'channel': thread_data.get('channel'),
+        }
+        with self._node_online_watchers_lock:
+            self.node_online_watchers.append(watcher)
+        
+        logger.info(f"👀 Node-online watcher registered for {node_id}")
+        return f"✅ Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh ({context_note})"
 
     def _fire_system_trigger(self, context_note, from_node, to_node, channel):
         """Fire a proactive system-triggered AI response to a user."""
@@ -1534,6 +1590,24 @@ class AIResponder:
         try:
             # Update activity timestamp
             self.last_activity = time.time()
+            
+            # Check node-online watchers on EVERY packet (before portnum filter)
+            from_id_raw = packet.get('fromId')
+            if from_id_raw:
+                if isinstance(from_id_raw, int):
+                    from_id_check = f"!{from_id_raw:08x}"
+                else:
+                    from_id_check = from_id_raw
+                
+                with self._node_online_watchers_lock:
+                    triggered = [w for w in self.node_online_watchers if w['node_id'] == from_id_check]
+                    for w in triggered:
+                        self.node_online_watchers.remove(w)
+                    
+                for w in triggered:
+                    context = f"Node online alert: {w['context_note']}. Node {from_id_check} was just heard on the mesh."
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'])
+                    logger.info(f"🟢 Node-online watcher fired for {from_id_check}")
             
             # Extract packet data
             if 'decoded' not in packet or 'portnum' not in packet['decoded']:
