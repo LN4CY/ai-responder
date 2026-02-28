@@ -65,10 +65,19 @@ The responder uses **AI Function Calling** (Adaptive Tools) to proactively query
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
-- **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node over the mesh. If the node is slow to respond (up to 60s), the request is registered as a deferred callback—when the data eventually arrives, the AI proactively delivers it to the user without them needing to ask again.
-- **`get_location_address`**: Converts GPS coordinates to a human-readable street address via reverse geocoding.
-- **`schedule_message`**: Allows the AI to schedule a future message. Accepts `delay_seconds`, `context_note`, and optional `recur_interval_seconds` / `max_duration_seconds` for recurring reminders.
-- **`watch_condition`**: Registers a passive telemetry condition watcher. When a telemetry packet arrives matching the condition (e.g. `battery_level < 10`), the AI immediately fires an alert to the requesting user. Supported metrics: `battery_level`, `voltage`, `temperature`, `humidity`, `barometric_pressure`, `iaq`, `snr`.
+- **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node. Uses a **deferred callback**—when the data eventually arrives, the AI proactively delivers it to the user.
+- **`schedule_message`**: Schedules a future message.
+  - Params: `delay_seconds` (opt), `absolute_time` (opt), `context_note`, `recur_interval` (opt), `max_duration` (opt), `notify_targets` (opt).
+  - `absolute_time`: HH:MM (e.g. "10:00") or YYYY-MM-DD HH:MM.
+  - `notify_targets`: Comma-separated list: `requester` (default), `NodeName`, `!nodeid`, or `ch:N`.
+- **`watch_condition`**: Registers a passive telemetry condition watcher.
+  - Params: `node_id_or_name`, `metric`, `operator`, `threshold`, `context_note`, `notify_targets` (opt).
+- **`watch_node_online`**: Registers a watcher that fires when a node is first heard on the mesh.
+- **`send_message`**: Send a one-off message to a specific node or channel.
+  - Params: `target` (node name, !hexid, or `ch:N`), `message`.
+  - Params: `node_id_or_name`, `context_note`, `notify_targets` (opt).
+- **`list_proactive_tasks`**: Lists all active tasks registered by the **calling user**.
+- **`cancel_proactive_task`**: Cancels a task by ID (e.g., `sched-1`) or `all` to wipe the caller's tasks.
 
 **Adaptive Fallback Logic:**
 If `MESHTASTIC_AWARENESS` is enabled but the model doesn't support tools, the system automatically injects:
@@ -88,6 +97,19 @@ volumes:
 |----------|---------|-------------|
 | `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd,!9e044360`). Automatically loaded and deduplicated on startup—any corrupted entries from previous configs are cleaned and saved back to `config.json` automatically. |
 | `ALLOWED_CHANNELS` | `0,3` | Comma-separated list of channel indices the bot listens on. |
+
+## Remote Administration (Admin Only)
+
+The following commands are only accessible to `ADMIN_NODE_ID` users via **Direct Message**.
+
+- **`!ai -p [provider]`**: Switches the active AI provider (e.g., `gemini`, `ollama`, `openai`).
+- **`!ai -ch [add/rm] [idx/name]`**: Configures enabled channels for AI responses.
+- **`!ai -a [ls/add/rm] [node_id]`**: Manages the list of admin authorized node IDs.
+- **`!ai -s [ls/rm/add]`**: Manages proactive tasks system-wide.
+  - `-s ls`: List all active tasks across all users.
+  - `-s rm [id]`: Remove a specific task.
+  - `-s rm all`: Wipe all active tasks.
+  - `-s add`: Usage hint for adding tasks via AI.
 
 ### Memory Limits
 

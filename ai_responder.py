@@ -23,6 +23,7 @@ import re
 import itertools
 import requests
 import pathlib
+import datetime
 from pubsub import pub
 
 
@@ -126,6 +127,9 @@ class AIResponder:
         if not os.path.exists(self.history_dir):
             os.makedirs(self.history_dir)
             logger.info(f"Created history directory: {self.history_dir}")
+        
+        # Initial task load from disk
+        self._load_proactive_tasks()
         
         # Initialize admin from environment variable
         if ENV_ADMIN_NODE_ID:
@@ -600,7 +604,7 @@ class AIResponder:
             return
         
         # ===== Admin Commands (DM only) =====
-        admin_only_commands = ['-p', '-ch', '-a']
+        admin_only_commands = ['-p', '-ch', '-a', '-s']
         if cmd in admin_only_commands:
             if not is_admin:
                 self.send_response("⛔ Unauthorized: Admin only.", from_node, to_node, channel, is_admin_cmd=True)
@@ -618,6 +622,8 @@ class AIResponder:
                 self._handle_channel_command(args, from_node, to_node, channel)
             elif cmd == '-a':
                 self._handle_admin_command(args, from_node, to_node, channel)
+            elif cmd == '-s':
+                self._handle_scheduler_command(args, from_node, to_node, channel)
             return
         
         # ===== Default: AI Query =====
@@ -627,70 +633,25 @@ class AIResponder:
             self._handle_ai_query(query, from_node, to_node, channel)
     
     def _handle_help_command(self, from_node, to_node, channel, is_dm, is_admin):
-        """Send context-aware help messages."""
-        # Message 1: Basic Commands
-        basic_help = (
-            "🤖 AI Responder - Basic Commands\n\n"
-            "!ai <query> : Ask the AI a question\n"
-            "!ai -m : Show memory & slot usage\n"
-            "!ai -h : Show this help"
-        )
-        self.send_response(basic_help, from_node, to_node, channel, is_admin_cmd=False)
-        # Increase wait time for broadcasts to ensure delivery
-        wait_time = 2 if is_dm else 5
-        time.sleep(wait_time)
+        """Send concise consolidated help message."""
+        lines = ["🤖 AI Responder"]
+        lines.append("!ai [msg] : Ask AI")
+        lines.append("-m/-h : Status/Help")
         
-        # Message 2: Session Commands (DM only)
         if is_dm:
-            session_help = (
-                "🟢 Session Commands (DM Only)\n\n"
-                "!ai -n [name] : Start new session\n"
-                "  • Auto-names if no name given\n"
-                "  • No !ai prefix needed in session\n"
-                "  • 5min timeout\n"
-                "!ai -end : End current session"
-            )
-            self.send_response(session_help, from_node, to_node, channel, is_admin_cmd=False)
-            time.sleep(2)
-        
-        # Message 3: Conversation Management
-        if is_dm:
-            conv_help = (
-                "📚 Conversations\n"
-                "!ai -c : Resume last\n"
-                "!ai -c <id> : Load specific\n"
-                "!ai -c ls : List saved\n"
-                "!ai -c rm <id> : Delete\n"
-                "!ai -c rm all : Wipe all\n"
-                "In Channels:\n"
-                "!ai -n <msg> : New topic"
-            )
+            lines.append("-n/-end : Session")
+            lines.append("-c [id/ls/rm] : History")
+            if is_admin:
+                lines.append("-s [ls/rm] : Tasks")
+                lines.append("-p/-ch/-a : Config")
+            lines.append("💡 Try: 'Remind me at 10pm', 'Alert if battery < 10%'")
         else:
-            conv_help = (
-                "📚 Conversation Commands\n\n"
-                "!ai -n <query> : Start new topic\n"
-                "!ai -c : Recall your last topic\n"
-                "(DM for advanced management)"
-            )
-        self.send_response(conv_help, from_node, to_node, channel, is_admin_cmd=False)
+            lines.append("-n [topic] : New topic")
+            lines.append("-c : Recall last")
+            if is_admin:
+                lines.append("(DM for Admin tools)")
         
-        # Message 4: Admin Commands
-        if is_admin:
-            time.sleep(2)
-            if is_dm:
-                admin_help = (
-                    "⚙️ Admin (DM Only)\n"
-                    "!ai -p [name] : Provider\n"
-                    "  (local/gemini/openai)\n"
-                    "!ai -ch [add/rm] : Channels\n"
-                    "!ai -a [ls/add/rm] : Admins"
-                )
-            else:
-                admin_help = (
-                    "⚙️ Admin Note\n\n"
-                    "Send !ai -h in DM for admin commands."
-                )
-            self.send_response(admin_help, from_node, to_node, channel, is_admin_cmd=False)
+        self.send_response("\n".join(lines), from_node, to_node, channel, is_admin_cmd=False)
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
         """Handle conversation management commands."""
@@ -731,7 +692,7 @@ class AIResponder:
         elif subcmd == 'rm':
             # Delete conversation
             if len(parts) < 2:
-                self.send_response("Usage: !ai -c rm <name/slot/all>", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("Usage: !ai -c [ls/rm <id/all>]", from_node, to_node, channel, is_admin_cmd=False)
                 return
             identifier = parts[1]
             
@@ -829,8 +790,8 @@ class AIResponder:
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        if len(parts) < 2 or action not in ['add', 'rm']:
-            self.send_response("Usage: !ai -ch add/rm <channel_id>", from_node, to_node, channel, is_admin_cmd=True)
+        if len(parts) < 2 or action not in ['ls', 'add', 'rm']:
+            self.send_response("Usage: !ai -ch [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         channel_id_str = parts[1]
@@ -877,7 +838,7 @@ class AIResponder:
         
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response("Usage: !ai -a [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         action = parts[0].lower()
@@ -925,7 +886,109 @@ class AIResponder:
         
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
-    
+
+    def _handle_scheduler_command(self, args, from_node, to_node, channel):
+        """Handle !ai -s admin command for managing proactive tasks.
+
+        Sub-commands:
+            (no args)          List ALL active tasks across all users
+            rm <id>            Remove a specific task by ID
+            rm all             Remove all tasks system-wide
+            add                Print usage hint for adding tasks via AI
+        """
+        sub_parts = args.split(maxsplit=1) if args else []
+        sub = sub_parts[0].lower() if sub_parts else ''
+        sub_arg = sub_parts[1] if len(sub_parts) > 1 else ''
+
+        # ── LIST ───────────────────────────────────────────────────────────
+        if not sub or sub == 'ls' or sub == 'list':
+            lines = []
+            now = time.time()
+
+            with self._scheduled_tasks_lock:
+                for t in self.scheduled_tasks:
+                    remaining = max(0, int(t['next_time'] - now))
+                    recur = f" (every {t['interval']}s)" if t.get('interval') else ""
+                    lines.append(f"[{t['id']}] ⏰ {t['from_node']} → {t['context_note']} in {remaining}s{recur}")
+
+            with self._condition_watchers_lock:
+                for w in self.condition_watchers:
+                    lines.append(f"[{w['id']}] 👁 {w['from_node']} → {w['node_id']} {w['metric']}{w['operator']}{w['threshold']}")
+
+            with self._node_online_watchers_lock:
+                for w in self.node_online_watchers:
+                    lines.append(f"[{w['id']}] 🟢 {w['from_node']} → waiting for {w['node_id']}")
+
+            if not lines:
+                self.send_response("📋 No active proactive tasks.", from_node, to_node, channel, is_admin_cmd=True)
+            else:
+                self.send_response("📋 Active tasks:\n" + "\n".join(lines), from_node, to_node, channel, is_admin_cmd=True)
+            return
+
+        # ── REMOVE ─────────────────────────────────────────────────────────
+        if sub == 'rm':
+            if not sub_arg:
+                self.send_response("Usage: !ai -s rm <id/all>", from_node, to_node, channel, is_admin_cmd=True)
+                return
+
+            cancel_all = (sub_arg.strip().lower() == 'all')
+            task_id = sub_arg.strip()
+            cancelled = []
+
+            with self._scheduled_tasks_lock:
+                keep, remove = [], []
+                for t in self.scheduled_tasks:
+                    if cancel_all or t.get('id') == task_id:
+                        remove.append(t.get('id'))
+                    else:
+                        keep.append(t)
+                self.scheduled_tasks = keep
+                cancelled.extend(remove)
+
+            with self._condition_watchers_lock:
+                keep, remove = [], []
+                for w in self.condition_watchers:
+                    if cancel_all or w.get('id') == task_id:
+                        remove.append(w.get('id'))
+                    else:
+                        keep.append(w)
+                self.condition_watchers = keep
+                cancelled.extend(remove)
+
+            with self._node_online_watchers_lock:
+                keep, remove = [], []
+                for w in self.node_online_watchers:
+                    if cancel_all or w.get('id') == task_id:
+                        remove.append(w.get('id'))
+                    else:
+                        keep.append(w)
+                self.node_online_watchers = keep
+                cancelled.extend(remove)
+
+            if cancelled:
+                self._save_proactive_tasks()
+                ids = ', '.join(f'[{c}]' for c in cancelled)
+                self.send_response(f"✅ Removed: {ids}", from_node, to_node, channel, is_admin_cmd=True)
+            else:
+                self.send_response(f"❌ Task [{task_id}] not found.", from_node, to_node, channel, is_admin_cmd=True)
+            return
+
+        # ── ADD (usage hint) ────────────────────────────────────────────────
+        if sub == 'add':
+            hint = (
+                "To add tasks, use natural language:\n"
+                "• !ai Remind me in 5m → sched timer\n"
+                "• !ai Ping me every 30s for 5m\n"
+                "• !ai Alert me when L4B1 battery <10%\n"
+                "• !ai Notify me when L4B1 comes online"
+            )
+            self.send_response(hint, from_node, to_node, channel, is_admin_cmd=True)
+            return
+
+        # ── FALLBACK ────────────────────────────────────────────────────────
+        usage = "Usage: !ai -s [rm <id/all>]"
+        self.send_response(usage, from_node, to_node, channel, is_admin_cmd=True)
+
     def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
         """
         Handle an AI query in a background thread.
@@ -1045,7 +1108,11 @@ class AIResponder:
                         "properties": {
                             "delay_seconds": {
                                 "type": "NUMBER",
-                                "description": "Seconds from now before the first message is sent."
+                                "description": "Optional. Seconds from now before the first message is sent. Provide either this or absolute_time."
+                            },
+                            "absolute_time": {
+                                "type": "STRING",
+                                "description": "Optional. Absolute time/date string (e.g. '10:00' or '2026-06-01 10:00'). Use this if the user specifies a clock time."
                             },
                             "context_note": {
                                 "type": "STRING",
@@ -1058,9 +1125,13 @@ class AIResponder:
                             "max_duration_seconds": {
                                 "type": "NUMBER",
                                 "description": "Optional. If recurring, stop sending after this many seconds from now."
+                            },
+                            "notify_targets": {
+                                "type": "STRING",
+                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
                             }
                         },
-                        "required": ["delay_seconds", "context_note"]
+                        "required": ["context_note"]
                     }
                 },
                 "handler": self._schedule_message_tool
@@ -1093,6 +1164,10 @@ class AIResponder:
                             "context_note": {
                                 "type": "STRING",
                                 "description": "Short description of the alert, e.g. 'L4B1 battery low'."
+                            },
+                            "notify_targets": {
+                                "type": "STRING",
+                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
                             }
                         },
                         "required": ["node_id_or_name", "metric", "operator", "threshold", "context_note"]
@@ -1114,6 +1189,10 @@ class AIResponder:
                             "context_note": {
                                 "type": "STRING",
                                 "description": "Short description, e.g. 'L4B1 came online'."
+                            },
+                            "notify_targets": {
+                                "type": "STRING",
+                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
                             }
                         },
                         "required": ["node_id_or_name", "context_note"]
@@ -1170,6 +1249,27 @@ class AIResponder:
                     }
                 },
                 "handler": self._get_location_address_tool
+            },
+            "send_message": {
+                "declaration": {
+                    "name": "send_message",
+                    "description": "Send a one-off message to a specific node or channel. Useful when the user asks to 'Tell X that...' or 'Inform the group that...'.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "target": {
+                                "type": "STRING",
+                                "description": "The recipient: node name, Hex ID (!1234abcd), or channel index (e.g. 'ch:0')."
+                            },
+                            "message": {
+                                "type": "STRING",
+                                "description": "The content of the message to send."
+                            }
+                        },
+                        "required": ["target", "message"]
+                    }
+                },
+                "handler": self._send_message_tool
             }
         }
 
@@ -1286,7 +1386,7 @@ class AIResponder:
 
     # ==================== Proactive Agent Tools & Handlers ====================
 
-    def _schedule_message_tool(self, delay_seconds, context_note, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None):
+    def _schedule_message_tool(self, delay_seconds=None, context_note=None, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None):
         """Tool handler: schedule a one-shot or recurring proactive message."""
         thread_data = {}
         with self._workers_lock:
@@ -1301,6 +1401,36 @@ class AIResponder:
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
         now = time.time()
+        
+        # Determine delay from absolute time if provided
+        if absolute_time:
+            try:
+                # 1. Try HH:MM (today or tomorrow)
+                if re.match(r"^\d{1,2}:\d{2}$", absolute_time):
+                    dt_now = datetime.datetime.now()
+                    target_time = datetime.datetime.strptime(absolute_time, "%H:%M")
+                    # Combine today's date with target time
+                    target_dt = dt_now.replace(hour=target_time.hour, minute=target_time.minute, second=0, microsecond=0)
+                    # If target is in the past, assume tomorrow
+                    if target_dt < dt_now:
+                        target_dt += datetime.timedelta(days=1)
+                    delay_seconds = (target_dt - dt_now).total_seconds()
+                # 2. Try YYYY-MM-DD HH:MM
+                elif re.match(r"^\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}$", absolute_time):
+                    target_dt = datetime.datetime.strptime(absolute_time, "%Y-%m-%d %H:%M")
+                    delay_seconds = (target_dt - datetime.datetime.now()).total_seconds()
+                else:
+                    return f"Error: Unsupported time format '{absolute_time}'. Use HH:MM or YYYY-MM-DD HH:MM."
+                
+                if delay_seconds < 0:
+                    return f"Error: Target time '{absolute_time}' is in the past."
+            except Exception as e:
+                logger.error(f"Error parsing absolute time '{absolute_time}': {e}")
+                return f"Error parsing time: {e}"
+
+        if delay_seconds is None:
+            return "Error: Either delay_seconds or absolute_time must be provided."
+
         task_id = f"sched-{next(self._task_counter)}"
         task = {
             'id': task_id,
@@ -1314,13 +1444,61 @@ class AIResponder:
             'targets': notify_targets or 'requester',
         }
         with self._scheduled_tasks_lock:
+            # Enforce 50 tasks per user limit
+            user_tasks = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            total_current = len(user_tasks) + len(cond_watchers) + len(online_watchers)
+            
+            if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
+                return f"⚠️ Limit reached: You can only have {config.MAX_PROACTIVE_TASKS_PER_USER} active proactive tasks. Please cancel an existing task first."
+
             self.scheduled_tasks.append(task)
+            self._save_proactive_tasks()
 
         if recur_interval_seconds:
             return (f"✅ [{task_id}] Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
                     f"for the next {max_duration_seconds or delay_seconds}s about: {context_note}")
         else:
-            return f"✅ [{task_id}] Reminder scheduled in {delay_seconds}s about: {context_note}"
+            time_desc = f"at {absolute_time}" if absolute_time else f"in {int(delay_seconds)}s"
+            return f"✅ [{task_id}] Reminder scheduled {time_desc} about: {context_note}"
+
+    def _send_message_tool(self, target, message):
+        """Tool handler: send a one-off message to a specific node or channel."""
+        logger.info(f"📤 Tool request: send_message to {target}: {message}")
+        
+        _to = '^all'
+        _ch = 0
+        
+        # 1. Resolve Target
+        if target.startswith('ch:'):
+            try:
+                _ch = int(target[3:])
+                allowed_channels = self.config.get('allowed_channels', [])
+                if _ch not in allowed_channels:
+                    return f"Error: Channel {_ch} is not in the allowed_channels list."
+            except ValueError:
+                return f"Error: Invalid channel format '{target}'. Use 'ch:N'."
+        else:
+            # Node resolution
+            node_id = target
+            if not node_id.startswith('!'):
+                found_id = self.meshtastic.find_node_by_name(target)
+                if found_id:
+                    node_id = found_id
+                else:
+                    return f"Error: Node '{target}' not found on the mesh."
+            _to = node_id
+            
+        # 2. Enqueue Message
+        # We use a special prefix or session indicator if needed, 
+        # but for one-off tool messages, we can just send it as is.
+        success = self.meshtastic_queue.enqueue(message, _to, _ch, "")
+        
+        if success:
+            return f"✅ Message queued for {target}."
+        else:
+            return f"❌ Failed to queue message for {target} (Queue full)."
 
     def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None):
         """Tool handler: add a telemetry condition watcher."""
@@ -1358,7 +1536,17 @@ class AIResponder:
             'targets': notify_targets or 'requester',
         }
         with self._condition_watchers_lock:
+            # Enforce limit
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
+            
+            if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
+                return f"⚠️ Limit reached: You can only have {config.MAX_PROACTIVE_TASKS_PER_USER} active proactive tasks."
+
             self.condition_watchers.append(watcher)
+            self._save_proactive_tasks()
 
         logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
@@ -1396,7 +1584,17 @@ class AIResponder:
             'targets': notify_targets or 'requester',
         }
         with self._node_online_watchers_lock:
+            # Enforce limit
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
+            
+            if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
+                return f"⚠️ Limit reached: You can only have {config.MAX_PROACTIVE_TASKS_PER_USER} active proactive tasks."
+
             self.node_online_watchers.append(watcher)
+            self._save_proactive_tasks()
 
         logger.info(f"👀 Node-online watcher [{task_id}] registered for {node_id}")
         return f"✅ [{task_id}] Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh"
@@ -1474,15 +1672,62 @@ class AIResponder:
             cancelled.extend(remove)
 
         if cancelled:
+            self._save_proactive_tasks()
             ids = ', '.join(f'[{c}]' for c in cancelled)
             return f"✅ Cancelled: {ids}"
         return f"❌ Task [{task_id}] not found or does not belong to you."
+
+    def _save_proactive_tasks(self):
+        """Save all proactive tasks to a JSON file."""
+        try:
+            tasks_data = {
+                'scheduled_tasks': self.scheduled_tasks,
+                'condition_watchers': self.condition_watchers,
+                'node_online_watchers': self.node_online_watchers
+            }
+            file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(tasks_data, f, indent=2)
+            logger.debug(f"💾 Saved proactive tasks to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save proactive tasks: {e}")
+
+    def _load_proactive_tasks(self):
+        """Load proactive tasks from disk and restore ID counter."""
+        file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
+        if not os.path.exists(file_path):
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                tasks_data = json.load(f)
+            
+            self.scheduled_tasks = tasks_data.get('scheduled_tasks', [])
+            self.condition_watchers = tasks_data.get('condition_watchers', [])
+            self.node_online_watchers = tasks_data.get('node_online_watchers', [])
+            
+            # Restore ID counter to skip used IDs
+            all_tasks = self.scheduled_tasks + self.condition_watchers + self.node_online_watchers
+            max_id = 0
+            for t in all_tasks:
+                try:
+                    # Parse ID like "sched-5" or "cond-12"
+                    id_num = int(t['id'].split('-')[1])
+                    max_id = max(max_id, id_num)
+                except (ValueError, IndexError, KeyError):
+                    continue
+            
+            self._task_counter = itertools.count(max_id + 1)
+            logger.info(f"📂 Loaded {len(all_tasks)} proactive tasks (Next ID: {max_id + 1})")
+        except Exception as e:
+            logger.error(f"Failed to load proactive tasks: {e}")
 
     def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester'):
         """Fire a proactive system-triggered AI response to one or more targets.
 
         targets: comma-separated string of recipients:
-            'requester'       - the original message sender
+            'requester'       - the node that originally scheduled the task
+            'NodeName'        - any node by long or short name
             '!hexid'          - any specific node by hex ID
             'ch:N'            - broadcast on channel N (must be in allowed_channels)
         """
@@ -1499,8 +1744,8 @@ class AIResponder:
 
         for target in target_list:
             if target == 'requester':
-                _to = to_node
-                _ch = channel
+                _to = from_node # The original requester who ran the !ai command
+                _ch = channel   # The original channel (usually 0/DM)
             elif target.startswith('ch:'):
                 try:
                     ch_idx = int(target[3:])
@@ -1516,12 +1761,21 @@ class AIResponder:
                 _to = target
                 _ch = 0
             else:
-                logger.warning(f"Unknown target format: {target}")
-                continue
+                # Resolve name to ID
+                found_id = self.meshtastic.find_node_by_name(target)
+                if found_id:
+                    _to = found_id
+                    _ch = 0
+                else:
+                    logger.warning(f"Unknown target (not a node name or ID): {target}")
+                    continue
 
+            # We pass _to as BOTH from_node and to_node to _process_ai_query_thread
+            # because the AI query needs to be contextually 'to' the recipient.
+            # is_dm=True ensures the response logic uses destination=_to.
             t = threading.Thread(
                 target=self._process_ai_query_thread,
-                args=(prompt, from_node, _to, _ch),
+                args=(prompt, _to, _to, _ch),
                 kwargs={'is_dm': (_to != '^all'), 'is_system_trigger': True},
                 daemon=True
             )
