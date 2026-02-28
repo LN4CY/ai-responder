@@ -65,6 +65,10 @@ The responder uses **AI Function Calling** (Adaptive Tools) to proactively query
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
+- **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node over the mesh. If the node is slow to respond (up to 60s), the request is registered as a deferred callback—when the data eventually arrives, the AI proactively delivers it to the user without them needing to ask again.
+- **`get_location_address`**: Converts GPS coordinates to a human-readable street address via reverse geocoding.
+- **`schedule_message`**: Allows the AI to schedule a future message. Accepts `delay_seconds`, `context_note`, and optional `recur_interval_seconds` / `max_duration_seconds` for recurring reminders.
+- **`watch_condition`**: Registers a passive telemetry condition watcher. When a telemetry packet arrives matching the condition (e.g. `battery_level < 10`), the AI immediately fires an alert to the requesting user. Supported metrics: `battery_level`, `voltage`, `temperature`, `humidity`, `barometric_pressure`, `iaq`, `snr`.
 
 **Adaptive Fallback Logic:**
 If `MESHTASTIC_AWARENESS` is enabled but the model doesn't support tools, the system automatically injects:
@@ -82,7 +86,7 @@ volumes:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd`). |
+| `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd,!9e044360`). Automatically loaded and deduplicated on startup—any corrupted entries from previous configs are cleaned and saved back to `config.json` automatically. |
 | `ALLOWED_CHANNELS` | `0,3` | Comma-separated list of channel indices the bot listens on. |
 
 ### Memory Limits
@@ -122,12 +126,13 @@ The application also persists runtime configuration changes (like allowed channe
 {
   "current_provider": "ollama",
   "allowed_channels": [0, 3],
-  "admin_nodes": ["!12345678"]
+  "admin_nodes": ["!12345678", "!9e044360"]
 }
 ```
 
 > [!NOTE]
-> Values in `config.json` take precedence over environment variables if the file exists.
+> - Values in `config.json` take precedence over environment variables if the file already exists.
+> - `admin_nodes` must be an array of individual hex IDs. The application auto-repairs any comma-concatenated strings (e.g., from `ADMIN_NODE_ID=!a,!b`) into a clean array on startup.
 
 ## Docker Compose Example
 

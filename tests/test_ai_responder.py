@@ -129,7 +129,7 @@ class TestAIResponder(unittest.TestCase):
                 
                 result = self.responder._request_node_telemetry_tool(node_id, 'environment')
                 
-                self.assertIn("The mesh is slow—please wait about 60 seconds", result)
+                self.assertIn("The mesh is slow", result)
 
     def test_session_isolation(self):
         """Test that active sessions are isolated to DMs and don't spill to channels."""

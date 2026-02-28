@@ -27,6 +27,12 @@ The AI doesn't just respond; it understands its environment:
 - **Precise Location Tracking**: The AI can map out neighbors, complete with exact coordinates, altitude, and calculated distance from the bot.
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
+### 🤖 Proactive Agent Architecture
+The AI can now spontaneously send messages to users without being asked:
+- **Scheduled Reminders**: Ask the AI to remind you about something in 5 minutes or ping you every 30 seconds for the next 5 minutes.
+- **Condition Watchers**: Register alerting rules like "message me when node L4B1's battery drops below 10%" and the AI monitors passively from live mesh telemetry.
+- **Deferred Telemetry Callbacks**: When the AI requests telemetry from a slow node and times out, it registers a background listener. When the data finally arrives from the mesh (seconds to minutes later), it proactively delivers it without requiring the user to ask again.
+
 ### 👤 Persona-Driven Mesh Agent
 - **Context Isolation**: Every user and channel has a secure sandbox, preventing data leakage between conversations.
 - **Mesh Efficiency**: System prompts are tuned for LoRa—delivering high-density, concise information (typically <200 chars).
@@ -48,6 +54,7 @@ The AI doesn't just respond; it understands its environment:
 | **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
 | **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
 | **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
+| **Proactive Agents** | ✅ Done | Scheduled msgs, condition watchers, and deferred telemetry callbacks. |
 | **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
 | **Remote Management** | 📅 Q3 2026 | Encrypted remote configuration over mesh or secondary link. |
 | **Health Analytics** | 📅 Q4 2026 | Visual metrics of mesh health and AI interaction statistics. |
@@ -152,7 +159,7 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `AI_PROVIDER` | `ollama` | Initial provider (`ollama`, `gemini`, `openai`, `anthropic`) |
 | `OLLAMA_HOST` | `ollama` | Hostname for Ollama service |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
-| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (e.g. `!1234abcd`) |
+| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands. Supports comma-separated list (e.g. `!1234abcd,!9e044360`) |
 | `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
 | `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
 | `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
@@ -400,15 +407,78 @@ Shows all available commands based on your permission level.
 !ai -a
 ```
 
-**Add admin:**
+**Add admin (supports comma-separated list):**
 ```
 !ai -a add !1234abcd
+!ai -a add !1234abcd,!5678efgh
 !ai -a add me
 ```
 
-**Remove admin:**
+**Remove admin (supports comma-separated list):**
 ```
 !ai -a rm !1234abcd
+!ai -a rm !1234abcd,!5678efgh
+```
+
+## Proactive Agents
+
+Frontier AI providers (Gemini, Claude, GPT) can spontaneously send messages to users based on time or mesh events. No special command needed — just describe what you want to the AI in plain language.
+
+### Scheduled Reminders
+
+Ask the AI to remind you about something after a delay:
+```
+!ai Remind me to check the batteries in 5 minutes
+```
+Response: `✅ Reminder scheduled in 300s about: checking the batteries`
+
+After 5 minutes, the AI will proactively send:
+```
+⏰ Just a friendly reminder: time to check those batteries!
+```
+
+### Recurring Pings
+
+Ask the AI to ping you at a regular interval:
+```
+!ai Ping me every 30 seconds for the next 5 minutes
+```
+Response: `✅ Recurring reminder registered! I will send a message every 30s for the next 300s`
+
+The AI will send you a message every 30 seconds until 5 minutes have passed.
+
+### Condition-Based Alerts (Battery / Telemetry Watchers)
+
+Ask the AI to monitor a node's telemetry and alert when a threshold is hit:
+```
+!ai Message me when node L4B1's battery is below 10%
+```
+Response: `✅ Watching L4B1: will alert you when battery_level < 10 (L4B1 battery low!)`
+
+Whenever a telemetry packet arrives from that node showing battery at or below the threshold, you'll receive:
+```
+🔔 Alert: L4B1 battery low! | battery_level = 8% (threshold was < 10)
+```
+
+Supported condition metrics: `battery_level`, `voltage`, `temperature`, `humidity`, `barometric_pressure`, `iaq`, `snr`
+
+Supported operators: `<`, `>`, `<=`, `>=`, `==`
+
+### Deferred Telemetry Auto-Response
+
+When the AI requests telemetry from a slow mesh node and times out, it now registers a background callback automatically. When the data eventually arrives, the AI proactively sends you the result:
+
+```
+!ai What's the environment telemetry for L4B1?
+```
+If the node is slow and times out:
+```
+📡 Sent refresh request. The mesh is slow — I'm watching and will send the data as soon as it arrives!
+```
+A few seconds/minutes later when the data arrives:
+```
+📡 Delayed telemetry arrived for !abcd1234:
+Node: L4B1 | Temp: 22.1°C | Humidity: 58% | Battery: 87%
 ```
 
 ## Tips & Best Practices

@@ -94,8 +94,23 @@ class AIResponder:
         self.history = {}
         
         # Worker tracking
-        self._active_workers = {} # {thread_id: start_time}
+        self._active_workers = {} # {thread_id: {start_time, from_node, to_node, channel}}
         self._workers_lock = threading.Lock()
+        
+        # --- Proactive Agent State ---
+        # Time-based scheduled tasks (one-shot or recurring)
+        # Each entry: {next_time, end_time, interval, context_note, from_node, to_node, channel}
+        self.scheduled_tasks = []
+        self._scheduled_tasks_lock = threading.Lock()
+        
+        # Condition-based watchers: fire when telemetry from a specific node meets criteria
+        # Each entry: {node_id, metric, operator, threshold, context_note, from_node, to_node, channel}
+        self.condition_watchers = []
+        self._condition_watchers_lock = threading.Lock()
+        
+        # Pending deferred telemetry callbacks: fire when target node's telemetry arrives
+        # Keyed by node_id -> {from_node, to_node, channel, context_note}
+        self.pending_telemetry_requests = {}
         
         # Ensure history directory exists
         # Ensure history directory exists
@@ -1012,6 +1027,70 @@ class AIResponder:
                 },
                 "handler": self._request_node_telemetry_tool
             },
+            "schedule_message": {
+                "declaration": {
+                    "name": "schedule_message",
+                    "description": "Schedule a future message to be sent to the user. Can be one-shot (e.g. 'remind me in 5 minutes') or recurring (e.g. 'ping me every 30 seconds for 5 minutes').",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "delay_seconds": {
+                                "type": "NUMBER",
+                                "description": "Seconds from now before the first message is sent."
+                            },
+                            "context_note": {
+                                "type": "STRING",
+                                "description": "A brief note describing what to remind the user about. This will be included in the system wakeup prompt."
+                            },
+                            "recur_interval_seconds": {
+                                "type": "NUMBER",
+                                "description": "Optional. If set, the message repeats every this many seconds."
+                            },
+                            "max_duration_seconds": {
+                                "type": "NUMBER",
+                                "description": "Optional. If recurring, stop sending after this many seconds from now."
+                            }
+                        },
+                        "required": ["delay_seconds", "context_note"]
+                    }
+                },
+                "handler": self._schedule_message_tool
+            },
+            "watch_condition": {
+                "declaration": {
+                    "name": "watch_condition",
+                    "description": "Register a condition watcher that sends the user an alert when a live telemetry metric from a specific node meets a threshold (e.g. battery < 10%).",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "node_id_or_name": {
+                                "type": "STRING",
+                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
+                            },
+                            "metric": {
+                                "type": "STRING",
+                                "description": "The telemetry metric to check. Supported values: battery_level, voltage, temperature, humidity, barometric_pressure, iaq, snr.",
+                                "enum": ["battery_level", "voltage", "temperature", "humidity", "barometric_pressure", "iaq", "snr"]
+                            },
+                            "operator": {
+                                "type": "STRING",
+                                "description": "Comparison operator.",
+                                "enum": ["<", ">", "<=", ">=", "=="]
+                            },
+                            "threshold": {
+                                "type": "NUMBER",
+                                "description": "Numeric threshold value to compare against."
+                            },
+                            "context_note": {
+                                "type": "STRING",
+                                "description": "Short description of the alert, e.g. 'L4B1 battery low'."
+                            }
+                        },
+                        "required": ["node_id_or_name", "metric", "operator", "threshold", "context_note"]
+                    }
+                },
+                "handler": self._watch_condition_tool
+            },
             "get_location_address": {
                 "declaration": {
                     "name": "get_location_address",
@@ -1128,10 +1207,179 @@ class AIResponder:
                 metadata = self.meshtastic.get_node_metadata(node_id)
                 return f"Success! New telemetry received:\n{metadata}"
 
-        # 4. Timeout fallback
+        # 4. Timeout fallback: register a deferred callback so we auto-send when data arrives
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        
+        if thread_data:
+            self.pending_telemetry_requests[node_id] = {
+                'from_node': thread_data.get('from_node'),
+                'to_node': thread_data.get('to_node'),
+                'channel': thread_data.get('channel'),
+                'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
+                'registered_at': time.time()
+            }
+            logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
+        
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
-                "The mesh is slow—please wait about 60 seconds and ask me again. "
-                "I should have the data in my memory by then.")
+                "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
+
+    # ==================== Proactive Agent Tools & Handlers ====================
+
+    def _schedule_message_tool(self, delay_seconds, context_note, recur_interval_seconds=None, max_duration_seconds=None):
+        """Tool handler: schedule a one-shot or recurring proactive message."""
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        
+        if not thread_data:
+            return "Error: Could not determine requester context."
+        
+        now = time.time()
+        task = {
+            'next_time': now + delay_seconds,
+            'end_time': now + (max_duration_seconds or delay_seconds),
+            'interval': recur_interval_seconds,
+            'context_note': context_note,
+            'from_node': thread_data.get('from_node'),
+            'to_node': thread_data.get('to_node'),
+            'channel': thread_data.get('channel'),
+        }
+        with self._scheduled_tasks_lock:
+            self.scheduled_tasks.append(task)
+        
+        if recur_interval_seconds:
+            return (f"✅ Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
+                    f"for the next {max_duration_seconds or delay_seconds}s about: {context_note}")
+        else:
+            return f"✅ Reminder scheduled in {delay_seconds}s about: {context_note}"
+
+    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note):
+        """Tool handler: add a telemetry condition watcher."""
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        
+        if not thread_data:
+            return "Error: Could not determine requester context."
+        
+        node_id = node_id_or_name
+        if not node_id.startswith('!'):
+            found_id = self.meshtastic.find_node_by_name(node_id_or_name)
+            if found_id:
+                node_id = found_id
+            else:
+                return f"Error: Node '{node_id_or_name}' not found."
+        
+        watcher = {
+            'node_id': node_id,
+            'metric': metric,
+            'operator': operator,
+            'threshold': threshold,
+            'context_note': context_note,
+            'from_node': thread_data.get('from_node'),
+            'to_node': thread_data.get('to_node'),
+            'channel': thread_data.get('channel'),
+        }
+        with self._condition_watchers_lock:
+            self.condition_watchers.append(watcher)
+        
+        logger.info(f"👁️ Condition watcher registered: {node_id} {metric}{operator}{threshold}")
+        return f"✅ Watching {node_id_or_name}: will alert you when {metric} {operator} {threshold} ({context_note})"
+
+    def _fire_system_trigger(self, context_note, from_node, to_node, channel):
+        """Fire a proactive system-triggered AI response to a user."""
+        prompt = (
+            f"[SYSTEM WAKEUP] A proactive alert has triggered. "
+            f"Context: {context_note}. "
+            f"Please send a short, natural-sounding message to the user now. "
+            f"Do not ask them to do anything; simply deliver the alert."
+        )
+        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note}")
+        t = threading.Thread(
+            target=self._process_ai_query_thread,
+            args=(prompt, from_node, to_node, channel),
+            kwargs={'is_dm': (to_node != '^all'), 'is_system_trigger': True},
+            daemon=True
+        )
+        t.start()
+
+    def _on_telemetry_proactive(self, packet, interface):
+        """Callback fired on every incoming telemetry packet. Evaluates deferred requests and condition watchers."""
+        try:
+            from_id_raw = packet.get('fromId')
+            if isinstance(from_id_raw, int):
+                from_id = f"!{from_id_raw:08x}"
+            else:
+                from_id = from_id_raw
+            
+            if not from_id:
+                return
+
+            # --- 1. Deferred telemetry callbacks ---
+            if from_id in self.pending_telemetry_requests:
+                req = self.pending_telemetry_requests.pop(from_id)
+                # Wait a moment for the MeshtasticHandler's _on_telemetry to cache the data first
+                def _deferred_send():
+                    time.sleep(2)
+                    metadata = self.meshtastic.get_node_metadata(from_id)
+                    context = f"Delayed telemetry arrived for {from_id}.\n{metadata}"
+                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'])
+                threading.Thread(target=_deferred_send, daemon=True).start()
+                logger.info(f"📡 Deferred telemetry for {from_id} arrived — firing proactive response.")
+
+            # --- 2. Condition watchers ---
+            decoded = packet.get('decoded', {})
+            telemetry = decoded.get('telemetry', {})
+            
+            if not telemetry:
+                return
+
+            # Flatten all metric values into a simple key->value dict for comparison
+            metric_values = {}
+            for category in ['device_metrics', 'environment_metrics', 'power_metrics', 'health_metrics']:
+                cat_data = telemetry.get(category, {})
+                if isinstance(cat_data, dict):
+                    metric_values.update(cat_data)
+            
+            # Also pull SNR from the packet envelope
+            if 'rxSnr' in packet:
+                metric_values['snr'] = packet['rxSnr']
+
+            with self._condition_watchers_lock:
+                triggered = []
+                for w in self.condition_watchers:
+                    if w['node_id'] != from_id:
+                        continue
+                    val = metric_values.get(w['metric'])
+                    if val is None:
+                        continue
+                    op = w['operator']
+                    thr = w['threshold']
+                    
+                    condition_met = (
+                        (op == '<'  and val < thr)  or
+                        (op == '>'  and val > thr)  or
+                        (op == '<=' and val <= thr) or
+                        (op == '>=' and val >= thr) or
+                        (op == '==' and val == thr)
+                    )
+                    
+                    if condition_met:
+                        triggered.append(w)
+                
+                for w in triggered:
+                    self.condition_watchers.remove(w)
+                    context = (
+                        f"Condition alert: {w['context_note']}. "
+                        f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
+                        f"(threshold was {w['operator']} {w['threshold']})."
+                    )
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'])
+
+        except Exception as e:
+            logger.warning(f"Error in proactive telemetry handler: {e}")
 
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""
@@ -1147,7 +1395,7 @@ class AIResponder:
         
         return f"{query}{metadata_block}"
 
-    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False):
+    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False):
         """Background thread for processing AI queries with adaptive tool support."""
         thread_id = threading.get_ident()
         with self._workers_lock:
@@ -1155,7 +1403,8 @@ class AIResponder:
                 'start_time': time.time(),
                 'from_node': from_node,
                 'to_node': to_node,
-                'channel': channel
+                'channel': channel,
+                'is_system_trigger': is_system_trigger
             }
             
         try:
@@ -1347,6 +1596,18 @@ class AIResponder:
         else:
             logger.warning("⚠️ Initial connection failed. Will retry in main loop.")
         
+        # Subscribe to telemetry for proactive callbacks (condition watchers + deferred requests)
+        try:
+            from pubsub import pub
+            try:
+                pub.unsubscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
+            except:
+                pass
+            pub.subscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
+            logger.info("✅ Subscribed to meshtastic.receive.telemetry for proactive agents")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not subscribe to telemetry for proactive agents: {e}")
+        
         self.running = True
         
         # Main loop
@@ -1466,7 +1727,6 @@ class AIResponder:
                 # 4. Periodic session timeout check
                 timed_out_data = self.session_manager.check_all_timeouts()
                 for data in timed_out_data:
-                    # Send timeout notification proactively
                     self.send_response(
                         data['message'], 
                         data['user_id'], 
@@ -1474,6 +1734,27 @@ class AIResponder:
                         data['channel'], 
                         is_admin_cmd=False
                     )
+
+                # 5. Scheduled task ticker
+                now = time.time()
+                with self._scheduled_tasks_lock:
+                    to_keep = []
+                    for task in self.scheduled_tasks:
+                        if now >= task['next_time']:
+                            self._fire_system_trigger(
+                                task['context_note'],
+                                task['from_node'],
+                                task['to_node'],
+                                task['channel']
+                            )
+                            # Reschedule if recurring and not expired
+                            if task['interval'] and now < task['end_time']:
+                                task['next_time'] = now + task['interval']
+                                to_keep.append(task)
+                            # else: one-shot or expired, discard
+                        else:
+                            to_keep.append(task)
+                    self.scheduled_tasks = to_keep
 
                 time.sleep(1)
                 
