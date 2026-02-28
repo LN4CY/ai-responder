@@ -886,6 +886,13 @@ class AIResponder:
         thread.daemon = True
         thread.start()
     
+    def _touch_worker(self):
+        """Update the active worker timestamp to prevent false-positive hang detection during long tools."""
+        thread_id = threading.get_ident()
+        with self._workers_lock:
+            if thread_id in self._active_workers:
+                self._active_workers[thread_id] = time.time()
+
     def get_tools(self):
         """
         Define tools available to the AI.
@@ -940,7 +947,7 @@ class AIResponder:
             "request_node_telemetry": {
                 "declaration": {
                     "name": "request_node_telemetry",
-                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. Useful if data is stale.",
+                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 15 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -1001,6 +1008,7 @@ class AIResponder:
         }
         
         try:
+            self._touch_worker()
             response = requests.get(url, headers=headers, params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
@@ -1031,6 +1039,7 @@ class AIResponder:
 
     def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
         """Internal handler for request_node_telemetry tool with short polling."""
+        self._touch_worker()
         node_id = node_id_or_name
         if not node_id.startswith('!'):
             found_id = self.meshtastic.find_node_by_name(node_id_or_name)
@@ -1062,6 +1071,7 @@ class AIResponder:
         poll_timeout = 15 
         
         while time.time() - poll_start < poll_timeout:
+            self._touch_worker()
             time.sleep(3)
             # Check timestamps in the handler
             node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id, {})
