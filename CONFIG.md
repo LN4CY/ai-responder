@@ -63,7 +63,7 @@ The responder uses **AI Function Calling** (Adaptive Tools) to proactively query
 
 **Available AI Tools:**
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
-- **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh.
+- **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
 
 **Adaptive Fallback Logic:**

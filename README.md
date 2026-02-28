@@ -24,6 +24,7 @@ Designed for 24/7 autonomous operation in remote environments:
 ### 📍 Strategic Situational Awareness
 The AI doesn't just respond; it understands its environment:
 - **Real-time Telemetry**: Access to battery, SNR, RSSI, temperature, and humidity for the local node and neighbors.
+- **Precise Location Tracking**: The AI can map out neighbors, complete with exact coordinates, altitude, and calculated distance from the bot.
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
 ### 👤 Persona-Driven Mesh Agent
@@ -377,6 +378,7 @@ Shows all available commands based on your permission level.
 **List channels:**
 ```
 !ai -ch
+!ai -ch ls
 ```
 
 **Enable a channel:**

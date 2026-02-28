@@ -402,6 +402,51 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
+    def test_channel_ls_command(self):
+        """Test the channel list command output."""
+        self.responder.send_response = MagicMock()
+        self.responder.config['allowed_channels'] = [0, 3]
+        
+        # Mock available channels
+        mock_channels = [
+            {'index': 0, 'name': 'Primary'},
+            {'index': 1, 'name': ''},
+            {'index': 3, 'name': 'Admin'}
+        ]
+        self.responder.meshtastic.get_channels = MagicMock(return_value=mock_channels)
+        
+    def test_channel_ls_command(self):
+        """Test the channel list command output."""
+        self.responder.send_response = MagicMock()
+        self.responder.config['allowed_channels'] = [0, 3]
+        
+        # Mock available channels
+        mock_channels = [
+            {'index': 0, 'name': 'Primary'},
+            {'index': 1, 'name': ''},
+            {'index': 3, 'name': 'Admin'}
+        ]
+        self.responder.meshtastic.get_channels = MagicMock(return_value=mock_channels)
+        
+        # Test implicitly (no args)
+        self.responder.process_command("!ai -ch", "!admin", "!bot", 0)
+        
+        args = self.responder.send_response.call_args
+        msg = args[0][0]
+        self.assertIn("📡 Channels:", msg)
+        self.assertIn("✅ [0] Primary", msg)
+        self.assertIn("❌ [1] Unnamed", msg)
+        self.assertIn("✅ [3] Admin", msg)
+        
+        # Test gracefully failing
+        self.responder.send_response.reset_mock()
+        self.responder.meshtastic.get_channels.return_value = []
+        self.responder.process_command("!ai -ch", "!admin", "!bot", 0)
+        args = self.responder.send_response.call_args
+        msg = args[0][0]
+        self.assertIn("📡 Allowed Channels: 0, 3", msg)
+        self.assertIn("(Could not retrieve available channels from node)", msg)
+
     def test_history_key_isolation(self):
         """Test that history keys are isolated by channel and node."""
         # 1. Channel Isolation

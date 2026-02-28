@@ -633,7 +633,7 @@ class AIResponder:
                     "⚙️ Admin (DM Only)\n"
                     "!ai -p [name] : Provider\n"
                     "  (local/gemini/openai)\n"
-                    "!ai -ch [ls/add/rm] : Channels\n"
+                    "!ai -ch [add/rm] : Channels\n"
                     "!ai -a [ls/add/rm] : Admins"
                 )
             else:
@@ -756,26 +756,41 @@ class AIResponder:
     
     def _handle_channel_command(self, args, from_node, to_node, channel):
         """Handle channel management."""
-        if not args:
+        parts = args.split(maxsplit=1) if args else []
+        action = parts[0].lower() if parts else ""
+        
+        if not action:
             # List channels
             allowed = self.config.get('allowed_channels', [0])
-            message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}"
+            available_channels = self.meshtastic.get_channels()
+            
+            if not available_channels:
+                message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve available channels from node)"
+            else:
+                lines = ["📡 Channels:"]
+                for ch in available_channels:
+                    idx = ch['index']
+                    name = ch['name']
+                    if not name:
+                        name = "Unnamed"
+                    status = "✅" if idx in allowed else "❌"
+                    lines.append(f"{status} [{idx}] {name}")
+                message = "\n".join(lines)
+            
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        parts = args.split(maxsplit=1)
-        if len(parts) < 2:
+        if len(parts) < 2 or action not in ['add', 'rm']:
             self.send_response("Usage: !ai -ch add/rm <channel_id>", from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        action = parts[0].lower()
-        channel_id = parts[1]
+        channel_id_str = parts[1]
         
-        if not channel_id.isdigit():
+        if not channel_id_str.isdigit():
             self.send_response("Channel ID must be a number", from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        channel_id = int(channel_id)
+        channel_id = int(channel_id_str)
         allowed_channels = self.config.get('allowed_channels', [0])
         
         if action == 'add':

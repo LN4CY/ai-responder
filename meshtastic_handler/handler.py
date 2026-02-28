@@ -618,13 +618,15 @@ class MeshtasticHandler:
             lon = pos.get('longitude')
             if lon is None and pos.get('longitudeI') is not None:
                 lon = pos.get('longitudeI') / 1e7
+            altitude = pos.get('altitude')
                 
             nodes.append({
                 'id': user.get('id'),
                 'longName': user.get('longName'),
                 'shortName': user.get('shortName'),
                 'lat': lat,
-                'lon': lon
+                'lon': lon,
+                'altitude': altitude
             })
         return nodes
 
@@ -655,13 +657,14 @@ class MeshtasticHandler:
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
             
-            # Calculate distance if positions are available
-            dist_str = ""
+            # Calculate distance and get coordinates if positions are available
+            location_str = ""
             if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
                 dist = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
-                dist_str = f" [Distance: {dist:.2f}km]"
+                alt_str = f", {n['altitude']}m alt" if n.get('altitude') is not None else ""
+                location_str = f" [Distance: {dist:.2f}km, Pos: {n['lat']:.6f}, {n['lon']:.6f}{alt_str}]"
                 
-            lines.append(f"- {n['id']}: {name}{short}{dist_str}")
+            lines.append(f"- {n['id']}: {name}{short}{location_str}")
             
         return "\n".join(lines)
 
@@ -714,8 +717,11 @@ class MeshtasticHandler:
             lon = pos.get('longitude')
             if lon is None and pos.get('longitudeI') is not None:
                 lon = pos.get('longitudeI') / 1e7
+            altitude = pos.get('altitude')
+            
             if lat is not None and lon is not None:
-                metadata_parts.append(f"Location: {lat:.6f}, {lon:.6f}")
+                alt_str = f", Altitude: {altitude}m" if altitude is not None else ""
+                metadata_parts.append(f"Location: {lat:.6f}, {lon:.6f}{alt_str}")
             
             # 2. Device Metrics
             metrics = node_info.get('deviceMetrics', {})
@@ -871,6 +877,26 @@ class MeshtasticHandler:
         except Exception as e:
             logger.error(f"Failed to get node info: {e}")
             return None
+
+    def get_channels(self):
+        """
+        Get a list of configured channels from the local node.
+        
+        Returns:
+            list: List of dicts representing channels {'index': i, 'name': name}
+        """
+        channels = []
+        try:
+            if self.interface and hasattr(self.interface, 'localNode'):
+                node = self.interface.localNode
+                if hasattr(node, 'channels'):
+                    for i, ch in enumerate(node.channels):
+                        name = getattr(ch.settings, 'name', '')
+                        channels.append({'index': i, 'name': name})
+        except Exception as e:
+            logger.error(f"Failed to get channels: {e}")
+            
+        return channels
 
 
 
