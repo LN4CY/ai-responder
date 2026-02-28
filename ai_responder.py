@@ -20,6 +20,7 @@ import logging
 import threading
 import sys
 import re
+import itertools
 import requests
 import pathlib
 from pubsub import pub
@@ -98,13 +99,16 @@ class AIResponder:
         self._workers_lock = threading.Lock()
         
         # --- Proactive Agent State ---
+        # Task ID counter (thread-safe via itertools.count)
+        self._task_counter = itertools.count(1)
+        
         # Time-based scheduled tasks (one-shot or recurring)
-        # Each entry: {next_time, end_time, interval, context_note, from_node, to_node, channel}
+        # Each entry: {id, next_time, end_time, interval, context_note, from_node, to_node, channel, targets}
         self.scheduled_tasks = []
         self._scheduled_tasks_lock = threading.Lock()
         
         # Condition-based watchers: fire when telemetry from a specific node meets criteria
-        # Each entry: {node_id, metric, operator, threshold, context_note, from_node, to_node, channel}
+        # Each entry: {id, node_id, metric, operator, threshold, context_note, from_node, to_node, channel, targets}
         self.condition_watchers = []
         self._condition_watchers_lock = threading.Lock()
         
@@ -113,7 +117,7 @@ class AIResponder:
         self.pending_telemetry_requests = {}
         
         # Node-online watchers: fire when any packet arrives from a watched node
-        # Each entry: {node_id, context_note, from_node, to_node, channel}
+        # Each entry: {id, node_id, context_note, from_node, to_node, channel, targets}
         self.node_online_watchers = []
         self._node_online_watchers_lock = threading.Lock()
         
@@ -1117,6 +1121,35 @@ class AIResponder:
                 },
                 "handler": self._watch_node_online_tool
             },
+            "list_proactive_tasks": {
+                "declaration": {
+                    "name": "list_proactive_tasks",
+                    "description": "List all active proactive tasks (scheduled reminders, condition watchers, node-online watchers) registered by the current user. Returns task IDs that can be used to cancel tasks.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                "handler": self._list_proactive_tasks_tool
+            },
+            "cancel_proactive_task": {
+                "declaration": {
+                    "name": "cancel_proactive_task",
+                    "description": "Cancel a specific proactive task by its task ID (e.g. 'sched-1', 'cond-2'). Use task_id='all' to remove all tasks registered by the current user.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "task_id": {
+                                "type": "STRING",
+                                "description": "The task ID to cancel (from list_proactive_tasks), or 'all' to cancel everything."
+                            }
+                        },
+                        "required": ["task_id"]
+                    }
+                },
+                "handler": self._cancel_proactive_task_tool
+            },
             "get_location_address": {
                 "declaration": {
                     "name": "get_location_address",
@@ -1253,43 +1286,56 @@ class AIResponder:
 
     # ==================== Proactive Agent Tools & Handlers ====================
 
-    def _schedule_message_tool(self, delay_seconds, context_note, recur_interval_seconds=None, max_duration_seconds=None):
+    def _schedule_message_tool(self, delay_seconds, context_note, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None):
         """Tool handler: schedule a one-shot or recurring proactive message."""
         thread_data = {}
         with self._workers_lock:
             thread_data = self._active_workers.get(threading.get_ident(), {})
-        
+
         if not thread_data:
             return "Error: Could not determine requester context."
-        
+
+        # DM-only enforcement
+        to_node = thread_data.get('to_node', '')
+        if to_node == '^all':
+            return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
+
         now = time.time()
+        task_id = f"sched-{next(self._task_counter)}"
         task = {
+            'id': task_id,
             'next_time': now + delay_seconds,
             'end_time': now + (max_duration_seconds or delay_seconds),
             'interval': recur_interval_seconds,
             'context_note': context_note,
             'from_node': thread_data.get('from_node'),
-            'to_node': thread_data.get('to_node'),
+            'to_node': to_node,
             'channel': thread_data.get('channel'),
+            'targets': notify_targets or 'requester',
         }
         with self._scheduled_tasks_lock:
             self.scheduled_tasks.append(task)
-        
+
         if recur_interval_seconds:
-            return (f"✅ Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
+            return (f"✅ [{task_id}] Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
                     f"for the next {max_duration_seconds or delay_seconds}s about: {context_note}")
         else:
-            return f"✅ Reminder scheduled in {delay_seconds}s about: {context_note}"
+            return f"✅ [{task_id}] Reminder scheduled in {delay_seconds}s about: {context_note}"
 
-    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note):
+    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None):
         """Tool handler: add a telemetry condition watcher."""
         thread_data = {}
         with self._workers_lock:
             thread_data = self._active_workers.get(threading.get_ident(), {})
-        
+
         if not thread_data:
             return "Error: Could not determine requester context."
-        
+
+        # DM-only enforcement
+        to_node = thread_data.get('to_node', '')
+        if to_node == '^all':
+            return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
+
         node_id = node_id_or_name
         if not node_id.startswith('!'):
             found_id = self.meshtastic.find_node_by_name(node_id_or_name)
@@ -1297,32 +1343,40 @@ class AIResponder:
                 node_id = found_id
             else:
                 return f"Error: Node '{node_id_or_name}' not found."
-        
+
+        task_id = f"cond-{next(self._task_counter)}"
         watcher = {
+            'id': task_id,
             'node_id': node_id,
             'metric': metric,
             'operator': operator,
             'threshold': threshold,
             'context_note': context_note,
             'from_node': thread_data.get('from_node'),
-            'to_node': thread_data.get('to_node'),
+            'to_node': to_node,
             'channel': thread_data.get('channel'),
+            'targets': notify_targets or 'requester',
         }
         with self._condition_watchers_lock:
             self.condition_watchers.append(watcher)
-        
-        logger.info(f"👁️ Condition watcher registered: {node_id} {metric}{operator}{threshold}")
-        return f"✅ Watching {node_id_or_name}: will alert you when {metric} {operator} {threshold} ({context_note})"
 
-    def _watch_node_online_tool(self, node_id_or_name, context_note):
+        logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
+        return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
+
+    def _watch_node_online_tool(self, node_id_or_name, context_note, notify_targets=None):
         """Tool handler: add a node-online watcher."""
         thread_data = {}
         with self._workers_lock:
             thread_data = self._active_workers.get(threading.get_ident(), {})
-        
+
         if not thread_data:
             return "Error: Could not determine requester context."
-        
+
+        # DM-only enforcement
+        to_node = thread_data.get('to_node', '')
+        if to_node == '^all':
+            return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
+
         node_id = node_id_or_name
         if not node_id.startswith('!'):
             found_id = self.meshtastic.find_node_by_name(node_id_or_name)
@@ -1330,36 +1384,148 @@ class AIResponder:
                 node_id = found_id
             else:
                 return f"Error: Node '{node_id_or_name}' not found. Make sure I've seen it at least once before."
-        
+
+        task_id = f"node-{next(self._task_counter)}"
         watcher = {
+            'id': task_id,
             'node_id': node_id,
             'context_note': context_note,
             'from_node': thread_data.get('from_node'),
-            'to_node': thread_data.get('to_node'),
+            'to_node': to_node,
             'channel': thread_data.get('channel'),
+            'targets': notify_targets or 'requester',
         }
         with self._node_online_watchers_lock:
             self.node_online_watchers.append(watcher)
-        
-        logger.info(f"👀 Node-online watcher registered for {node_id}")
-        return f"✅ Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh ({context_note})"
 
-    def _fire_system_trigger(self, context_note, from_node, to_node, channel):
-        """Fire a proactive system-triggered AI response to a user."""
+        logger.info(f"👀 Node-online watcher [{task_id}] registered for {node_id}")
+        return f"✅ [{task_id}] Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh"
+
+    def _list_proactive_tasks_tool(self):
+        """Tool handler: list all active proactive tasks for the current user."""
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        caller = thread_data.get('from_node')
+        lines = []
+        now = time.time()
+
+        with self._scheduled_tasks_lock:
+            for t in self.scheduled_tasks:
+                if t.get('from_node') != caller:
+                    continue
+                remaining = max(0, int(t['next_time'] - now))
+                recur = f" (every {t['interval']}s)" if t.get('interval') else ""
+                lines.append(f"[{t['id']}] ⏰ Fires in {remaining}s{recur}: {t['context_note']} → {t['targets']}")
+
+        with self._condition_watchers_lock:
+            for w in self.condition_watchers:
+                if w.get('from_node') != caller:
+                    continue
+                lines.append(f"[{w['id']}] 👁 {w['node_id']} {w['metric']}{w['operator']}{w['threshold']} → {w['targets']}")
+
+        with self._node_online_watchers_lock:
+            for w in self.node_online_watchers:
+                if w.get('from_node') != caller:
+                    continue
+                lines.append(f"[{w['id']}] 🟢 Waiting for {w['node_id']} → {w['targets']}")
+
+        if not lines:
+            return "📋 You have no active proactive tasks."
+        return "📋 Your active tasks:\n" + "\n".join(lines)
+
+    def _cancel_proactive_task_tool(self, task_id):
+        """Tool handler: cancel a proactive task by ID, or 'all' to cancel everything."""
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+        caller = thread_data.get('from_node')
+        cancelled = []
+        cancel_all = (task_id.strip().lower() == 'all')
+
+        with self._scheduled_tasks_lock:
+            keep, remove = [], []
+            for t in self.scheduled_tasks:
+                if t.get('from_node') == caller and (cancel_all or t.get('id') == task_id):
+                    remove.append(t.get('id'))
+                else:
+                    keep.append(t)
+            self.scheduled_tasks = keep
+            cancelled.extend(remove)
+
+        with self._condition_watchers_lock:
+            keep, remove = [], []
+            for w in self.condition_watchers:
+                if w.get('from_node') == caller and (cancel_all or w.get('id') == task_id):
+                    remove.append(w.get('id'))
+                else:
+                    keep.append(w)
+            self.condition_watchers = keep
+            cancelled.extend(remove)
+
+        with self._node_online_watchers_lock:
+            keep, remove = [], []
+            for w in self.node_online_watchers:
+                if w.get('from_node') == caller and (cancel_all or w.get('id') == task_id):
+                    remove.append(w.get('id'))
+                else:
+                    keep.append(w)
+            self.node_online_watchers = keep
+            cancelled.extend(remove)
+
+        if cancelled:
+            ids = ', '.join(f'[{c}]' for c in cancelled)
+            return f"✅ Cancelled: {ids}"
+        return f"❌ Task [{task_id}] not found or does not belong to you."
+
+    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester'):
+        """Fire a proactive system-triggered AI response to one or more targets.
+
+        targets: comma-separated string of recipients:
+            'requester'       - the original message sender
+            '!hexid'          - any specific node by hex ID
+            'ch:N'            - broadcast on channel N (must be in allowed_channels)
+        """
         prompt = (
             f"[SYSTEM WAKEUP] A proactive alert has triggered. "
             f"Context: {context_note}. "
             f"Please send a short, natural-sounding message to the user now. "
             f"Do not ask them to do anything; simply deliver the alert."
         )
-        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note}")
-        t = threading.Thread(
-            target=self._process_ai_query_thread,
-            args=(prompt, from_node, to_node, channel),
-            kwargs={'is_dm': (to_node != '^all'), 'is_system_trigger': True},
-            daemon=True
-        )
-        t.start()
+        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
+
+        target_list = [t.strip() for t in targets.split(',') if t.strip()]
+        allowed_channels = self.config.get('allowed_channels', [])
+
+        for target in target_list:
+            if target == 'requester':
+                _to = to_node
+                _ch = channel
+            elif target.startswith('ch:'):
+                try:
+                    ch_idx = int(target[3:])
+                except ValueError:
+                    logger.warning(f"Invalid channel target: {target}")
+                    continue
+                if ch_idx not in allowed_channels:
+                    logger.warning(f"Channel {ch_idx} not in allowed_channels — skipping.")
+                    continue
+                _to = '^all'
+                _ch = ch_idx
+            elif target.startswith('!'):
+                _to = target
+                _ch = 0
+            else:
+                logger.warning(f"Unknown target format: {target}")
+                continue
+
+            t = threading.Thread(
+                target=self._process_ai_query_thread,
+                args=(prompt, from_node, _to, _ch),
+                kwargs={'is_dm': (_to != '^all'), 'is_system_trigger': True},
+                daemon=True
+            )
+            t.start()
 
     def _on_telemetry_proactive(self, packet, interface):
         """Callback fired on every incoming telemetry packet. Evaluates deferred requests and condition watchers."""
@@ -1432,7 +1598,7 @@ class AIResponder:
                         f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
                         f"(threshold was {w['operator']} {w['threshold']})."
                     )
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'])
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'))
 
         except Exception as e:
             logger.warning(f"Error in proactive telemetry handler: {e}")
@@ -1606,7 +1772,7 @@ class AIResponder:
                     
                 for w in triggered:
                     context = f"Node online alert: {w['context_note']}. Node {from_id_check} was just heard on the mesh."
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'])
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'))
                     logger.info(f"🟢 Node-online watcher fired for {from_id_check}")
             
             # Extract packet data
