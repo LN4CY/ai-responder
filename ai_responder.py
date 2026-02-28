@@ -122,6 +122,31 @@ class AIResponder:
             except Exception as e:
                 logger.warning(f"Failed to parse ADMIN_NODE_ID '{ENV_ADMIN_NODE_ID}': {e}")
         
+        # Auto-cleanup corrupted config entries
+        # If a past bug (or direct ENV injection) inserted "!node1,!node2" as a single string,
+        # we flatten and re-save the list here so permissions work correctly.
+        current_admins = self.config.get('admin_nodes', [])
+        cleaned_admins = []
+        needs_cleanup = False
+        
+        for item in current_admins:
+            if ',' in item:
+                needs_cleanup = True
+                cleaned_admins.extend([n.strip() for n in item.split(',') if n.strip()])
+            else:
+                cleaned_admins.append(item.strip())
+                
+        if needs_cleanup:
+            # Deduplicate while preserving order
+            final_admins = []
+            for item in cleaned_admins:
+                if item not in final_admins:
+                    final_admins.append(item)
+            
+            logger.info(f"🧹 Auto-cleaned corrupted admin_nodes list from config: {final_admins}")
+            self.config['admin_nodes'] = final_admins
+            self.config.save()
+        
         # Initialize allowed channels from environment variable
         if ALLOWED_CHANNELS:
             try:
@@ -832,26 +857,47 @@ class AIResponder:
             return
         
         action = parts[0].lower()
-        node_id = parts[1]
+        node_input = parts[1]
+        
+        # Handle comma-separated list of nodes
+        nodes_to_process = [n.strip() for n in node_input.split(',') if n.strip()]
+        if not nodes_to_process:
+            self.send_response("No valid node IDs provided.", from_node, to_node, channel, is_admin_cmd=True)
+            return
+
         admin_nodes = self.config.get('admin_nodes', [])
+        messages = []
+        updated = False
         
         if action == 'add':
-            if node_id not in admin_nodes:
-                admin_nodes.append(node_id)
+            for nid in nodes_to_process:
+                if nid not in admin_nodes:
+                    admin_nodes.append(nid)
+                    messages.append(f"✅ Added {nid}")
+                    updated = True
+                else:
+                    messages.append(f"ℹ️ {nid} is already admin")
+            
+            if updated:
                 self.config['admin_nodes'] = admin_nodes
                 self.config.save()
-                self.send_response(f"✅ Added admin {node_id}", from_node, to_node, channel, is_admin_cmd=True)
-            else:
-                self.send_response(f"{node_id} is already an admin", from_node, to_node, channel, is_admin_cmd=True)
+            
+            self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
         
         elif action == 'rm':
-            if node_id in admin_nodes:
-                admin_nodes.remove(node_id)
+            for nid in nodes_to_process:
+                if nid in admin_nodes:
+                    admin_nodes.remove(nid)
+                    messages.append(f"✅ Removed {nid}")
+                    updated = True
+                else:
+                    messages.append(f"ℹ️ {nid} not in admin list")
+            
+            if updated:
                 self.config['admin_nodes'] = admin_nodes
                 self.config.save()
-                self.send_response(f"✅ Removed admin {node_id}", from_node, to_node, channel, is_admin_cmd=True)
-            else:
-                self.send_response(f"{node_id} is not an admin", from_node, to_node, channel, is_admin_cmd=True)
+            
+            self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
         
         else:
             self.send_response("Usage: !ai -a add/rm <node_id>", from_node, to_node, channel, is_admin_cmd=True)
@@ -891,7 +937,7 @@ class AIResponder:
         thread_id = threading.get_ident()
         with self._workers_lock:
             if thread_id in self._active_workers:
-                self._active_workers[thread_id] = time.time()
+                self._active_workers[thread_id]['start_time'] = time.time()
 
     def get_tools(self):
         """
@@ -947,7 +993,7 @@ class AIResponder:
             "request_node_telemetry": {
                 "declaration": {
                     "name": "request_node_telemetry",
-                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 15 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
+                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 60 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -1105,7 +1151,12 @@ class AIResponder:
         """Background thread for processing AI queries with adaptive tool support."""
         thread_id = threading.get_ident()
         with self._workers_lock:
-            self._active_workers[thread_id] = time.time()
+            self._active_workers[thread_id] = {
+                'start_time': time.time(),
+                'from_node': from_node,
+                'to_node': to_node,
+                'channel': channel
+            }
             
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
@@ -1356,12 +1407,34 @@ class AIResponder:
                 
                 # Check for stalled worker threads
                 with self._workers_lock:
-                    for tid, start_time in list(self._active_workers.items()):
+                    for tid, worker_data in list(self._active_workers.items()):
+                        # Backwards compatibility check in case of mid-run reload
+                        if isinstance(worker_data, dict):
+                            start_time = worker_data.get('start_time', 0)
+                            from_node = worker_data.get('from_node')
+                            to_node = worker_data.get('to_node')
+                            channel = worker_data.get('channel')
+                        else:
+                            start_time = worker_data
+                            from_node = to_node = channel = None
+
                         age = int(current_time - start_time)
                         if age > 90: # 90s > 45s hard thread timeout
                             health_ok = False
                             reasons.append(f"AI Worker thread {tid} stalled ({age}s > 90s limit)")
                             logger.warning(f"🐛 Worker thread {tid} has been running for {age}s — likely stuck in DNS/network hang.")
+                            
+                            if from_node and to_node and channel is not None:
+                                logger.info(f"Sending timeout notification to {from_node}")
+                                self.send_response(
+                                    "⚠️ AI request timed out due to network congestion or API failure.",
+                                    from_node,
+                                    to_node,
+                                    channel,
+                                    is_admin_cmd=False
+                                )
+                                # Wait a moment to try and ensure the message is queued before exiting
+                                time.sleep(2)
                             break
 
                 # Periodic health status log (every 60s, always)
