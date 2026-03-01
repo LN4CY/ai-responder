@@ -27,6 +27,12 @@ The AI doesn't just respond; it understands its environment:
 - **Precise Location Tracking**: The AI can map out neighbors, complete with exact coordinates, altitude, and calculated distance from the bot.
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
+### 🤖 Proactive Agent Architecture
+The AI can now spontaneously send messages to users without being asked:
+- **Scheduled Reminders**: Ask the AI to remind you about something in 5 minutes or ping you every 30 seconds for the next 5 minutes.
+- **Condition Watchers**: Register alerting rules like "message me when node L4B1's battery drops below 10%" and the AI monitors passively from live mesh telemetry.
+- **Deferred Telemetry Callbacks**: When the AI requests telemetry from a slow node and times out, it registers a background listener. When the data finally arrives from the mesh (seconds to minutes later), it proactively delivers it without requiring the user to ask again.
+
 ### 👤 Persona-Driven Mesh Agent
 - **Context Isolation**: Every user and channel has a secure sandbox, preventing data leakage between conversations.
 - **Mesh Efficiency**: System prompts are tuned for LoRa—delivering high-density, concise information (typically <200 chars).
@@ -48,6 +54,7 @@ The AI doesn't just respond; it understands its environment:
 | **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
 | **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
 | **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
+| **Proactive Agents** | ✅ Done | Scheduled msgs, condition watchers, and deferred telemetry callbacks. |
 | **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
 | **Remote Management** | 📅 Q3 2026 | Encrypted remote configuration over mesh or secondary link. |
 | **Health Analytics** | 📅 Q4 2026 | Visual metrics of mesh health and AI interaction statistics. |
@@ -152,7 +159,7 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 | `AI_PROVIDER` | `ollama` | Initial provider (`ollama`, `gemini`, `openai`, `anthropic`) |
 | `OLLAMA_HOST` | `ollama` | Hostname for Ollama service |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
-| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (e.g. `!1234abcd`) |
+| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands. Supports comma-separated list (e.g. `!1234abcd,!9e044360`) |
 | `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
 | `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
 | `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
@@ -181,235 +188,80 @@ Context: {context_id}
 
 ### Basic Usage
 
-#### Asking Questions
+## 🤖 AI Commands
 
-**In Channels:**
-```
-!ai What is the weather like today?
-```
-- Requires `!ai` prefix for every message
-- Conversation history is automatically saved to a channel-specific slot
-- Each channel maintains its own conversation history per user
+The responder supports several direct commands using the `!ai` prefix. Note that **Direct Messages (DMs)** offer full session support, while **Channels** are for one-off queries.
 
-**In Direct Messages (DMs):**
-```
-!ai How do I configure my radio?
-```
-- Can use `!ai` prefix for one-off questions
-- Or start a session for continuous conversation (see Sessions below)
+### 👤 Regular Commands (Available to All)
 
-### Sessions (DM Only)
+| Command | Description | Example | Mode Nuance |
+| :--- | :--- | :--- | :--- |
+| `!ai [msg]` | **Ask AI**: Query the mesh or general knowledge. | `!ai what nodes are near?` | **Channel**: Prefix required. **DM**: No prefix needed in session. |
+| `!ai -h` | **Help**: Shows concise consolidated help. | `!ai -h` | Context-aware (hides Admin tools in public). |
+| `!ai -m` | **Memory**: Shows AI context, storage, and slots usage. | `!ai -m` | System-wide status for the calling user. |
+| `!ai -n [topic]` | **New Topic**: Resets context and starts fresh. | `!ai -n Mesh Routing` | **Channel**: Clears history. **DM**: Starts a named session. |
+| `!ai -end` | **End Session**: Closes current active session. | `!ai -end` | **DM Only**. Sessions timeout after 5 mins. |
+| `!ai -c ls` | **List History**: Show your saved conversations. | `!ai -c ls` | **DM Only**. Lists up to 10 saved slots. |
+| `!ai -c [id]` | **Load History**: Resume a specific conversation. | `!ai -c 1` or `!ai -c MyTask` | **DM**: Resumes session. **Channel**: N/A. |
+| `!ai -c rm [id]`| **Delete History**: Remove a saved conversation. | `!ai -c rm 1` or `!ai -c rm all`| Deletes from long-term disk storage. |
 
-Sessions allow you to have continuous conversations without typing `!ai` before every message. Sessions are **only available in Direct Messages**.
+### ⚙️ Admin Commands (DM Only)
 
-#### Starting a Session
+Admin commands require your node ID to be in the `admin_nodes` list (see [CONFIG.md](CONFIG.md)).
 
-**With auto-generated name:**
-```
-!ai -n
-```
-Response: `🟢 Session started: 'chat_20260204_183000' (slot 3)`
+| Command | Description | Example |
+| :--- | :--- | :--- |
+| `!ai -s [rm <id>]` | **Scheduler**: Manage proactive tasks system-wide. | `!ai -s` (list), `!ai -s add` (help) |
+| `!ai -p [name]` | **Provider**: Switch AI model (Ollama, Gemini, etc). | `!ai -p gemini` or `!ai -p local` |
+| `!ai -ch [ls/add/rm]`| **Channels**: Enable/disable AI on specific channels. | `!ai -ch add 2` or `!ai -ch ls` |
+| `!ai -a [ls/add/rm]` | **Admins**: Manage the list of authorized admins. | `!ai -a add !1234abcd` |
 
-**With custom name:**
-```
-!ai -n my_project_discussion
-```
-Response: `🟢 Session started: 'my_project_discussion' (slot 3)`
+> [!TIP]
+> **Consolidated Help**: Use `!ai -h` in a DM to see a concise summary of all commands available to you.
 
-#### During a Session
+## 📡 Proactive Agents
 
-Once a session is active, all your messages are treated as AI queries:
-```
-What is LoRa?
-[🟢 my_project_discussion] LoRa is a long-range...
+Frontier AI providers (Gemini, Claude, GPT) can spontaneously send messages to users based on time or mesh events. No special command needed — just describe what you want to the AI in plain language.
 
-Tell me more about mesh networks
-[🟢 my_project_discussion] Mesh networks are...
-```
+> [!IMPORTANT]
+> **DM-Only Registration**: To prevent mesh spam, proactive alerts (timers/watchers) can **only** be registered via Direct Message. The AI will politely decline if asked in a public channel.
 
-Notice the `[🟢 session_name]` indicator on all responses.
+### 🆔 Unique Task IDs
+Every proactive task/watcher is assigned a unique ID (e.g., `[sched-1]`, `[cond-2]`, `[node-3]`). These IDs are shown when the task is registered and are used for management (listing/cancelling).
 
-#### Session Timeout
+### 🔔 Multi-Target Notifications
+By default, the AI notifies the **requester**. However, you can ask it to notify other nodes or even public channels (if the AI is authorized on that channel).
+- **Example**: `!ai Notify me and !9e044360 when L4B1 comes online`
+- **Example**: `!ai Ping me and channel 0 every 10 minutes`
 
-Sessions automatically end after **5 minutes of inactivity**. You'll receive a proactive notification when this happens:
+### ⏰ Scheduled Reminders & Pings
+Ask the AI to remind you about something after a delay or at a specific time:
+- **One-shot (relative)**: `!ai Remind me to check the batteries in 5 minutes`
+- **One-shot (absolute)**: `!ai Remind me at 10:00 PM to check the mesh`
+- **Recurring**: `!ai Ping me every 30 seconds for the next 5 minutes`
+- **Multi-target**: `!ai Remind me and NodeName at 09:00 to swap radios` (or use `!hexid`)
+- **One-off Message**: `!ai Tell Node X I'm on my way` or `!ai Inform the group on channel 0 that the weather is clear`
 
-```
-⏱️ Session 'my_project_discussion' ended (timeout after 5 minutes).
-```
+### 👁️ Condition-Based Alerts (Telemetry Watchers)
+Monitor a node's telemetry and alert when a threshold is hit:
+- **Example**: `!ai Message me when node L4B1's battery is below 10%`
+- **Example**: `!ai Alert me if the SNR on !9e044360 drops below -12`
+- **Supported metrics**: `battery_level`, `voltage`, `temperature`, `humidity`, `barometric_pressure`, `iaq`, `snr`
+- **Supported operators**: `<`, `>`, `<=`, `>=`, `==`
 
-The AI remembers your routing information to send this alert even if you've stopped chatting. After timeout, existing context is cleared to protect privacy.
+### 🟢 Node-Online Watchers
+Get a notification as soon as a specific node is heard on the mesh:
+- **Example**: `!ai Notify me when L4B1 comes online`
+- **Example**: `!ai Message me and !9e044360 when node XYZ is seen`
 
-#### Ending a Session
+### 📋 Managing Your Tasks (User)
+You can query and cancel your own tasks at any time:
+- **List your tasks**: `!ai What alerts do I have?` or `!ai show my reminders`
+- **Cancel a task**: `!ai Cancel [sched-1]`
+- **Cancel all**: `!ai Cancel all my alerts`
 
-```
-!ai -end
-```
-Response: `Session 'my_project_discussion' ended.`
-
-You'll always receive a confirmation message when a session ends, whether manually or by timeout.
-
-### Conversation Management
-
-The AI maintains up to **10 saved conversations** per user, plus automatic channel-specific conversations. All conversation commands are available to **all users** (no admin required).
-
-#### Listing Conversations
-
-```
-!ai -c ls
-```
-Response:
-```
-📚 Saved Conversations:
-1. my_project_discussion (last: 2026-02-04 18:30)
-2. chat_20260203_140522 (last: 2026-02-03 14:15)
-3. troubleshooting_help (last: 2026-02-02 09:22)
-```
-
-#### Recalling a Conversation
-
-**By name:**
-```
-!ai -c my_project_discussion
-```
-
-**By slot number:**
-```
-!ai -c 1
-```
-
-**Most recent conversation:**
-```
-!ai -c
-```
-
-Response: `Loaded conversation 'my_project_discussion' (slot 1)`
-
-After loading, continue the conversation with `!ai <query>` or start a new session.
-
-#### Deleting a Conversation
-
-**By name:**
-```
-!ai -c rm my_project_discussion
-```
-
-**By slot number:**
-```
-!ai -c rm 1
-```
-
-Response: `Deleted conversation 'my_project_discussion' (slot 1)`
-
-**Delete All:**
-```
-!ai -c rm all
-```
-Response: `Deleted 5 conversations.`
-
-### Channel vs DM Behavior
-
-#### Channel Mode
-- **Every message needs `!ai` prefix**
-- `!ai <query>` - Ask a question, auto-saves to channel slot
-- `!ai -n <query>` - Clear channel history and ask a new question
-- No sessions available
-- Each channel maintains separate history per user
-- Channel conversations don't count against your 10-slot limit
-
-#### DM Mode
-- `!ai <query>` - One-off question
-- `!ai -n [name]` - Start a session (continuous conversation)
-- `!ai -end` - End current session
-- During session: no `!ai` prefix needed
-- Sessions use one of your 10 conversation slots
-
-### Memory Status
-
-Check your conversation history usage:
-```
-!ai -m
-```
-Response:
-```
-🧠 Context (Ollama): 8/10 (| History: 24) | 💾 Storage: 0.15/2.00 MB (7.5%) | 📚 Slots: 3/10
-```
-
-This shows:
-- **Context**: Messages sent to AI (limited by provider)
-- **History**: Total messages stored
-- **Storage**: Disk space used for your conversations
-- **Slots**: Conversation slots used out of 10 available
-
-### New Conversation (Channel Mode)
-
-In channels, use `!ai -n` to clear the channel's conversation history:
-```
-!ai -n What is Meshtastic?
-```
-This clears previous channel context and starts fresh with your new query.
-
-## Admin Commands
-
-Admin commands require your node ID to be configured as an admin (see [CONFIG.md](CONFIG.md)).
-
-### Help Menu
-```
-!ai -h
-```
-Shows all available commands based on your permission level.
-
-### Provider Management (Admin Only)
-
-**List providers:**
-```
-!ai -p
-```
-
-**Switch provider:**
-```
-!ai -p local      # Switch to Ollama
-!ai -p gemini     # Switch to Google Gemini
-!ai -p openai     # Switch to OpenAI
-!ai -p anthropic  # Switch to Anthropic Claude
-```
-
-### Channel Management (Admin Only)
-
-**List channels:**
-```
-!ai -ch
-!ai -ch ls
-```
-
-**Enable a channel:**
-```
-!ai -ch add 2
-!ai -ch add LongFast
-```
-
-**Disable a channel:**
-```
-!ai -ch rm 2
-!ai -ch rm LongFast
-```
-
-### Admin Management (Admin Only)
-
-**List admins:**
-```
-!ai -a
-```
-
-**Add admin:**
-```
-!ai -a add !1234abcd
-!ai -a add me
-```
-
-**Remove admin:**
-```
-!ai -a rm !1234abcd
-```
+### 📡 Deferred Telemetry Auto-Response
+When the AI requests telemetry from a slow mesh node and times out, it registers a background callback automatically. When the data eventually arrives, the AI proactively sends you the result without requiring you to ask again.
 
 ## Tips & Best Practices
 

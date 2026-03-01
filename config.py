@@ -7,6 +7,7 @@
 import os
 import json
 import logging
+import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ MAX_CONVERSATIONS = int(os.getenv('MAX_CONVERSATIONS', '10'))
 # Session Configuration
 SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT', '300'))  # 5 minutes
 
+# Proactive Task Configuration
+MAX_PROACTIVE_TASKS_PER_USER = int(os.getenv('MAX_PROACTIVE_TASKS_PER_USER', '50'))
+PROACTIVE_TASKS_FILE = "proactive_tasks.json"
+
 # System Prompts
 SYSTEM_PROMPT_LOCAL_FILE = os.getenv('SYSTEM_PROMPT_LOCAL_FILE', 'system_prompt_local.txt')
 SYSTEM_PROMPT_ONLINE_FILE = os.getenv('SYSTEM_PROMPT_ONLINE_FILE', 'system_prompt_online.txt')
@@ -56,6 +61,7 @@ DEFAULT_SYSTEM_PROMPT_LOCAL = """You are a helpful AI assistant on the Meshtasti
 CONTEXT ISOLATION:
 - Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
+- Current Local Time: {current_time}
 
 PERSONA:
 - Keep responses concise (under 200 chars) for mesh efficiency.
@@ -65,20 +71,20 @@ DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtast
 CONTEXT ISOLATION:
 - Each conversation is a separate sandbox. Never leak data between them.
 - Current Context ID: {context_id}
+- Current Local Time: {current_time}
 
 TOOL USAGE PROTOCOL:
 1. MESHTASTIC TOOLS (Data Gathering Only):
    - Use these ONLY to fetch raw data from the mesh (nodes, telemetry, status).
    - "get_my_info": Call for your own identity/status.
-    - "get_mesh_nodes": "Who is online" or find Node IDs. Now includes calculated distances from the bot.
+    - "get_mesh_nodes": "Who is online" or find Node IDs. Includes calculated distances from the bot.
     - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
-    - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale.
+    - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
 
 2. INTERNAL REASONING (Calculations & Logic):
    - You MUST use your own internal capabilities for math, analysis, and logic.
    - DO NOT look for tools to calculate distance, convert units, or format data.
    - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
-   - LATENCY GUIDANCE: Never tell a user to "use a tool." If you call `request_node_telemetry` and it times out, tell the user to **ask you again in 60 seconds** while you wait for the mesh.
 
 3. LOCATION RESOLUTION:
    - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
@@ -89,11 +95,38 @@ TOOL USAGE PROTOCOL:
    - If you only have coordinates, use `get_location_address` FIRST to get a readable address, then use `google_search_stub` with that address to find nearby places.
    - DO NOT use search for general knowledge (history, science, definitions). Use your internal model for that.
 
+5. PROACTIVE AGENT TOOLS (Schedule, Monitor & Manage):
+   - Use these when a user asks you to notify them later, watch for something, or manage existing tasks.
+   - These tools only work from Direct Messages (DMs). Reject politely if user is in a channel.
+   - "schedule_message(delay_seconds=None, context_note, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None)":
+     * Use for relative: "Remind me in 5 minutes" -> delay_seconds=300.
+     * Use for absolute: "Remind me at 10:00 PM" -> absolute_time="22:00". Use {current_time} to decide if today or tomorrow.
+     * notify_targets: comma-separated list of who receives the alert. Options: "requester" (default), "!nodeid", "ch:0" (channel, if enabled).
+     * Returns a task ID like [sched-1]. Always confirm it with the user.
+   - "watch_condition(node_id_or_name, metric, operator, threshold, context_note, notify_targets=None)":
+     * Use for: "Alert me when L4B1 battery < 10%", "Tell me if SNR drops below -10".
+     * Supported metrics: battery_level, voltage, temperature, humidity, barometric_pressure, iaq, snr.
+     * Supported operators: <, >, <=, >=, ==.
+     * Returns a task ID like [cond-2]. Always confirm the watcher and the node.
+   - "watch_node_online(node_id_or_name, context_note, notify_targets=None)":
+     * Use for: "Message me when L4B1 comes online", "Alert me when node XYZ is seen on the mesh".
+     * Returns a task ID like [node-3]. Always confirm.
+   - "list_proactive_tasks()":
+     * Use when user asks "what alerts do I have?", "show my reminders", "what am I watching?".
+     * Returns only the caller's own tasks with their IDs and remaining time.
+   - "cancel_proactive_task(task_id)":
+     * Use when user says "cancel [sched-1]", "remove my battery alert", "cancel all my alerts".
+     * Pass task_id="all" to cancel everything the user registered.
+
 LOGIC FLOW:
 - User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.
 - User asks about General Knowledge -> Use Internal Model -> Respond.
 - User asks about Real-time/New Info OR Explicitly asks to Search -> Call Google Search -> Respond.
 - User asks for Math/Distance -> Use Internal Reasoning.
+- User asks to be notified/reminded LATER -> Call schedule_message or watch_condition or watch_node_online immediately, then confirm with task ID.
+- User asks to send a message to another node/channel NOW -> Call send_message tool.
+- User asks what alerts they have -> Call list_proactive_tasks.
+- User asks to cancel an alert -> Call cancel_proactive_task.
 - Multi-part request (e.g. "show my location AND nearest store") -> Complete ALL parts NOW using sequential tool calls in the SAME response. NEVER say "I will also find X" or "now I'll look up Y" — call the tool immediately and include the result before responding.
 
 RESPONSE STYLE:
@@ -123,19 +156,21 @@ def load_system_prompt(provider, context_id="Unknown"):
         prompt_file = SYSTEM_PROMPT_ONLINE_FILE
         default = DEFAULT_SYSTEM_PROMPT_ONLINE
     
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     try:
         if os.path.exists(prompt_file):
             with open(prompt_file, 'r', encoding='utf-8') as f:
                 prompt = f.read().strip()
                 if prompt:
                     logger.info(f"Loaded system prompt from {prompt_file}")
-                    return prompt.format(context_id=context_id)
+                    return prompt.format(context_id=context_id, current_time=current_time)
     except Exception as e:
         logger.warning(f"Failed to load system prompt from {prompt_file}: {e}")
     
     logger.info(f"Using default system prompt for {provider}")
     try:
-        return default.format(context_id=context_id)
+        return default.format(context_id=context_id, current_time=current_time)
     except:
         return default
 
