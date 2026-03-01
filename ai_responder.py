@@ -1790,6 +1790,15 @@ class AIResponder:
             if not from_id:
                 return
 
+            # Quick check if ANY watcher or pending request cares about this node
+            has_interest = (from_id in self.pending_telemetry_requests)
+            if not has_interest:
+                with self._condition_watchers_lock:
+                    has_interest = any(w['node_id'] == from_id for w in self.condition_watchers)
+            
+            if has_interest:
+                logger.info(f"🕵️‍♂️ [DEBUG] Proactive handler checking packet from {from_id}")
+
             # --- 1. Deferred telemetry callbacks ---
             if from_id in self.pending_telemetry_requests:
                 req = self.pending_telemetry_requests.pop(from_id)
@@ -1805,6 +1814,9 @@ class AIResponder:
             # --- 2. Condition watchers ---
             decoded = packet.get('decoded', {})
             telemetry = decoded.get('telemetry', {})
+            
+            if has_interest:
+                logger.info(f"🕵️‍♂️ [DEBUG] {from_id} packet decoded keys: {list(decoded.keys())}. Telemetry present? {bool(telemetry)}")
             
             if not telemetry:
                 return
@@ -1834,6 +1846,9 @@ class AIResponder:
             if 'rxSnr' in packet:
                 metric_values['snr'] = packet['rxSnr']
 
+            if has_interest:
+                logger.info(f"🕵️‍♂️ [DEBUG] Extracted metrics for {from_id}: {metric_values}")
+
             with self._condition_watchers_lock:
                 triggered = []
                 for w in self.condition_watchers:
@@ -1842,8 +1857,12 @@ class AIResponder:
                     
                     # Watchers use normalized snake_case metrics (e.g. 'battery_level', 'temperature')
                     val = metric_values.get(w['metric'])
+                    if has_interest:
+                        logger.info(f"🕵️‍♂️ [DEBUG] Checking metric '{w['metric']}' = {val} against limit {w['operator']} {w['threshold']}")
+                        
                     if val is None:
                         continue
+                        
                     op = w['operator']
                     thr = w['threshold']
                     
@@ -1855,6 +1874,9 @@ class AIResponder:
                         (op == '==' and val == thr)
                     )
                     
+                    if has_interest:
+                        logger.info(f"🕵️‍♂️ [DEBUG] Watcher triggered? {condition_met}")
+                        
                     if condition_met:
                         triggered.append(w)
                 
