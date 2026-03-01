@@ -111,7 +111,9 @@ class OpenAIProvider(BaseProvider):
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             # Silent-ACK: proactive callback already sent the response
                             if result == "__SILENT_ACK__":
-                                return "__SILENT_ACK__"
+                                result = ("[Telemetry was sent to the user automatically. "
+                                          "Do NOT summarize or repeat the telemetry. "
+                                          "Proceed with any remaining tasks such as registering a watcher.")
                             messages.append({
                                 "tool_call_id": tool_call['id'],
                                 "role": "tool",

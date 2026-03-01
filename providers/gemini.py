@@ -174,9 +174,13 @@ class GeminiProvider(BaseProvider):
                                 try:
                                     result = custom_tool_map[f_name](**f_args)
                                     logger.info(f"✅ Tool result: {str(result)[:100]}...")
-                                    # Silent-ACK: proactive callback already sent the response
+                                    # Silent-ACK: proactive callback already sent the response; tell the
+                                    # AI not to summarize but still continue the tool loop (it may have
+                                    # more tool calls to execute, e.g. watch_condition after telemetry).
                                     if result == "__SILENT_ACK__":
-                                        return "__SILENT_ACK__"
+                                        result = ("[Telemetry was sent to the user automatically. "
+                                                  "Do NOT summarize or repeat the telemetry. "
+                                                  "Proceed with any remaining tasks such as registering a watcher.")
                                 except Exception as e:
                                     logger.error(f"❌ Error executing tool {f_name}: {e}")
                                     result = f"Error: {str(e)}"

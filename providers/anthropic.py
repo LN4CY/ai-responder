@@ -113,7 +113,9 @@ class AnthropicProvider(BaseProvider):
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             # Silent-ACK: proactive callback already sent the response
                             if result == "__SILENT_ACK__":
-                                return "__SILENT_ACK__"
+                                result = ("[Telemetry was sent to the user automatically. "
+                                          "Do NOT summarize or repeat the telemetry. "
+                                          "Proceed with any remaining tasks such as registering a watcher.")
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
