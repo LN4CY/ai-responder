@@ -1349,12 +1349,27 @@ class AIResponder:
         }
         metric_key = type_map.get(telemetry_type, 'environment_metrics')
 
-        # 2. Send Request
+        # 2. Register deferred callback eagerly (prevents race condition)
+        thread_data = {}
+        with self._workers_lock:
+            thread_data = self._active_workers.get(threading.get_ident(), {})
+            
+        if thread_data:
+            self.pending_telemetry_requests[node_id] = {
+                'from_node': thread_data.get('from_node'),
+                'to_node': thread_data.get('to_node'),
+                'channel': thread_data.get('channel'),
+                'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
+                'registered_at': time.time()
+            }
+            logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
+
+        # 3. Send Request
         request_time = time.time()
         logger.info(f"📡 AI triggering telemetry refresh ({telemetry_type}) for {node_id}")
         self.meshtastic.request_telemetry(node_id, telemetry_type)
 
-        # 3. Short Poll (Wait up to 15 seconds for data to arrive in cache)
+        # 4. Short Poll (Wait up to 15 seconds for data to arrive in cache)
         # We check the cache every 3 seconds
         poll_start = time.time()
         poll_timeout = 15 
@@ -1367,27 +1382,14 @@ class AIResponder:
             last_received = node_timestamps.get(metric_key, 0)
             
             if last_received > request_time:
-                # Fresh data arrived!
+                # Fresh data arrived! Remove the pending request so it isn't fired twice
+                self.pending_telemetry_requests.pop(node_id, None)
                 elapsed = int(last_received - request_time)
                 logger.info(f"⚡ Fresh telemetry for {node_id} arrived in {elapsed}s during short poll loop!")
                 metadata = self.meshtastic.get_node_metadata(node_id)
                 return f"Success! New telemetry received in {elapsed}s:\n{metadata}"
 
-        # 4. Timeout fallback: register a deferred callback so we auto-send when data arrives
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-        
-        if thread_data:
-            self.pending_telemetry_requests[node_id] = {
-                'from_node': thread_data.get('from_node'),
-                'to_node': thread_data.get('to_node'),
-                'channel': thread_data.get('channel'),
-                'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
-                'registered_at': time.time()
-            }
-            logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
-        
+        # 5. Timeout fallback
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
 
