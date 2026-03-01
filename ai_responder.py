@@ -1398,6 +1398,11 @@ class AIResponder:
                 return f"Success! New telemetry received in {elapsed}s:\n{metadata}"
 
         # 5. Timeout fallback
+        # If the pending request was consumed by _on_telemetry_proactive during our 15s wait,
+        # we don't need to say "I'm still waiting." The proactive handler already sent the data.
+        if node_id not in self.pending_telemetry_requests:
+            return f"✅ Telemetry for {node_id_or_name} was received successfully."
+            
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
 
