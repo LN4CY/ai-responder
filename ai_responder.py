@@ -386,13 +386,16 @@ class AIResponder:
         Returns:
             str: Formatted status message
         """
+        # Resolve the active history key to match what AI queries use
+        history_key = self._get_history_key(user_id, channel=0, is_dm=True)
+        
         # Load history if not in memory
-        if user_id not in self.history:
-            self.load_history(user_id)
+        if history_key not in self.history:
+            self.load_history(history_key)
         
         # Get history stats
-        message_count = len(self.history[user_id])
-        history_path = self._get_history_path(user_id)
+        message_count = len(self.history[history_key])
+        history_path = self._get_history_path(history_key)
         
         if os.path.exists(history_path):
             history_size = os.path.getsize(history_path)
