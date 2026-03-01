@@ -1334,6 +1334,8 @@ class AIResponder:
                 node_id = found_id
             else:
                 return f"Error: Node '{node_id_or_name}' not found."
+                
+        node_id = node_id.lower()
 
         # 1. Map type to internal metric key
         type_map = {
@@ -1521,6 +1523,8 @@ class AIResponder:
                 node_id = found_id
             else:
                 return f"Error: Node '{node_id_or_name}' not found."
+                
+        node_id = node_id.lower()
 
         task_id = f"cond-{next(self._task_counter)}"
         watcher = {
@@ -1572,6 +1576,8 @@ class AIResponder:
                 node_id = found_id
             else:
                 return f"Error: Node '{node_id_or_name}' not found. Make sure I've seen it at least once before."
+                
+        node_id = node_id.lower()
 
         task_id = f"node-{next(self._task_counter)}"
         watcher = {
@@ -1788,7 +1794,7 @@ class AIResponder:
             if isinstance(from_id_raw, int):
                 from_id = f"!{from_id_raw:08x}"
             else:
-                from_id = from_id_raw
+                from_id = str(from_id_raw).lower() if from_id_raw else None
             
             if not from_id:
                 return
@@ -1797,7 +1803,7 @@ class AIResponder:
             has_interest = (from_id in self.pending_telemetry_requests)
             if not has_interest:
                 with self._condition_watchers_lock:
-                    has_interest = any(w['node_id'] == from_id for w in self.condition_watchers)
+                    has_interest = any(w['node_id'].lower() == from_id for w in self.condition_watchers)
             
             if has_interest:
                 logger.info(f"🕵️‍♂️ [DEBUG] Proactive handler checking packet from {from_id}")
