@@ -1111,9 +1111,11 @@ class AIResponder:
                 "declaration": {
                     "name": "schedule_message",
                     "description": (
-                        "Schedule a proactive message or task for the future. "
-                        "The 'context_note' acts as a prompt for your future self (e.g., 'Check the battery of L4B1 and report it'). "
-                        "When the timer fires, you will wake up with this context and can use tools to perform dynamic checks."
+                        "Schedule a proactive task for the future. "
+                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
+                        "Crucially, your future self will wake up, see the history, and CAN use tools. "
+                        "For dynamic pings (e.g. 'SNR report every 15s'), use this tool with recursion. "
+                        "Instructions like 'Check my SNR and report it' belong in the 'context_note'."
                     ),
                     "parameters": {
                         "type": "OBJECT",
@@ -1128,7 +1130,7 @@ class AIResponder:
                             },
                             "context_note": {
                                 "type": "STRING",
-                                "description": "A brief note describing what to remind the user about. This will be included in the system wakeup prompt."
+                                "description": "The instruction for your future self (e.g., 'Fetch SNR and report it with count')."
                             },
                             "recur_interval_seconds": {
                                 "type": "NUMBER",
@@ -1152,8 +1154,9 @@ class AIResponder:
                 "declaration": {
                     "name": "watch_condition",
                     "description": (
-                        "Monitor a node coordinate or telemetry metric (temperature, battery_level, etc.) and wake up to alert the user when a condition is met. "
-                        "The 'context_note' is the prompt you will receive when the condition fires."
+                        "Monitor node telemetry and alert the user when a condition is met. "
+                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
+                        "Crucially, your future self will wake up, see the history, and CAN use tools during that future turn for follow-up actions."
                     ),
                     "parameters": {
                         "type": "OBJECT",

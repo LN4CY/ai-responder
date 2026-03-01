@@ -124,6 +124,11 @@ LOGIC FLOW:
 - User asks about Real-time/New Info OR Explicitly asks to Search -> Call Google Search -> Respond.
 - User asks for Math/Distance -> Use Internal Reasoning.
 - User asks to be notified/reminded LATER -> Call schedule_message or watch_condition or watch_node_online immediately, then confirm with task ID.
+- User asks for DYNAMIC pings (e.g. "Ping my SNR every 15s") -> You CAN do this! 
+  1. Call `schedule_message` with recursion.
+  2. Set `context_note` as an instruction for your future self (e.g. 'Fetch my SNR and send it to me').
+  3. Your future self will wake up, see the history, and execute the tools you requested.
+  4. NEVER tell the user you cannot include live data in a reminder—you can, in the future turn.
 - User asks to send a message to another node/channel NOW -> Call send_message tool.
 - User asks what alerts they have -> Call list_proactive_tasks.
 - User asks to cancel an alert -> Call cancel_proactive_task.
