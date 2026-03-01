@@ -1939,13 +1939,22 @@ class AIResponder:
             tools = None
             final_query = query
             
+            # Use isolated history for system triggers to prevent context bleeding
+            if is_system_trigger:
+                current_history = []
+            else:
+                current_history = self.history.get(history_key, [])
+            
             if not awareness_enabled:
                 logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
-                self.add_to_history(history_key, 'user', query, node_id=from_node)
+                if not is_system_trigger:
+                    self.add_to_history(history_key, 'user', query, node_id=from_node)
+                else:
+                    current_history.append({'role': 'user', 'content': query})
             else:
                 # Awareness is enabled - determine if we need metadata refresh
                 # Standard logic: Inject on first message or if refresh is pending
-                is_first_msg = len(self.history.get(history_key, [])) == 0
+                is_first_msg = len(current_history) == 0
                 needs_refresh = (from_node in self._refresh_metadata_nodes)
                 
                 # Intelligent logic: Inject if keywords (battery, location, status) or node names are mentioned
@@ -1982,16 +1991,23 @@ class AIResponder:
                     logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
                     tools = self.get_tools()
                     # Log to history (metadata may be None if already injected/cached)
-                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                    if not is_system_trigger:
+                        self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                    else:
+                        msg = f"User ({from_node}): {query}" if combined_metadata else query
+                        current_history.append({'role': 'user', 'content': msg})
                 else:
                     logger.info(f"💾 Provider '{provider.name}' is tool-blind. Injecting legacy metadata block.")
                     final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
-                    self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                    if not is_system_trigger:
+                        self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                    else:
+                        current_history.append({'role': 'user', 'content': final_query})
 
             # 3. Add to history logging
             current_session = self.session_manager.get_session_name(from_node)
-            msgs_count = len(self.history.get(history_key, []))
-            logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count}")
+            msgs_count = len(current_history)
+            logger.info(f"🧠 AI Context: Session='{current_session or 'None'}' | Messages={msgs_count} | Trigger={is_system_trigger}")
 
             # 4. Extract Primary Location for Grounding if available (only if awareness is enabled)
             location = None
@@ -2013,17 +2029,19 @@ class AIResponder:
                     logger.debug(f"Could not extract primary location for grounding: {e}")
 
             # 5. Get AI response
-            response = provider.get_response(final_query, self.history.get(history_key, [])[-30:], 
-                                          context_id=history_key, location=location, tools=tools)
+            response = provider.get_response(final_query, current_history[-30:], 
+                                          context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
+                                          location=location, tools=tools)
             
-            # 6. Add assistant response to history
-            self.add_to_history(history_key, 'assistant', response)
-            
-            # 7. Save to conversation if in session
-            session_name = self.session_manager.get_session_name(from_node)
-            if session_name:
-                self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
-                self.session_manager.update_activity(from_node)
+            # 6. Add assistant response to history (skip for system triggers)
+            if not is_system_trigger:
+                self.add_to_history(history_key, 'assistant', response)
+                
+                # 7. Save to conversation if in session
+                session_name = self.session_manager.get_session_name(from_node)
+                if session_name:
+                    self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
+                    self.session_manager.update_activity(from_node)
             
             logger.info(f"💬 Gemini response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
