@@ -1113,9 +1113,9 @@ class AIResponder:
                     "description": (
                         "Schedule a proactive task for the future. "
                         "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "Crucially, your future self will wake up, see the history, and CAN use tools. "
+                        "When this fires, your future self will wake up, see the history, and MUST use tools for any dynamic data requested. "
                         "For dynamic pings (e.g. 'SNR report every 15s'), use this tool with recursion. "
-                        "Instructions like 'Check my SNR and report it' belong in the 'context_note'."
+                        "Instructions like 'Check my SNR and report it' go in the 'context_note'—DO NOT say you cannot do this."
                     ),
                     "parameters": {
                         "type": "OBJECT",
@@ -1156,7 +1156,7 @@ class AIResponder:
                     "description": (
                         "Monitor node telemetry and alert the user when a condition is met. "
                         "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "Crucially, your future self will wake up, see the history, and CAN use tools during that future turn for follow-up actions."
+                        "When the condition fires, your future self MUST use tools for any follow-up data or checks."
                     ),
                     "parameters": {
                         "type": "OBJECT",
