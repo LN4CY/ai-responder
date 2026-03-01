@@ -83,3 +83,140 @@ def test_proactive_task_limits(responder):
         res3 = responder._schedule_message_tool(delay_seconds=60, context_note="T3")
         assert "⚠️ Limit reached" in res3
         assert len(responder.scheduled_tasks) == 2
+
+def test_watch_condition_tool(responder):
+    """Test adding a condition watcher."""
+    res = responder._watch_condition_tool(
+        node_id_or_name="!abcd",
+        metric="battery_level",
+        operator="<",
+        threshold=20,
+        context_note="Low battery"
+    )
+    assert "✅" in res
+    assert len(responder.condition_watchers) == 1
+    
+    watcher = responder.condition_watchers[0]
+    assert watcher['metric'] == "battery_level"
+    assert watcher['operator'] == "<"
+    assert watcher['threshold'] == 20
+    assert watcher['node_id'] == "!abcd"
+
+def test_watch_node_online_tool(responder):
+    """Test adding a node online watcher."""
+    res = responder._watch_node_online_tool(
+        node_id_or_name="!1234",
+        context_note="Node returned"
+    )
+    assert "✅" in res
+    assert len(responder.node_online_watchers) == 1
+    
+    watcher = responder.node_online_watchers[0]
+    assert watcher['node_id'] == "!1234"
+    assert watcher['context_note'] == "Node returned"
+
+def test_list_proactive_tasks_tool(responder):
+    """Test listing of multiple task types."""
+    # Add dummy tasks owned by the current mock user (!user1)
+    responder.scheduled_tasks.append({
+        'id': 'sched-1', 'next_time': 9999999999, 'context_note': 'Test Sched', 'from_node': '!user1', 'targets': 'requester'
+    })
+    responder.condition_watchers.append({
+        'id': 'cond-1', 'node_id': '!abcd', 'metric': 'battery_level', 'operator': '<', 'threshold': 10, 'context_note': 'Bat', 'from_node': '!user1', 'targets': 'requester'
+    })
+    responder.node_online_watchers.append({
+        'id': 'node-1', 'node_id': '!efgh', 'context_note': 'Online', 'from_node': '!user1', 'targets': 'requester'
+    })
+    
+    res = responder._list_proactive_tasks_tool()
+    assert "sched-1" in res
+    assert "cond-1" in res
+    assert "node-1" in res
+
+def test_cancel_proactive_task_tool(responder):
+    """Test cancelling tasks by ID and 'all'."""
+    # Setup
+    responder.scheduled_tasks.append({'id': 'sched-1', 'from_node': '!user1'})
+    responder.condition_watchers.append({'id': 'cond-1', 'from_node': '!user1'})
+    responder.node_online_watchers.append({'id': 'node-1', 'from_node': '!user1'})
+    
+    # Target single cancellation
+    res = responder._cancel_proactive_task_tool('cond-1')
+    assert "✅" in res
+    assert len(responder.condition_watchers) == 0
+    assert len(responder.scheduled_tasks) == 1
+    
+    # Target 'all'
+    res_all = responder._cancel_proactive_task_tool('all')
+    assert "✅" in res_all
+    assert len(responder.scheduled_tasks) == 0
+    assert len(responder.node_online_watchers) == 0
+
+def test_on_telemetry_proactive_evaluations(responder):
+    """Test telemetry evaluation, including snake/camel case normalization."""
+    # 1. Setup condition watcher
+    watcher = {
+        'id': 'cond-1',
+        'node_id': '!12345678',
+        'metric': 'battery_level',
+        'operator': '<',
+        'threshold': 50,
+        'context_note': 'Battery low',
+        'from_node': '!user1',
+        'to_node': '!bot',
+        'channel': 0,
+        'targets': 'requester'
+    }
+    responder.condition_watchers.append(watcher)
+    
+    # 2. Mock telemetry packet (using camelCase to test normalizer)
+    packet = {
+        'fromId': '!12345678',
+        'decoded': {
+            'telemetry': {
+                'deviceMetrics': {
+                    'batteryLevel': 48,
+                    'voltage': 3.9
+                }
+            }
+        }
+    }
+    
+    with patch.object(responder, '_fire_system_trigger') as mock_trigger:
+        responder._on_telemetry_proactive(packet, None)
+        
+        # Verify trigger fired and watcher was removed
+        mock_trigger.assert_called_once()
+        assert len(responder.condition_watchers) == 0
+
+def test_fire_system_trigger(responder):
+    """Test the system trigger routes messages correctly."""
+    with patch.object(responder, '_process_ai_query_thread') as mock_thread, \
+         patch.object(responder, 'config') as mock_config:
+        
+        # Test Direct Send (ch:0) targeting a channel
+        mock_config.get.return_value = [0, 1]
+        responder._fire_system_trigger(
+            context_note="Alert!", 
+            from_node="!user1", 
+            to_node="!bot", 
+            channel=0, 
+            targets="ch:1"
+        )
+        assert mock_thread.call_count == 1
+        args, kwargs = mock_thread.call_args
+        assert args[1] == "^all"  # to_node
+        assert args[3] == 1       # channel
+        
+        # Test Requester
+        responder._fire_system_trigger(
+            context_note="Alert!", 
+            from_node="!user1", 
+            to_node="!bot", 
+            channel=0, 
+            targets="requester"
+        )
+        assert mock_thread.call_count == 2
+        args, kwargs = mock_thread.call_args
+        assert args[1] == "!user1" # to_node
+        assert args[3] == 0        # channel
