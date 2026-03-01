@@ -1105,7 +1105,11 @@ class AIResponder:
             "schedule_message": {
                 "declaration": {
                     "name": "schedule_message",
-                    "description": "Schedule a future message to be sent to the user. Can be one-shot (e.g. 'remind me in 5 minutes') or recurring (e.g. 'ping me every 30 seconds for 5 minutes').",
+                    "description": (
+                        "Schedule a proactive message or task for the future. "
+                        "The 'context_note' acts as a prompt for your future self (e.g., 'Check the battery of L4B1 and report it'). "
+                        "When the timer fires, you will wake up with this context and can use tools to perform dynamic checks."
+                    ),
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -1142,7 +1146,10 @@ class AIResponder:
             "watch_condition": {
                 "declaration": {
                     "name": "watch_condition",
-                    "description": "Register a condition watcher that sends the user an alert when a live telemetry metric from a specific node meets a threshold (e.g. battery < 10%).",
+                    "description": (
+                        "Monitor a node coordinate or telemetry metric (temperature, battery_level, etc.) and wake up to alert the user when a condition is met. "
+                        "The 'context_note' is the prompt you will receive when the condition fires."
+                    ),
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -1275,7 +1282,7 @@ class AIResponder:
                             "message": {
                                 "type": "STRING",
                                 "description": "The content of the message to send."
-                            }
+                            },
                         },
                         "required": ["target", "message"]
                     }
@@ -1759,10 +1766,13 @@ class AIResponder:
             'ch:N'            - broadcast on channel N (must be in allowed_channels)
         """
         prompt = (
-            f"[SYSTEM WAKEUP] A proactive alert has triggered. "
-            f"Context: {context_note}. "
-            f"Please send a short, natural-sounding message to the user now. "
-            f"Do not ask them to do anything; simply deliver the alert."
+            f"[SYSTEM WAKEUP] A proactive alert has triggered.\n\n"
+            f"Context: {context_note}\n\n"
+            f"INSTRUCTION:\n"
+            f"1. Deliver the alert or information to the user using your NATURAL TEXT RESPONSE.\n"
+            f"2. Your text response will be delivered automatically to the correct recipient ({targets}).\n"
+            f"3. Do NOT use the 'send_message' tool to deliver this alert; doing so will cause a duplicate message.\n"
+            f"4. You MAY use other tools (telemetry, location, etc.) if the context requires a dynamic check before responding."
         )
         logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
 
@@ -1820,6 +1830,7 @@ class AIResponder:
             if not from_id:
                 return
 
+            now = time.time()
             # Quick check if ANY watcher or pending request cares about this node
             has_interest = (from_id in self.pending_telemetry_requests)
             if not has_interest:
@@ -1879,6 +1890,10 @@ class AIResponder:
                     if w['node_id'] != from_id:
                         continue
                     
+                    # 60-second cooldown per watcher to avoid spam from burst packets
+                    if now - w.get('last_fired_at', 0) < 60:
+                        continue
+                    
                     # Watchers use normalized snake_case metrics (e.g. 'battery_level', 'temperature')
                     val = metric_values.get(w['metric'])
                         
@@ -1898,6 +1913,7 @@ class AIResponder:
                     
                         
                     if condition_met:
+                        w['last_fired_at'] = now
                         triggered.append(w)
                 
                 for w in triggered:
