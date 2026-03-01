@@ -122,6 +122,11 @@ class AIResponder:
         self.node_online_watchers = []
         self._node_online_watchers_lock = threading.Lock()
         
+        # --- Collector Pattern State ---
+        # Buffers multiple events for a node to fire a single combined AI turn
+        self._proactive_event_collector = {} # {node_id_lower: {'timer': Timer, 'events': [str], 'targets': str, 'from_node': str, 'to_node': str, 'channel': int}}
+        self._collector_lock = threading.Lock()
+        
         # Ensure history directory exists
         # Ensure history directory exists
         if not os.path.exists(self.history_dir):
@@ -1399,10 +1404,24 @@ class AIResponder:
             if last_received > request_time:
                 # Fresh data arrived! Remove the pending request so it isn't fired twice
                 self.pending_telemetry_requests.pop(node_id, None)
+                
+                # ALSO clear and consume any collector events for this node to prevent redundant proactive turns
+                aggregated_notes = ""
+                with self._collector_lock:
+                    collector_entry = self._proactive_event_collector.pop(node_id, None)
+                    if collector_entry:
+                        if collector_entry['timer']:
+                            collector_entry['timer'].cancel()
+                        # Prepend any alerts or notes that arrived alongside this telemetry
+                        # (Filtering out the redundant "Requested telemetry" string if present)
+                        other_events = [e for e in collector_entry['events'] if "Requested" not in e]
+                        if other_events:
+                            aggregated_notes = "\n".join(other_events) + "\n\n"
+
                 elapsed = int(last_received - request_time)
                 logger.info(f"⚡ Fresh telemetry for {node_id} arrived in {elapsed}s during short poll loop!")
                 metadata = self.meshtastic.get_node_metadata(node_id)
-                return f"Success! New telemetry received in {elapsed}s:\n{metadata}"
+                return f"Success! New telemetry received in {elapsed}s:\n{aggregated_notes}{metadata}"
 
         # 5. Timeout fallback
         # If the pending request was consumed by _on_telemetry_proactive during our 15s wait,
@@ -1840,15 +1859,10 @@ class AIResponder:
 
             # --- 1. Deferred telemetry callbacks ---
             if from_id in self.pending_telemetry_requests:
-                req = self.pending_telemetry_requests.pop(from_id)
-                # Wait a moment for the MeshtasticHandler's _on_telemetry to cache the data first
-                def _deferred_send():
-                    time.sleep(2)
-                    metadata = self.meshtastic.get_node_metadata(from_id)
-                    context = f"Delayed telemetry arrived for {from_id}.\n{metadata}"
-                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'], disable_tools=False)
-                threading.Thread(target=_deferred_send, daemon=True).start()
-                logger.info(f"📡 Deferred telemetry for {from_id} arrived — firing proactive response.")
+                req = self.pending_telemetry_requests[from_id] # Peak, don't pop yet (poll might consume it)
+                event_str = f"Requested {req.get('context_note', 'telemetry')} arrived."
+                self._add_to_collector(from_id, event_str, req)
+                logger.info(f"⏳ Telemetry for {from_id} buffered in collector.")
 
             # --- 2. Condition watchers ---
             decoded = packet.get('decoded', {})
@@ -1921,15 +1935,81 @@ class AIResponder:
                         self.condition_watchers.remove(w)
                 if triggered:
                     self._save_proactive_tasks()
-                    context = (
-                        f"Condition alert: {w['context_note']}. "
-                        f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
-                        f"(threshold was {w['operator']} {w['threshold']})."
-                    )
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'), disable_tools=False)
+                    for w in triggered:
+                        event_str = (
+                            f"Condition alert: {w['context_note']}. "
+                            f"Reading: {w['metric']}={metric_values.get(w['metric'])} "
+                            f"(threshold: {w['operator']} {w['threshold']})."
+                        )
+                        self._add_to_collector(from_id, event_str, w)
 
         except Exception as e:
             logger.warning(f"Error in proactive telemetry handler: {e}")
+
+    def _add_to_collector(self, node_id, event_text, context_dict):
+        """Add an event to the proactive collector and ensure a timer is running."""
+        node_id = node_id.lower()
+        with self._collector_lock:
+            if node_id not in self._proactive_event_collector:
+                self._proactive_event_collector[node_id] = {
+                    'events': [],
+                    'from_node': context_dict.get('from_node'),
+                    'to_node': context_dict.get('to_node'),
+                    'channel': context_dict.get('channel'),
+                    'targets': context_dict.get('targets', 'requester'),
+                    'timer': None
+                }
+            
+            entry = self._proactive_event_collector[node_id]
+            if event_text not in entry['events']:
+                entry['events'].append(event_text)
+            
+            # Reset/Start the 3-second aggregation timer
+            if entry['timer']:
+                entry['timer'].cancel()
+            
+            entry['timer'] = threading.Timer(3.0, self._dispatch_collector, args=[node_id])
+            entry['timer'].daemon = True
+            entry['timer'].start()
+
+    def _dispatch_collector(self, node_id):
+        """Aggregate all events for a node and fire a single AI trigger."""
+        node_id = node_id.lower()
+        entry = None
+        with self._collector_lock:
+            entry = self._proactive_event_collector.pop(node_id, None)
+        
+        if not entry or not entry['events']:
+            return
+
+        # Double check: if we are still polling for this node in a tool thread, 
+        # we should potentially skip the proactive turn to avoid double messages.
+        # But wait—the tool thread will pop the pending request if it finds it.
+        # If the pending request is STILL there, it means the tool thread timed out or failed.
+        
+        events_summary = "\n".join([f"- {e}" for e in entry['events']])
+        metadata = self.meshtastic.get_node_metadata(node_id)
+        
+        context = (
+            f"Proactive update for {node_id}:\n"
+            f"{events_summary}\n\n"
+            f"Current Node Metadata:\n{metadata}"
+        )
+        
+        # Consume the pending telemetry request if matched
+        if node_id in self.pending_telemetry_requests:
+            self.pending_telemetry_requests.pop(node_id)
+            
+        self._fire_system_trigger(
+            context, 
+            entry['from_node'], 
+            entry['to_node'], 
+            entry['channel'], 
+            targets=entry['targets'], 
+            disable_tools=False
+        )
+        logger.info(f"📣 Dispatched aggregated proactive Turn for {node_id} ({len(entry['events'])} events).")
+
 
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""

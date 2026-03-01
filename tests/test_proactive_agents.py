@@ -184,10 +184,37 @@ def test_on_telemetry_proactive_evaluations(responder):
     
     with patch.object(responder, '_fire_system_trigger') as mock_trigger:
         responder._on_telemetry_proactive(packet, None)
+        # Manually trigger the collector
+        responder._dispatch_collector('!12345678')
         
         # Verify trigger fired and watcher was removed
         mock_trigger.assert_called_once()
+        context = mock_trigger.call_args[0][0]
+        assert "Condition alert: Battery low" in context
         assert len(responder.condition_watchers) == 0
+
+def test_on_telemetry_proactive_fire_deferred(responder):
+    """Test that a pending telemetry request fires when data arrives."""
+    node_id = "!abcd"
+    responder.pending_telemetry_requests[node_id] = {
+        'from_node': '!user1', 'to_node': '!bot', 'channel': 0, 'context_note': 'environment telemetry for !abcd'
+    }
+    
+    # Minimal telemetry packet to trigger interest
+    packet = {
+        'fromId': node_id, 
+        'decoded': {'telemetry': {'deviceMetrics': {'batteryLevel': 99}}}
+    }
+    
+    with patch.object(responder, '_fire_system_trigger') as mock_trigger:
+        responder._on_telemetry_proactive(packet, None)
+        # Manually trigger the collector
+        responder._dispatch_collector(node_id)
+        
+        mock_trigger.assert_called_once()
+        context = mock_trigger.call_args[0][0]
+        assert "Requested environment telemetry" in context
+        assert node_id not in responder.pending_telemetry_requests
 
 def test_fire_system_trigger(responder):
     """Test the system trigger routes messages correctly."""
@@ -220,3 +247,47 @@ def test_fire_system_trigger(responder):
         args, kwargs = mock_thread.call_args
         assert args[1] == "!user1" # to_node
         assert args[3] == 0        # channel
+
+def test_collector_aggregation(responder):
+    """Test that multiple events for the same node are aggregated into one trigger."""
+    node_id = "!9999"
+    
+    # 1. Setup a pending request
+    responder.pending_telemetry_requests[node_id] = {
+        'from_node': '!user1', 'to_node': '!bot', 'channel': 0, 'context_note': 'environment telemetry'
+    }
+    
+    # 2. Setup a condition watcher
+    watcher = {
+        'id': 'cond-agg', 'node_id': node_id, 'metric': 'temperature', 'operator': '>', 'threshold': 30,
+        'context_note': 'High temp', 'from_node': '!user1', 'to_node': '!bot', 'channel': 0, 'targets': 'requester'
+    }
+    responder.condition_watchers.append(watcher)
+    
+    # 3. Fire a telemetry packet that triggers both
+    packet = {
+        'fromId': node_id,
+        'decoded': {
+            'telemetry': {
+                'environmentMetrics': {'temperature': 35}
+            }
+        }
+    }
+    
+    with patch.object(responder, '_fire_system_trigger') as mock_trigger:
+        # This will call _add_to_collector twice (once for deferred, once for watcher)
+        responder._on_telemetry_proactive(packet, None)
+        
+        # Verify collector has both events
+        with responder._collector_lock:
+            assert len(responder._proactive_event_collector[node_id]['events']) == 2
+            
+        # Manually dispatch
+        responder._dispatch_collector(node_id)
+        
+        # Verify ONLY ONE trigger fired with BOTH contexts
+        mock_trigger.assert_called_once()
+        context = mock_trigger.call_args[0][0]
+        assert "Requested environment telemetry" in context
+        assert "Condition alert: High temp" in context
+        assert "temperature=35" in context
