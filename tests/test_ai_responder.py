@@ -127,9 +127,19 @@ class TestAIResponder(unittest.TestCase):
                 self.responder.meshtastic.telemetry_timestamps = MagicMock()
                 self.responder.meshtastic.telemetry_timestamps.get.return_value.get.return_value = 0
                 
+                # Mock a thread context so the request registers itself
+                thread_id = threading.get_ident()
+                self.responder._active_workers[thread_id] = {
+                    'from_node': '!tester',
+                    'to_node': '!bot',
+                    'channel': 0
+                }
+                
                 result = self.responder._request_node_telemetry_tool(node_id, 'environment')
                 
                 self.assertIn("The mesh is slow", result)
+                # Cleanup the mock worker
+                self.responder._active_workers.pop(thread_id, None)
 
     def test_session_isolation(self):
         """Test that active sessions are isolated to DMs and don't spill to channels."""
