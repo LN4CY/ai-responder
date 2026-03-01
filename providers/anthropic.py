@@ -63,6 +63,8 @@ class AnthropicProvider(BaseProvider):
 
         try:
             # Multi-turn tool loop
+            total_tools_executed = 0
+            silent_ack_tools = 0
             for turn in range(5):
                 payload = {
                     'model': ANTHROPIC_MODEL,
@@ -96,6 +98,11 @@ class AnthropicProvider(BaseProvider):
                 final_text = "".join([b.get('text', '') for b in text_blocks]).strip()
 
                 if not tool_use_blocks:
+                    # If ALL tools in this session were handled proactively, the AI has
+                    # nothing new to say — suppress the final text by returning the sentinel.
+                    if total_tools_executed > 0 and silent_ack_tools == total_tools_executed:
+                        logger.info("🔇 All Anthropic tool calls were handled proactively. Suppressing final text.")
+                        return "__SILENT_ACK__"
                     return final_text if final_text else "⚠️ No response from Anthropic"
 
                 # Execute tools
@@ -111,8 +118,10 @@ class AnthropicProvider(BaseProvider):
                         try:
                             result = handler(**arguments)
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
+                            total_tools_executed += 1
                             # Silent-ACK: proactive callback already sent the response
                             if result == "__SILENT_ACK__":
+                                silent_ack_tools += 1
                                 result = ("[Telemetry was sent to the user automatically. "
                                           "Do NOT summarize or repeat the telemetry. "
                                           "Proceed with any remaining tasks such as registering a watcher.")
