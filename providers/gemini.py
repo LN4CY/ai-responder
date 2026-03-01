@@ -136,6 +136,12 @@ class GeminiProvider(BaseProvider):
                 
                 # Turn loop for function calling
                 max_turns = 5
+                action_tools_executed = 0
+                silent_ack_tools = 0
+                # Tools that represent a side effect or request (vs simple lookups)
+                action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
+                                "rm_proactive_task", "send_message"}
+                
                 for turn in range(max_turns):
                     response = self._make_request(url, payload)
                     
@@ -174,6 +180,12 @@ class GeminiProvider(BaseProvider):
                                 try:
                                     result = custom_tool_map[f_name](**f_args)
                                     logger.info(f"✅ Tool result: {str(result)[:100]}...")
+                                    
+                                    if f_name in action_tools:
+                                        action_tools_executed += 1
+                                        if result == "__SILENT_ACK__":
+                                            silent_ack_tools += 1
+                                    
                                     # Silent-ACK: proactive callback already sent the response; tell the
                                     # AI not to summarize but still continue the tool loop (it may have
                                     # more tool calls to execute, e.g. watch_condition after telemetry).
@@ -207,6 +219,13 @@ class GeminiProvider(BaseProvider):
                         # B. Handle Text Response
                         if "text" in part:
                             text = part["text"].strip()
+                            
+                            # If ALL action tools in this session were handled proactively, the AI
+                            # should stay silent. We ignore info tools (like get_node_details)
+                            # since they don't justify a conversational follow-up on their own.
+                            if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                                logger.info("🔇 All action tools handled proactively. Suppressing AI final text.")
+                                return "__SILENT_ACK__"
                             
                             # Check for grounding feedback
                             grounding = candidates[0].get('groundingMetadata', {})

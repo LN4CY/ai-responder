@@ -65,8 +65,12 @@ class OpenAIProvider(BaseProvider):
 
         try:
             # Multi-turn tool loop
-            total_tools_executed = 0
+            action_tools_executed = 0
             silent_ack_tools = 0
+            # Tools that represent a side effect or request (vs simple lookups)
+            action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
+                            "rm_proactive_task", "send_message"}
+            
             for turn in range(5):
                 payload = {
                     'model': OPENAI_MODEL,
@@ -98,10 +102,11 @@ class OpenAIProvider(BaseProvider):
                 messages.append(message)
 
                 if not tool_calls:
-                    # If ALL tools in this session were handled proactively, the AI has
-                    # nothing new to say — suppress the final text by returning the sentinel.
-                    if total_tools_executed > 0 and silent_ack_tools == total_tools_executed:
-                        logger.info("🔇 All OpenAI tool calls were handled proactively. Suppressing final text.")
+                    # If ALL action tools in this session were handled proactively, the AI
+                    # should stay silent. We ignore info tools (like get_node_details)
+                    # since they don't justify a conversational follow-up on their own.
+                    if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                        logger.info("🔇 All OpenAI action tools handled proactively. Suppressing final text.")
                         return "__SILENT_ACK__"
                     return content.strip() if content else "⚠️ No response from OpenAI"
 
@@ -116,10 +121,14 @@ class OpenAIProvider(BaseProvider):
                         try:
                             result = handler(**arguments)
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
-                            total_tools_executed += 1
+                            
+                            if function_name in action_tools:
+                                action_tools_executed += 1
+                                if result == "__SILENT_ACK__":
+                                    silent_ack_tools += 1
+                                    
                             # Silent-ACK: proactive callback already sent the response
                             if result == "__SILENT_ACK__":
-                                silent_ack_tools += 1
                                 result = ("[Telemetry was sent to the user automatically. "
                                           "Do NOT summarize or repeat the telemetry. "
                                           "Proceed with any remaining tasks such as registering a watcher.")
