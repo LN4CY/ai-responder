@@ -1493,12 +1493,9 @@ class AIResponder:
         # 2. Enqueue Message
         # We use a special prefix or session indicator if needed, 
         # but for one-off tool messages, we can just send it as is.
-        success = self.meshtastic_queue.enqueue(message, _to, _ch, "")
+        self.meshtastic.send_message(message, _to, _ch, "")
         
-        if success:
-            return f"✅ Message queued for {target}."
-        else:
-            return f"❌ Failed to queue message for {target} (Queue full)."
+        return f"✅ Message queued for {target}."
 
     def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None):
         """Tool handler: add a telemetry condition watcher."""
@@ -1722,7 +1719,7 @@ class AIResponder:
         except Exception as e:
             logger.error(f"Failed to load proactive tasks: {e}")
 
-    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester'):
+    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester', disable_tools=False):
         """Fire a proactive system-triggered AI response to one or more targets.
 
         targets: comma-separated string of recipients:
@@ -1776,7 +1773,7 @@ class AIResponder:
             t = threading.Thread(
                 target=self._process_ai_query_thread,
                 args=(prompt, _to, _to, _ch),
-                kwargs={'is_dm': (_to != '^all'), 'is_system_trigger': True},
+                kwargs={'is_dm': (_to != '^all'), 'is_system_trigger': True, 'disable_tools': disable_tools},
                 daemon=True
             )
             t.start()
@@ -1801,7 +1798,7 @@ class AIResponder:
                     time.sleep(2)
                     metadata = self.meshtastic.get_node_metadata(from_id)
                     context = f"Delayed telemetry arrived for {from_id}.\n{metadata}"
-                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'])
+                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'], disable_tools=True)
                 threading.Thread(target=_deferred_send, daemon=True).start()
                 logger.info(f"📡 Deferred telemetry for {from_id} arrived — firing proactive response.")
 
@@ -1852,7 +1849,7 @@ class AIResponder:
                         f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
                         f"(threshold was {w['operator']} {w['threshold']})."
                     )
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'))
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'), disable_tools=True)
 
         except Exception as e:
             logger.warning(f"Error in proactive telemetry handler: {e}")
@@ -1871,7 +1868,7 @@ class AIResponder:
         
         return f"{query}{metadata_block}"
 
-    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False):
+    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False, disable_tools=False):
         """Background thread for processing AI queries with adaptive tool support."""
         thread_id = threading.get_ident()
         with self._workers_lock:
@@ -1943,7 +1940,7 @@ class AIResponder:
                     if from_node in self._refresh_metadata_nodes:
                         self._refresh_metadata_nodes.remove(from_node)
                 
-                if provider.supports_tools:
+                if provider.supports_tools and not disable_tools:
                     logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
                     tools = self.get_tools()
                     # Log to history (metadata may be None if already injected/cached)
@@ -2026,7 +2023,7 @@ class AIResponder:
                     
                 for w in triggered:
                     context = f"Node online alert: {w['context_note']}. Node {from_id_check} was just heard on the mesh."
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'))
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'), disable_tools=True)
                     logger.info(f"🟢 Node-online watcher fired for {from_id_check}")
             
             # Extract packet data
