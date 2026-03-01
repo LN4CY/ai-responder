@@ -1171,6 +1171,10 @@ class AIResponder:
                             "notify_targets": {
                                 "type": "STRING",
                                 "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
+                            },
+                            "is_persistent": {
+                                "type": "BOOLEAN",
+                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
                             }
                         },
                         "required": ["node_id_or_name", "metric", "operator", "threshold", "context_note"]
@@ -1196,6 +1200,10 @@ class AIResponder:
                             "notify_targets": {
                                 "type": "STRING",
                                 "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
+                            },
+                            "is_persistent": {
+                                "type": "BOOLEAN",
+                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
                             }
                         },
                         "required": ["node_id_or_name", "context_note"]
@@ -1506,7 +1514,7 @@ class AIResponder:
         
         return f"✅ Message queued for {target}."
 
-    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None):
+    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None, is_persistent=False):
         """Tool handler: add a telemetry condition watcher."""
         thread_data = {}
         with self._workers_lock:
@@ -1542,6 +1550,7 @@ class AIResponder:
             'to_node': to_node,
             'channel': thread_data.get('channel'),
             'targets': notify_targets or 'requester',
+            'is_persistent': is_persistent,
         }
         with self._condition_watchers_lock:
             # Enforce limit
@@ -1559,7 +1568,7 @@ class AIResponder:
         logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
 
-    def _watch_node_online_tool(self, node_id_or_name, context_note, notify_targets=None):
+    def _watch_node_online_tool(self, node_id_or_name, context_note, notify_targets=None, is_persistent=False):
         """Tool handler: add a node-online watcher."""
         thread_data = {}
         with self._workers_lock:
@@ -1592,6 +1601,7 @@ class AIResponder:
             'to_node': to_node,
             'channel': thread_data.get('channel'),
             'targets': notify_targets or 'requester',
+            'is_persistent': is_persistent,
         }
         with self._node_online_watchers_lock:
             # Enforce limit
@@ -1894,7 +1904,10 @@ class AIResponder:
                         triggered.append(w)
                 
                 for w in triggered:
-                    self.condition_watchers.remove(w)
+                    if not w.get('is_persistent', False):
+                        self.condition_watchers.remove(w)
+                if triggered:
+                    self._save_proactive_tasks()
                     context = (
                         f"Condition alert: {w['context_note']}. "
                         f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
@@ -2088,7 +2101,10 @@ class AIResponder:
                 with self._node_online_watchers_lock:
                     triggered = [w for w in self.node_online_watchers if w['node_id'] == from_id_check]
                     for w in triggered:
-                        self.node_online_watchers.remove(w)
+                        if not w.get('is_persistent', False):
+                            self.node_online_watchers.remove(w)
+                    if triggered:
+                        self._save_proactive_tasks()
                     
                 for w in triggered:
                     context = f"Node online alert: {w['context_note']}. Node {from_id_check} was just heard on the mesh."
