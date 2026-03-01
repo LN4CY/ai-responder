@@ -174,6 +174,9 @@ class GeminiProvider(BaseProvider):
                                 try:
                                     result = custom_tool_map[f_name](**f_args)
                                     logger.info(f"✅ Tool result: {str(result)[:100]}...")
+                                    # Silent-ACK: proactive callback already sent the response
+                                    if result == "__SILENT_ACK__":
+                                        return "__SILENT_ACK__"
                                 except Exception as e:
                                     logger.error(f"❌ Error executing tool {f_name}: {e}")
                                     result = f"Error: {str(e)}"

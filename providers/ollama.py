@@ -105,6 +105,9 @@ class OllamaProvider(BaseProvider):
                         try:
                             result = handler(**arguments)
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
+                            # Silent-ACK: proactive callback already sent the response
+                            if result == "__SILENT_ACK__":
+                                return "__SILENT_ACK__"
                             messages.append({
                                 "role": "tool",
                                 "content": json.dumps(result)

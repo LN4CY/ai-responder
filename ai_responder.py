@@ -1400,8 +1400,10 @@ class AIResponder:
         # 5. Timeout fallback
         # If the pending request was consumed by _on_telemetry_proactive during our 15s wait,
         # we don't need to say "I'm still waiting." The proactive handler already sent the data.
+        # Return a special sentinel that suppresses any further text generation by the AI model.
         if node_id not in self.pending_telemetry_requests:
-            return f"✅ Telemetry for {node_id_or_name} was received successfully."
+            logger.info(f"🔇 Telemetry for {node_id} was handled by proactive callback — suppressing AI reply.")
+            return "__SILENT_ACK__"
             
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
@@ -2064,17 +2066,23 @@ class AIResponder:
                                           context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
                                           location=location, tools=tools)
             
-            # 6. Add assistant response to history (skip for system triggers)
+            # 6. Silent-ACK: if every tool fired proactively, the provider returns the sentinel.
+            # In this case do not send any reply — the user already received the info.
+            if response == "__SILENT_ACK__":
+                logger.info(f"🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
+                return
+            
+            # 7. Add assistant response to history (skip for system triggers)
             if not is_system_trigger:
                 self.add_to_history(history_key, 'assistant', response)
                 
-                # 7. Save to conversation if in session
+                # 8. Save to conversation if in session
                 session_name = self.session_manager.get_session_name(from_node)
                 if session_name:
                     self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                     self.session_manager.update_activity(from_node)
             
-            logger.info(f"💬 Gemini response ({len(response)} chars): {response[:80]}...")
+            logger.info(f"💬 {provider.name} response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
             logger.info(f"✅ Response queued to {from_node} on ch{channel}")
             
