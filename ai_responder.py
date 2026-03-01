@@ -1826,8 +1826,6 @@ class AIResponder:
                 with self._condition_watchers_lock:
                     has_interest = any(w['node_id'].lower() == from_id for w in self.condition_watchers)
             
-            if has_interest:
-                logger.info(f"🕵️‍♂️ [DEBUG] Proactive handler checking packet from {from_id}")
 
             # --- 1. Deferred telemetry callbacks ---
             if from_id in self.pending_telemetry_requests:
@@ -1837,7 +1835,7 @@ class AIResponder:
                     time.sleep(2)
                     metadata = self.meshtastic.get_node_metadata(from_id)
                     context = f"Delayed telemetry arrived for {from_id}.\n{metadata}"
-                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'], disable_tools=True)
+                    self._fire_system_trigger(context, req['from_node'], req['to_node'], req['channel'], disable_tools=False)
                 threading.Thread(target=_deferred_send, daemon=True).start()
                 logger.info(f"📡 Deferred telemetry for {from_id} arrived — firing proactive response.")
 
@@ -1845,8 +1843,6 @@ class AIResponder:
             decoded = packet.get('decoded', {})
             telemetry = decoded.get('telemetry', {})
             
-            if has_interest:
-                logger.info(f"🕵️‍♂️ [DEBUG] {from_id} packet decoded keys: {list(decoded.keys())}. Telemetry present? {bool(telemetry)}")
             
             if not telemetry:
                 return
@@ -1876,8 +1872,6 @@ class AIResponder:
             if 'rxSnr' in packet:
                 metric_values['snr'] = packet['rxSnr']
 
-            if has_interest:
-                logger.info(f"🕵️‍♂️ [DEBUG] Extracted metrics for {from_id}: {metric_values}")
 
             with self._condition_watchers_lock:
                 triggered = []
@@ -1887,8 +1881,6 @@ class AIResponder:
                     
                     # Watchers use normalized snake_case metrics (e.g. 'battery_level', 'temperature')
                     val = metric_values.get(w['metric'])
-                    if has_interest:
-                        logger.info(f"🕵️‍♂️ [DEBUG] Checking metric '{w['metric']}' = {val} against limit {w['operator']} {w['threshold']}")
                         
                     if val is None:
                         continue
@@ -1904,8 +1896,6 @@ class AIResponder:
                         (op == '==' and val == thr)
                     )
                     
-                    if has_interest:
-                        logger.info(f"🕵️‍♂️ [DEBUG] Watcher triggered? {condition_met}")
                         
                     if condition_met:
                         triggered.append(w)
@@ -1920,7 +1910,7 @@ class AIResponder:
                         f"Live reading from {from_id}: {w['metric']}={metric_values.get(w['metric'])} "
                         f"(threshold was {w['operator']} {w['threshold']})."
                     )
-                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'), disable_tools=True)
+                    self._fire_system_trigger(context, w['from_node'], w['to_node'], w['channel'], targets=w.get('targets', 'requester'), disable_tools=False)
 
         except Exception as e:
             logger.warning(f"Error in proactive telemetry handler: {e}")
@@ -2020,17 +2010,21 @@ class AIResponder:
                     if from_node in self._refresh_metadata_nodes:
                         self._refresh_metadata_nodes.remove(from_node)
                 
-                if provider.supports_tools and not disable_tools:
-                    logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
-                    tools = self.get_tools()
-                    # Log to history (metadata may be None if already injected/cached)
+                if provider.supports_tools:
+                    if not disable_tools:
+                        logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
+                        tools = self.get_tools()
+                    else:
+                        logger.info(f"🤖 Provider '{provider.name}' supports tools, but they are disabled for this turn.")
+                    
+                    # Log to history (metadata included in prompt content for system triggers)
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
                     else:
                         msg = f"User ({from_node}): {query}" if combined_metadata else query
                         current_history.append({'role': 'user', 'content': msg})
                 else:
-                    logger.info(f"💾 Provider '{provider.name}' is tool-blind. Injecting legacy metadata block.")
+                    logger.info(f"💾 Provider '{provider.name}' does not support native tools. Injecting legacy metadata block.")
                     final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
