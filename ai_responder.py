@@ -1363,13 +1363,15 @@ class AIResponder:
             self._touch_worker()
             time.sleep(3)
             # Check timestamps in the handler
-            node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id, {})
+            node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id.lower(), {})
             last_received = node_timestamps.get(metric_key, 0)
             
             if last_received > request_time:
                 # Fresh data arrived!
+                elapsed = int(last_received - request_time)
+                logger.info(f"⚡ Fresh telemetry for {node_id} arrived in {elapsed}s during short poll loop!")
                 metadata = self.meshtastic.get_node_metadata(node_id)
-                return f"Success! New telemetry received:\n{metadata}"
+                return f"Success! New telemetry received in {elapsed}s:\n{metadata}"
 
         # 4. Timeout fallback: register a deferred callback so we auto-send when data arrives
         thread_data = {}

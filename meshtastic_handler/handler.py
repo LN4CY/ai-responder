@@ -179,7 +179,7 @@ class MeshtasticHandler:
     def track_node(self, node_id):
         """Mark a node as interesting for logging."""
         if node_id:
-            self.interesting_nodes.add(node_id)
+            self.interesting_nodes.add(str(node_id).lower())
 
     def connect(self, on_receive_callback=None):
         """
@@ -336,9 +336,10 @@ class MeshtasticHandler:
         """Handle incoming telemetry packets to populate the multi-metric cache."""
         try:
             from_id_raw = packet.get('fromId')
-            from_id = from_id_raw
             if isinstance(from_id_raw, int):
                 from_id = f"!{from_id_raw:08x}"
+            else:
+                from_id = str(from_id_raw).lower() if from_id_raw else None
                 
             decoded = packet.get('decoded', {})
             telemetry = decoded.get('telemetry', {})
@@ -808,7 +809,7 @@ class MeshtasticHandler:
 
             # Gather data from current packet AND cache
             # Cache keys are the same as protobuf fields (snake_case)
-            cached_data = self.telemetry_cache.get(node_id, {})
+            cached_data = self.telemetry_cache.get(node_id.lower(), {})
             
             for m_type, field_map in telemetry_to_show.items():
                 # Check current node_info (API usually snake_case or camelCase depending on library version)
@@ -839,6 +840,14 @@ class MeshtasticHandler:
                             else:
                                 val_str = f"{val}{unit}"
                             metadata_parts.append(f"{label}: {val_str}")
+                            
+            # 5. Data Age / Timestamp Inclusion
+            timestamps = self.telemetry_timestamps.get(node_id.lower(), {})
+            if timestamps:
+                # Find the most recent timestamp among all metrics to show "DataAge"
+                latest = max(timestamps.values())
+                age_seconds = int(time.time() - latest)
+                metadata_parts.append(f"DataAge: {age_seconds}s")
 
             if not metadata_parts:
                 return None
