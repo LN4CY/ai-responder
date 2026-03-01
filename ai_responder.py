@@ -1810,11 +1810,25 @@ class AIResponder:
                 return
 
             # Flatten all metric values into a simple key->value dict for comparison
+            # We must check BOTH snake_case (protobuf) and camelCase (library API)
             metric_values = {}
-            for category in ['device_metrics', 'environment_metrics', 'power_metrics', 'health_metrics']:
-                cat_data = telemetry.get(category, {})
+            category_map = {
+                'device_metrics': 'deviceMetrics',
+                'environment_metrics': 'environmentMetrics',
+                'power_metrics': 'powerMetrics',
+                'health_metrics': 'healthMetrics',
+                'air_quality_metrics': 'airQualityMetrics',
+                'local_stats': 'localStats',
+                'host_metrics': 'hostMetrics'
+            }
+
+            for snake_cat, camel_cat in category_map.items():
+                cat_data = telemetry.get(snake_cat) or telemetry.get(camel_cat)
                 if isinstance(cat_data, dict):
-                    metric_values.update(cat_data)
+                    for k, v in cat_data.items():
+                        # Normalize key to snake_case for internal matching
+                        snake_key = re.sub(r'(?<!^)(?=[A-Z])', '_', k).lower()
+                        metric_values[snake_key] = v
             
             # Also pull SNR from the packet envelope
             if 'rxSnr' in packet:
@@ -1825,6 +1839,8 @@ class AIResponder:
                 for w in self.condition_watchers:
                     if w['node_id'] != from_id:
                         continue
+                    
+                    # Watchers use normalized snake_case metrics (e.g. 'battery_level', 'temperature')
                     val = metric_values.get(w['metric'])
                     if val is None:
                         continue
