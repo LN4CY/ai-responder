@@ -1788,13 +1788,14 @@ class AIResponder:
             'ch:N'            - broadcast on channel N (must be in allowed_channels)
         """
         prompt = (
-            f"[SYSTEM WAKEUP] A proactive alert has triggered.\n\n"
-            f"Context: {context_note}\n\n"
-            f"INSTRUCTION:\n"
-            f"1. Deliver the alert or information to the user using your NATURAL TEXT RESPONSE.\n"
-            f"2. Your text response will be delivered automatically to the correct recipient ({targets}).\n"
-            f"3. Do NOT use the 'send_message' tool to deliver this alert; doing so will cause a duplicate message.\n"
-            f"4. You MAY use other tools (telemetry, location, etc.) if the context requires a dynamic check before responding."
+            f"[SYSTEM WAKEUP] A proactive task has triggered.\n\n"
+            f"COMMAND/CONTEXT: {context_note}\n\n"
+            f"CRITICAL INSTRUCTIONS:\n"
+            f"1. You MUST execute any instructions or checks contained in the COMMAND/CONTEXT above.\n"
+            f"2. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
+            f"3. Your natural text response will be delivered automatically to: {targets}.\n"
+            f"4. DO NOT use the 'send_message' tool to deliver the final report; your text response handles this.\n"
+            f"5. If the user asked for a count or persistent state, check the conversation history to increment it."
         )
         logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
 
@@ -2049,6 +2050,7 @@ class AIResponder:
             # to prevent session indicators or logic from leaking into broadcasts.
             is_session = is_dm and self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
+            current_history = self.history.get(history_key, [])
             
             # 2. Capability Check & Tool Orchestration
             provider_name = self.config.get('current_provider', 'ollama')
@@ -2060,12 +2062,6 @@ class AIResponder:
             # Adaptive Logic: Tools vs Metadata Injection
             tools = None
             final_query = query
-            
-            # Use isolated history for system triggers to prevent context bleeding
-            if is_system_trigger:
-                current_history = []
-            else:
-                current_history = self.history.get(history_key, [])
             
             if not awareness_enabled:
                 logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")

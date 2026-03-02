@@ -291,3 +291,42 @@ def test_collector_aggregation(responder):
         assert "Requested environment telemetry" in context
         assert "Condition alert: High temp" in context
         assert "temperature=35" in context
+
+def test_system_trigger_with_history(responder):
+    """Test that a system trigger can see the conversation history."""
+    node_id = "!user1"
+    history_key = f"DM:{node_id}"
+    
+    # Pre-populate history
+    responder.add_to_history(history_key, 'user', "Start count at 1", node_id=node_id)
+    responder.add_to_history(history_key, 'assistant', "Count is 1", node_id=node_id)
+    
+    with patch.object(responder, 'history') as mock_history_dict:
+        # Use MagicMock to behave like the history dict
+        mock_history_dict.get.return_value = [
+            {'role': 'user', 'content': 'Start count at 1'},
+            {'role': 'assistant', 'content': 'Count is 1'}
+        ]
+        
+        with patch.object(responder, 'config') as mock_config, \
+             patch('ai_responder.get_provider') as mock_get_provider:
+            
+            mock_provider = MagicMock()
+            mock_provider.get_response.return_value = "Count is now 2"
+            mock_get_provider.return_value = mock_provider
+            
+            # Fire a system trigger
+            responder._process_ai_query_thread(
+                query="Increment count",
+                from_node=node_id,
+                to_node="!bot",
+                channel=0,
+                is_dm=True,
+                is_system_trigger=True
+            )
+            
+            # Verify the provider was called with the history
+            args, kwargs = mock_provider.get_response.call_args
+            history_sent = kwargs.get('history') or args[1]
+            assert len(history_sent) == 2
+            assert history_sent[0]['content'] == 'Start count at 1'
