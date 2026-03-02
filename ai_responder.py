@@ -1393,13 +1393,13 @@ class AIResponder:
         self.meshtastic.request_telemetry(node_id, telemetry_type)
 
         # 4. Short Poll (Wait up to 15 seconds for data to arrive in cache)
-        # We check the cache every 3 seconds
+        # We check the cache frequently to minimize latency and race conditions
         poll_start = time.time()
         poll_timeout = 15 
         
         while time.time() - poll_start < poll_timeout:
             self._touch_worker()
-            time.sleep(3)
+            
             # Check timestamps in the handler
             node_timestamps = self.meshtastic.telemetry_timestamps.get(node_id.lower(), {})
             last_received = node_timestamps.get(metric_key, 0)
@@ -1409,6 +1409,7 @@ class AIResponder:
                 self.pending_telemetry_requests.pop(node_id, None)
                 
                 # ALSO clear and consume any collector events for this node to prevent redundant proactive turns
+                # This is CRITICAL to avoid the "proactive turn answering first" race condition.
                 aggregated_notes = ""
                 with self._collector_lock:
                     collector_entry = self._proactive_event_collector.pop(node_id, None)
@@ -1416,15 +1417,17 @@ class AIResponder:
                         if collector_entry['timer']:
                             collector_entry['timer'].cancel()
                         # Prepend any alerts or notes that arrived alongside this telemetry
-                        # (Filtering out the redundant "Requested telemetry" string if present)
                         other_events = [e for e in collector_entry['events'] if "Requested" not in e]
                         if other_events:
                             aggregated_notes = "\n".join(other_events) + "\n\n"
 
                 elapsed = int(last_received - request_time)
-                logger.info(f"⚡ Fresh telemetry for {node_id} arrived in {elapsed}s during short poll loop!")
+                logger.info(f"⚡ Fresh telemetry for {node_id} arrived in {elapsed}s and was consumed synchronously.")
                 metadata = self.meshtastic.get_node_metadata(node_id)
                 return f"Success! New telemetry received in {elapsed}s:\n{aggregated_notes}{metadata}"
+
+            # Wait a short interval before next check
+            time.sleep(0.5)
 
         # 5. Timeout fallback
         # If the pending request was consumed by _on_telemetry_proactive during our 15s wait,
