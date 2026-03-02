@@ -585,16 +585,27 @@ class AIResponder:
         # ===== Session Commands (DM only) =====
         if cmd == '-n':
             if is_dm:
-                # Start session
-                session_name = args if args else None
-                success, message, conv_name = self.session_manager.start_session(from_node, session_name, channel, to_node)
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-            else:
-                # In channel: clear history and start new conversation
-                self.clear_history(from_node)
+                # 1. If in a session, end it first (don't clear its history)
+                if self.session_manager.is_active(from_node):
+                    self.session_manager.end_session(from_node)
+                
                 if args:
-                    # Process the query
+                    # 2. Start NEW named session
+                    success, message, conv_name = self.session_manager.start_session(from_node, args, channel, to_node)
+                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                else:
+                    # 3. No args: Clear default DM history only
+                    dm_key = f"DM:{from_node}"
+                    self.clear_history(dm_key)
+                    self.send_response("✨ Session ended. Default DM context cleared.", from_node, to_node, channel, is_admin_cmd=False)
+            else:
+                # Channel mode: Clear current channel context and start fresh
+                channel_key = f"Channel:{channel}:{from_node}"
+                self.clear_history(channel_key)
+                if args:
                     self._handle_ai_query(args, from_node, to_node, channel, "Thinking (New Conversation)... 🤖")
+                else:
+                    self.send_response("✨ History cleared. Starting fresh.", from_node, to_node, channel, is_admin_cmd=False)
             return
         
         if cmd == '-end':
@@ -648,16 +659,16 @@ class AIResponder:
                 "🤖 AI Basic Commands\n"
                 "[msg] : Direct chat (no prefix)\n"
                 "!ai -h : Show this help\n"
-                "!ai -m : AI Status / Memory"
+                "!ai -m : Memory/context status\n"
+                "!ai -n : End session & clear default context"
             )
         else:
             msg1 = (
                 "🤖 AI Basic Commands\n"
                 "!ai [msg] : Ask AI (prefix required)\n"
                 "!ai -h : Show this help\n"
-                "!ai -m : AI Status / Memory\n"
-                "!ai -n [topic] : New topic\n"
-                "!ai -c : Recall last convo"
+                "!ai -m : Memory/context status\n"
+                "!ai -n : Clear history & start fresh"
             )
         self.send_response(msg1, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -698,10 +709,10 @@ class AIResponder:
         if is_admin and is_dm:
             msg5 = (
                 "⚙️ Admin Tools\n"
-                "!ai -p [provider] : Switch AI\n"
-                "!ai -ch [ls/add/rm] : Channels\n"
-                "!ai -a [ls/add/rm] : Admin IDs\n"
-                "!ai -s rm all : Wipe all tasks"
+                "!ai -p [gemini|ollama] : Switch AI provider\n"
+                "!ai -ch [ls|add 1|rm 1] : Channel access list\n"
+                "!ai -a [ls|add !id|rm !id] : Authorized admins\n"
+                "!ai -s [ls|rm id|rm all] : Proactive task manager"
             )
             self.send_response(msg5, from_node, to_node, channel, is_admin_cmd=False)
     
