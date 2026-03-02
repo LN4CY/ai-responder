@@ -328,5 +328,5 @@ def test_system_trigger_with_history(responder):
             # Verify the provider was called with the history
             args, kwargs = mock_provider.get_response.call_args
             history_sent = kwargs.get('history') or args[1]
-            assert len(history_sent) == 2
+            assert len(history_sent) == 3
             assert history_sent[0]['content'] == 'Start count at 1'

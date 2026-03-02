@@ -2084,11 +2084,12 @@ class AIResponder:
                 my_node_info = self.meshtastic.get_node_info()
                 if my_node_info:
                     bot_names = [
-                        my_node_info.get('user', {}).get('longName', '').lower(),
-                        my_node_info.get('user', {}).get('shortName', '').lower(),
+                        str(my_node_info.get('user', {}).get('longName') or '').lower(),
+                        str(my_node_info.get('user', {}).get('shortName') or '').lower(),
                         'bot', 'you'
                     ]
-                    mentions_bot = any(n and n in query.lower() for n in bot_names if n)
+                    bot_names = [n for n in bot_names if n]
+                    mentions_bot = any(n in query.lower() for n in bot_names)
 
                 must_refresh = is_first_msg or needs_refresh or is_keyword_query or mentions_bot
                 
