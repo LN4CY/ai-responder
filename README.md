@@ -28,10 +28,12 @@ The AI doesn't just respond; it understands its environment:
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
 ### 🤖 Proactive Agent Architecture
-The AI can now spontaneously send messages to users without being asked:
-- **Scheduled Reminders**: Ask the AI to remind you about something in 5 minutes or ping you every 30 seconds for the next 5 minutes.
+The AI can now spontaneously send messages to users or manage its own future behavior without being asked:
+- **Chainable & Stateful Tasks**: Ask the AI to "ping me every 15 seconds with the SNR and an incrementing count." The AI uses its **Conversation History** to maintain state (like counts) across turns and can recursively schedule its own future updates.
+- **Scheduled Reminders**: Ask the AI to remind you about something in 5 minutes or schedule complex recurring pings.
 - **Condition Watchers**: Register alerting rules like "message me when node L4B1's battery drops below 10%" and the AI monitors passively from live mesh telemetry.
 - **Deferred Telemetry Callbacks**: When the AI requests telemetry from a slow node and times out, it registers a background listener. When the data finally arrives from the mesh (seconds to minutes later), it proactively delivers it without requiring the user to ask again.
+- **Race-Condition Optimized**: The AI uses intelligent synchronous polling (0.5s intervals) to ensure that if a mesh node responds quickly, you get a single clean reply instead of redundant proactive alerts.
 
 ### 👤 Persona-Driven Mesh Agent
 - **Context Isolation**: Every user and channel has a secure sandbox, preventing data leakage between conversations.
@@ -248,6 +250,12 @@ Monitor a node's telemetry and alert when a threshold is hit:
 - **Example**: `!ai Alert me if the SNR on !9e044360 drops below -12`
 - **Supported metrics**: `battery_level`, `voltage`, `temperature`, `humidity`, `barometric_pressure`, `iaq`, `snr`
 - **Supported operators**: `<`, `>`, `<=`, `>=`, `==`
+
+### 🔄 Dynamic & Recursive Examples
+Leverage the AI's ability to maintain state and schedule future actions:
+- **Stateful Counting**: `!ai For the next minute, ping me every 15 seconds with my SNR and an incrementing count starting at 1`
+- **Recursive Monitoring**: `!ai Every 10 minutes, check the temperature of L4B1. If it's above 35C, alert channel 0, otherwise just remind yourself to check again in 10 minutes.`
+- **Data Refresh Loops**: `!ai Watch node XYZ. Every time its battery changes, send me the new value and the current SNR.`
 
 ### 🟢 Node-Online Watchers
 Get a notification as soon as a specific node is heard on the mesh:

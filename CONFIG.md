@@ -65,8 +65,10 @@ The responder uses **AI Function Calling** (Adaptive Tools) to proactively query
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
-- **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node. Uses a **deferred callback**—when the data eventually arrives, the AI proactively delivers it to the user.
-- **`schedule_message`**: Schedules a future message.
+- **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node. Uses a **fast synchronous poll (0.5s)** for immediate results, with a **deferred callback** backup—if the mesh is slow, the AI proactively delivers the data when it eventually arrives.
+- **`schedule_message`**: Schedules a future message or recurring task. 
+  - **Stateful Memory**: The AI can maintain state (like counts) across recurring turns by referencing its **Conversation History**.
+  - **Recursive Logic**: The AI can schedule new tasks from within a scheduled turn, allowing for complex autonomous behavior.
   - Params: `delay_seconds` (opt), `absolute_time` (opt), `context_note`, `recur_interval` (opt), `max_duration` (opt), `notify_targets` (opt).
   - `absolute_time`: HH:MM (e.g. "10:00") or YYYY-MM-DD HH:MM.
   - `notify_targets`: Comma-separated list: `requester` (default), `NodeName`, `!nodeid`, or `ch:N`.
