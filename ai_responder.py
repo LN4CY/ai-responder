@@ -1114,8 +1114,9 @@ class AIResponder:
                         "Schedule a proactive task for the future. "
                         "The 'context_note' is your FUTURE SYSTEM PROMPT. "
                         "When this fires, your future self will wake up, see the history, and MUST use tools for any dynamic data requested. "
-                        "For dynamic pings (e.g. 'SNR report every 15s'), use this tool with recursion. "
-                        "Instructions like 'Check my SNR and report it' go in the 'context_note'—DO NOT say you cannot do this."
+                        "RECURSIVE RULE: If this is a recurring or chained task, you MUST include an instruction in the 'context_note' for your future self to schedule the NEXT iteration. "
+                        "This 'Self-Rescheduling' instruction ensures the autonomous loop continues. "
+                        "Instructions like 'Check SNR and report it, then schedule another check in 10m' go in the 'context_note'—DO NOT say you cannot do this."
                     ),
                     "parameters": {
                         "type": "OBJECT",
