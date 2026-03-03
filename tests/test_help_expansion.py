@@ -14,9 +14,11 @@ class TestHelpAndNewTopic(unittest.TestCase):
         self.test_dir = os.path.dirname(os.path.abspath(__file__))
         self.mock_history_dir = os.path.join(self.test_dir, 'history_test')
         self.mock_config_file = os.path.join(self.test_dir, 'config_test.json')
+        self.mock_conv_dir = os.path.join(self.test_dir, 'conversations_test')
         
         with patch('ai_responder.AIResponder._load_proactive_tasks'), \
-             patch('config.CONFIG_FILE', self.mock_config_file):
+             patch('config.CONFIG_FILE', self.mock_config_file), \
+             patch('config.CONVERSATIONS_DIR', self.mock_conv_dir):
             self.responder = AIResponder(history_dir=self.mock_history_dir)
         self.responder.meshtastic = MagicMock()
         self.responder.send_response = MagicMock()
