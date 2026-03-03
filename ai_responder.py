@@ -652,12 +652,12 @@ class AIResponder:
             self._handle_ai_query(query, from_node, to_node, channel)
     
     def _handle_help_command(self, from_node, to_node, channel, is_dm, is_admin):
-        """Send expanded multi-message help."""
+        """Send expanded categorized multi-message help."""
         # 1. Basic Commands
         if is_dm:
             msg1 = (
                 "🤖 AI Basic Commands\n"
-                "[msg] : Direct chat (no prefix)\n"
+                "!ai [msg] : Ask AI (No prefix in session)\n"
                 "!ai -h : Show this help\n"
                 "!ai -m : Memory/context status\n"
                 "!ai -n : End session & clear default context"
@@ -687,10 +687,7 @@ class AIResponder:
         # 3. Actions & Tasks
         msg3 = (
             "📡 Proactive Tasks & Alerts\n"
-            "\"Remind me in 5m to...\"\n"
-            "\"Alert if battery < 50%\"\n"
-            "\"Notify when L4B1 is seen\"\n"
-            "!ai -s : List/manage tasks\n"
+            "!ai -s : List tasks\n"
             "!ai cancel [id] : Stop alert"
         )
         self.send_response(msg3, from_node, to_node, channel, is_admin_cmd=False)
@@ -698,10 +695,10 @@ class AIResponder:
         # 4. Practical Examples
         msg4 = (
             "💡 Examples\n"
-            "- \"Ping SNR/count every 15s\"\n"
-            "- \"Watch XYZ temp; alert if >35\"\n"
-            "- \"Remind me at 10pm to swap\"\n"
-            "- \"Tell Node X I am coming\""
+            "- \"!ai Ping SNR/count every 15s\"\n"
+            "- \"!ai Watch XYZ temp; alert if >35\"\n"
+            "- \"!ai Remind me at 10pm to swap\"\n"
+            "- \"!ai Tell Node X I am coming\""
         )
         self.send_response(msg4, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -709,10 +706,10 @@ class AIResponder:
         if is_admin and is_dm:
             msg5 = (
                 "⚙️ Admin Tools\n"
-                "!ai -p [gemini|ollama] : Switch AI provider\n"
-                "!ai -ch [ls|add 1|rm 1] : Channel access list\n"
-                "!ai -a [ls|add !id|rm !id] : Authorized admins\n"
-                "!ai -s [ls|rm id|rm all] : Proactive task manager"
+                "!ai -p [ollama|gemini] : Switch AI\n"
+                "!ai -ch [ls|add 1|rm 1] : Channels\n"
+                "!ai -a [ls|add !id|rm !id] : Admins\n"
+                "!ai -s [ls|rm id|rm all] : Proactive tasks"
             )
             self.send_response(msg5, from_node, to_node, channel, is_admin_cmd=False)
     
