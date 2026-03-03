@@ -13,13 +13,15 @@ from ai_responder import AIResponder
 class TestAdaptiveTools(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
+        self.mock_config_file = os.path.join(self.test_dir, 'config_test.json')
         self.mock_config = {
             'current_provider': 'ollama',
             'ollama_model': 'llama3'  # Heuristic should return False for tool support
         }
         with patch('ai_responder.MeshtasticHandler'), \
              patch('ai_responder.ConversationManager'), \
-             patch('ai_responder.SessionManager'):
+             patch('ai_responder.SessionManager'), \
+             patch('config.CONFIG_FILE', self.mock_config_file):
             self.responder = AIResponder(history_dir=self.test_dir)
             self.responder.config = self.mock_config
 

@@ -11,8 +11,13 @@ from ai_responder import AIResponder
 class TestHelpAndNewTopic(unittest.TestCase):
     def setUp(self):
         # Mock dependencies
-        with patch('ai_responder.AIResponder._load_proactive_tasks'):
-            self.responder = AIResponder(history_dir="e:/proj/AiAssited/ai-responder/tests/history_test")
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.mock_history_dir = os.path.join(self.test_dir, 'history_test')
+        self.mock_config_file = os.path.join(self.test_dir, 'config_test.json')
+        
+        with patch('ai_responder.AIResponder._load_proactive_tasks'), \
+             patch('config.CONFIG_FILE', self.mock_config_file):
+            self.responder = AIResponder(history_dir=self.mock_history_dir)
         self.responder.meshtastic = MagicMock()
         self.responder.send_response = MagicMock()
         self.responder.session_manager = MagicMock()
