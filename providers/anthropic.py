@@ -63,6 +63,12 @@ class AnthropicProvider(BaseProvider):
 
         try:
             # Multi-turn tool loop
+            action_tools_executed = 0
+            silent_ack_tools = 0
+            # Tools that represent a side effect or request (vs simple lookups)
+            action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
+                            "rm_proactive_task", "send_message"}
+            
             for turn in range(5):
                 payload = {
                     'model': ANTHROPIC_MODEL,
@@ -96,6 +102,12 @@ class AnthropicProvider(BaseProvider):
                 final_text = "".join([b.get('text', '') for b in text_blocks]).strip()
 
                 if not tool_use_blocks:
+                    # If ALL action tools in this session were handled proactively, the AI
+                    # should stay silent. We ignore info tools (like get_node_details)
+                    # since they don't justify a conversational follow-up on their own.
+                    if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                        logger.info("🔇 All Anthropic action tools handled proactively. Suppressing final text.")
+                        return "__SILENT_ACK__"
                     return final_text if final_text else "⚠️ No response from Anthropic"
 
                 # Execute tools
@@ -111,6 +123,17 @@ class AnthropicProvider(BaseProvider):
                         try:
                             result = handler(**arguments)
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
+                            
+                            if function_name in action_tools:
+                                action_tools_executed += 1
+                                if result == "__SILENT_ACK__":
+                                    silent_ack_tools += 1
+                                    
+                            # Silent-ACK: proactive callback already sent the response
+                            if result == "__SILENT_ACK__":
+                                result = ("[Telemetry was sent to the user automatically. "
+                                          "Do NOT summarize or repeat the telemetry. "
+                                          "Proceed with any remaining tasks such as registering a watcher.")
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
