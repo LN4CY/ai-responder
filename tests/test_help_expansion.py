@@ -47,7 +47,7 @@ class TestHelpAndNewTopic(unittest.TestCase):
         # Verify Admin has shortened text
         args_admin, _ = self.responder.send_response.call_args_list[4]
         self.assertIn("⚙️ Admin Tools", args_admin[0])
-        self.assertIn("!ai -p [ollama|gemini] : Switch AI", args_admin[0])
+        self.assertIn("!ai -p  [ollama|gemini] : Switch AI", args_admin[0])
 
     def test_new_topic_logic_dm_no_args(self):
         # Setup: Active session
