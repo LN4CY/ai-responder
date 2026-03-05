@@ -54,7 +54,7 @@ logger = logging.getLogger('AI-Responder')
 logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
 
-__version__ = "1.5.0"
+__version__ = "2.0.0"
 
 class AIResponder:
     """
@@ -706,10 +706,10 @@ class AIResponder:
         if is_admin and is_dm:
             msg5 = (
                 "⚙️ Admin Tools\n"
-                "!ai -p [ollama|gemini] : Switch AI\n"
+                "!ai -p  [ollama|gemini] : Switch AI\n"
                 "!ai -ch [ls|add 1|rm 1] : Channels\n"
-                "!ai -a [ls|add !id|rm !id] : Admins\n"
-                "!ai -s [ls|rm id|rm all] : Proactive tasks"
+                "!ai -a  [ls|add !id|rm !id] : Admins\n"
+                "!ai -s  [ls|rm id|rm all] : Proactive tasks"
             )
             self.send_response(msg5, from_node, to_node, channel, is_admin_cmd=False)
     
