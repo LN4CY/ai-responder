@@ -425,7 +425,18 @@ class AIResponder:
         if self.mcp_client and self.mcp_client.has_server('mempalace'):
             # Basic stats from our indexing attempt cache
             active_hubs = len(self._mcp_indexing_cache)
-            semantic_status = f"Active ({active_hubs} hubs traced)"
+            
+            # Check disk size of MemPalace data directory
+            mcp_data_path = "/root/.local/share/mcp-memory"
+            sem_size_kb = 0
+            if os.path.exists(mcp_data_path):
+                total_size = 0
+                for dirpath, _, filenames in os.walk(mcp_data_path):
+                    for f in filenames:
+                        total_size += os.path.getsize(os.path.join(dirpath, f))
+                sem_size_kb = total_size / 1024
+                
+            semantic_status = f"Active ({active_hubs} hubs, {sem_size_kb:.1f}KB)"
 
         # 3. Provider Info
         provider = self.config.get('current_provider', 'ollama')
