@@ -3,16 +3,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install System Dependencies (Node.js + Build Tools)
+# Install System Dependencies (Debian Native Node.js + Build Tools)
+# Using native packages ensures full support for amd64, arm64, and armhf (arm/v7).
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
     curl \
     ca-certificates \
-    gnupg \
     build-essential \
     libffi-dev \
     python3-dev \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
