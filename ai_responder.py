@@ -1947,7 +1947,7 @@ class AIResponder:
             # 5. Get AI response
             response = provider.get_response(final_query, current_history[-30:], 
                                           context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
-                                          location=location, tools=tools)
+                                          location=location, tools=tools, mcp_client=self.mcp_client)
             
             # 6. Silent-ACK: if every tool fired proactively, the provider returns the sentinel.
             # In this case do not send any reply — the user already received the info.
