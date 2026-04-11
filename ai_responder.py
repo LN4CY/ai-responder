@@ -491,10 +491,25 @@ class AIResponder:
             # Get history for context
             history = None
             if history_key and history_key in self.history:
-                # Context Tuning:
-                # - Sessions get full context (e.g., 30 messages)
-                # - Channel/Quick queries get minimal context (e.g., 2 messages)
-                limit = 30 if is_session else 2
+                # Context tuning — three tiers:
+                #
+                # 1. Channel / quick query  → last 2 messages only (no session state needed)
+                # 2. Session, MemPalace ON  → short bootstrap window so the AI doesn't get the
+                #    full raw log AND MemPalace semantic recall simultaneously.
+                #    Frontier models get a larger window than local Ollama models.
+                # 3. Session, no MemPalace  → full window (30 messages) — disk history is the
+                #    only long-term memory so we send as much as we safely can.
+                if not is_session:
+                    limit = 2
+                elif self.mcp_client.has_server('mempalace'):
+                    # Provider-aware bootstrap cap
+                    is_local = provider_name == 'ollama'
+                    limit = (config.MEMPALACE_BOOTSTRAP_LOCAL if is_local
+                             else config.MEMPALACE_BOOTSTRAP_ONLINE)
+                    logger.debug(f"MemPalace active → bootstrap history limit={limit} "
+                                 f"({'local' if is_local else 'online'} provider)")
+                else:
+                    limit = 30
                 history = self.history[history_key][-limit:]
             
             # Get response

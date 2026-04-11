@@ -28,6 +28,13 @@ OLLAMA_PORT = os.getenv('OLLAMA_PORT', '11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
 OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
+# When MemPalace is active, limit history injection to a short bootstrap window
+# so the AI doesn't get the full raw log AND MemPalace recall simultaneously.
+# Frontier models (Gemini, OpenAI, Anthropic) can tolerate a larger bootstrap;
+# Ollama's effective limit is already capped by OLLAMA_MAX_MESSAGES inside the provider.
+MEMPALACE_BOOTSTRAP_LOCAL  = int(os.getenv('MEMPALACE_BOOTSTRAP_LOCAL',  '6'))   # Ollama / local
+MEMPALACE_BOOTSTRAP_ONLINE = int(os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20'))  # Gemini / OpenAI / Anthropic
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'

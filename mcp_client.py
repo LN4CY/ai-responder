@@ -108,6 +108,11 @@ class UnifiedMCPClient:
             
     # --- Sync Wrappers for Provider Usage ---
     
+    def has_server(self, name: str) -> bool:
+        """Return True if a named MCP server is connected and has tools loaded."""
+        server = self.servers.get(name)
+        return bool(server and server.get('tools'))
+
     def get_all_tools(self) -> List[Dict]:
         """
         Synchronously return a unified list of all tools in a standard generic dict format
