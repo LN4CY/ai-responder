@@ -89,10 +89,14 @@ class GeminiProvider(BaseProvider):
         if tools:
             function_declarations = []
             for mcp_tool in tools:
+                # Sanitize: Gemini rejects '$schema' in the parameters block
+                params = mcp_tool.get('inputSchema', {"type": "OBJECT", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
                 function_declarations.append({
                     "name": mcp_tool['name'],
                     "description": mcp_tool.get('description', ''),
-                    "parameters": mcp_tool.get('inputSchema', {"type": "OBJECT", "properties": {}})
+                    "parameters": params
                 })
             
             # Dynamic Grounding: Inject a "stub" search tool to let the AI request search.

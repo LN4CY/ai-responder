@@ -45,10 +45,14 @@ class AnthropicProvider(BaseProvider):
         if tools:
             anthropic_tools = []
             for mcp_tool in tools:
+                # Sanitize: Anthropic/Claude is strict about JSON Schema fields
+                params = mcp_tool.get('inputSchema', {"type": "object", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
                 anthropic_tools.append({
                     "name": mcp_tool['name'],
                     "description": mcp_tool.get('description', ''),
-                    "input_schema": mcp_tool.get('inputSchema', {"type": "object", "properties": {}})
+                    "input_schema": params
                 })
 
         headers = {

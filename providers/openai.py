@@ -45,13 +45,16 @@ class OpenAIProvider(BaseProvider):
         if tools:
             openai_tools = []
             for mcp_tool in tools:
-                # mcp_tool is {"name": str, "description": str, "inputSchema": dict, "_server": str}
+                # Sanitize: OpenAI rejects meta-schema fields like '$schema'
+                params = mcp_tool.get('inputSchema', {"type": "object", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
                 openai_tools.append({
                     "type": "function",
                     "function": {
                         "name": mcp_tool['name'],
                         "description": mcp_tool.get('description', ''),
-                        "parameters": mcp_tool.get('inputSchema', {"type": "object", "properties": {}})
+                        "parameters": params
                     }
                 })
 

@@ -48,12 +48,16 @@ class OllamaProvider(BaseProvider):
         if tools and self.supports_tools:
             ollama_tools = []
             for mcp_tool in tools:
+                # Sanitize: Ollama (OpenAI-compatible) rejects '$schema' meta-fields
+                params = mcp_tool.get('inputSchema', {"type": "object", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
                 ollama_tools.append({
                     "type": "function",
                     "function": {
                         "name": mcp_tool['name'],
                         "description": mcp_tool.get('description', ''),
-                        "parameters": mcp_tool.get('inputSchema', {"type": "object", "properties": {}})
+                        "parameters": params
                     }
                 })
 
