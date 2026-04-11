@@ -91,7 +91,8 @@ class TestAdaptiveTools(unittest.TestCase):
             # Verify tools was passed
             kwargs = mock_provider.get_response.call_args[1]
             self.assertIsNotNone(kwargs['tools'])
-            self.assertIn('get_my_info', kwargs['tools'])
+            tool_names = [t['name'] for t in kwargs['tools']]
+            self.assertIn('get_my_info', tool_names)
 
     @patch('ai_responder.get_provider')
     def test_awareness_disabled(self, mock_get_provider):

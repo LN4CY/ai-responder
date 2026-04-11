@@ -19,44 +19,25 @@ class TestSessionManagement(unittest.TestCase):
             shutil.rmtree(self.test_dir)
 
     def test_delete_all_conversations(self):
-        # Create dummy conversations for User A
+        """Verify the ConversationManager stub responds correctly (now MemPalace-managed)."""
         user_a = "!11111111"
-        self.manager.save_conversation(user_a, "chat_1", [{"role": "user", "content": "hi"}])
-        self.manager.save_conversation(user_a, "chat_2", [{"role": "user", "content": "hello"}])
-        
-        # Create dummy conversation for User B
-        user_b = "!22222222"
-        self.manager.save_conversation(user_b, "chat_3", [{"role": "user", "content": "hola"}])
-        
-        # Verify files exist
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, user_a, "chat_1.json.gz")))
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, user_b, "chat_3.json.gz")))
-        
-        # Execute Delete All for A
+        # save_conversation is a no-op stub — returns True/deprecation message
+        ok, msg = self.manager.save_conversation(user_a, "chat_1", [{"role": "user", "content": "hi"}])
+        self.assertTrue(ok)
+
+        # delete_all_conversations returns False stub (MemPalace managed)
         success, msg = self.manager.delete_all_conversations(user_a)
-        self.assertTrue(success)
-        self.assertIn("Deleted 2", msg)
-        
-        # Verify User A is empty
-        self.assertFalse(os.path.exists(os.path.join(self.test_dir, user_a, "chat_1.json.gz")))
-        self.assertFalse(os.path.exists(os.path.join(self.test_dir, user_a, "chat_2.json.gz")))
-        
-        # Verify User B is UNTOUCHED
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, user_b, "chat_3.json.gz")))
+        self.assertFalse(success)
+        self.assertIn("MemPalace", msg)
 
     def test_session_sanitization(self):
-        user = "!33333333"
-        # Try to save with unsafe chars
-        unsafe_name = "../../../etc/passwd"
-        self.manager.save_conversation(user, unsafe_name, [{"role": "user", "content": "hack"}])
-        
-        # Expect file to be sanitized (e.g., "etcpasswd" or similar, definitely NOT traversing)
-        # The sanitizer removes dots and slashes, so "etcpasswd"
-        sanitized_name = "etcpasswd"
-        expected_path = os.path.join(self.test_dir, user, f"{sanitized_name}.json.gz")
-        
-        self.assertTrue(os.path.exists(expected_path), f"Sanitized file not found at {expected_path}")
-        self.assertFalse(os.path.exists(os.path.join(self.test_dir, "passwd")), "Directory traversal detected!")
+        """Verify sanitization logic strips unsafe characters."""
+        unsafe = "../../../etc/passwd"
+        sanitized = self.manager._sanitize_name(unsafe)
+        # Dots and slashes stripped, only alphanumeric/hyphen/underscore
+        self.assertEqual(sanitized, "etcpasswd")
+        self.assertNotIn("..", sanitized)
+        self.assertNotIn("/", sanitized)
 
 if __name__ == '__main__':
     unittest.main()
