@@ -10,12 +10,21 @@ class TestSemanticMemory(unittest.TestCase):
     def setUp(self):
         self.test_dir = os.path.dirname(os.path.abspath(__file__))
         self.mock_history_dir = os.path.join(self.test_dir, 'sem_history')
-        if not os.path.exists(self.mock_history_dir):
-            os.makedirs(self.mock_history_dir)
+        self.mock_conv_dir = os.path.join(self.test_dir, 'sem_conversations')
+        self.mock_config_file = os.path.join(self.test_dir, 'sem_config.json')
+        
+        for d in [self.mock_history_dir, self.mock_conv_dir]:
+            if not os.path.exists(d):
+                os.makedirs(d)
             
-        # Patch config paths
-        self.patcher_hist = patch('config.HISTORY_DIR', self.mock_history_dir)
-        self.patcher_hist.start()
+        # Patch config paths to avoid /app permission errors
+        self.patchers = [
+            patch('config.HISTORY_DIR', self.mock_history_dir),
+            patch('config.CONVERSATIONS_DIR', self.mock_conv_dir),
+            patch('config.CONFIG_FILE', self.mock_config_file)
+        ]
+        for p in self.patchers:
+            p.start()
         
         # Initialize responder with mocked dependencies
         self.responder = AIResponder(history_dir=self.mock_history_dir)
@@ -23,9 +32,15 @@ class TestSemanticMemory(unittest.TestCase):
         self.responder.mcp_client.has_server.return_value = True
         
     def tearDown(self):
-        self.patcher_hist.stop()
-        if os.path.exists(self.mock_history_dir):
-            shutil.rmtree(self.mock_history_dir)
+        for p in self.patchers:
+            p.stop()
+            
+        for d in [self.mock_history_dir, self.mock_conv_dir]:
+            if os.path.exists(d):
+                shutil.rmtree(d)
+        if os.path.exists(self.mock_config_file):
+            os.remove(self.mock_config_file)
+            
         # Use correct private attribute name for the executor
         if hasattr(self.responder, '_bg_executor'):
             self.responder._bg_executor.shutdown(wait=True)

@@ -84,7 +84,7 @@ class TestHelpAndNewTopic(unittest.TestCase):
         # Should clear the correct channel key
         self.responder.clear_history.assert_called_with("Channel:0:from")
         # Should send confirmation
-        self.responder.send_response.assert_called_with("✨ History cleared. Starting fresh.", "from", "^all", 0, is_admin_cmd=False)
+        self.responder.send_response.assert_called_with("✨ Channel 0 window reset. (History archived in Graph)", "from", "^all", 0, is_admin_cmd=False)
 
 if __name__ == '__main__':
     unittest.main()
