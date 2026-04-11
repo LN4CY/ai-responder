@@ -83,28 +83,38 @@ class UnifiedMCPClient:
             args=args,
             env=server_env
         )
-        try:
-            # We must keep context managers alive; so we store them
-            # Note: This is an infinite lifetime task in the loop for the duration of the app
-            logger.info(f"Connecting to MCP server '{name}' via stdio...")
-            async with stdio_client(params) as (read_ctx, write_ctx):
-                async with ClientSession(read_ctx, write_ctx) as session:
-                    await session.initialize()
-                    
-                    # Store session and tools
-                    tools = (await session.list_tools()).tools
-                    self.servers[name] = {
-                        'type': 'stdio',
-                        'session': session,
-                        'tools': tools
-                    }
-                    logger.info(f"Connected to MCP server '{name}' successfully.")
-                    
-                    # Keep connection alive
-                    while True:
-                        await asyncio.sleep(3600)
-        except Exception as e:
-            logger.error(f"Failed to connect to MCP server '{name}': {e}")
+        while True:
+            try:
+                # We must keep context managers alive; so we store them
+                # Note: This is an infinite lifetime task in the loop for the duration of the app
+                logger.info(f"Connecting to MCP server '{name}' via stdio...")
+                async with stdio_client(params) as (read_ctx, write_ctx):
+                    async with ClientSession(read_ctx, write_ctx) as session:
+                        await session.initialize()
+                        
+                        # Store session and tools
+                        tools = (await session.list_tools()).tools
+                        self.servers[name] = {
+                            'type': 'stdio',
+                            'session': session,
+                            'tools': tools
+                        }
+                        logger.info(f"Connected to MCP server '{name}' successfully.")
+                        
+                        # Keep connection alive - if this exits, the server is removed in finally
+                        while True:
+                            # Periodic health check/keepalive if needed
+                            await asyncio.sleep(60)
+            except Exception as e:
+                logger.error(f"MCP server '{name}' connection error: {e}")
+            finally:
+                # Ensure server is removed if connection died
+                if name in self.servers and self.servers[name]['type'] == 'stdio':
+                    self.servers.pop(name, None)
+                    logger.warning(f"MCP server '{name}' removed from active list.")
+                
+            # Wait before attempting to reconnect
+            await asyncio.sleep(10)
             
     # --- Sync Wrappers for Provider Usage ---
     

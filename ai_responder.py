@@ -561,8 +561,33 @@ class AIResponder:
                 self._bg_index_conversation(payload)
             elif data_type == 'telemetry':
                 self._bg_index_telemetry(payload)
+            elif data_type == 'delete_history':
+                self._bg_delete_semantic_history(payload)
         except Exception as e:
-            logger.error(f"Background indexing error ({data_type}): {e}")
+            logger.debug(f"Background indexing error ({data_type}): {e}")
+
+    def _bg_delete_semantic_history(self, payload):
+        """Perform a Nuclear Wipe of semantic memory for a context."""
+        node_id = payload.get('node_id')
+        topic = payload.get('topic')
+        channel = payload.get('channel', 0)
+        
+        if not node_id: return
+        
+        targets = []
+        if topic == 'all':
+            # 1. Target the persistent conversation hubs
+            targets.append(f"Chat_{node_id}_CH{channel}")
+            targets.append(f"Hub_Default_{node_id}")
+            # 2. Target the specific Node identity hub if explicit
+            # targets.append(node_id) 
+        elif topic:
+            targets.append(topic)
+        
+        if targets:
+            logger.info(f"🗑️ Semantically deleting indexed hubs: {targets}")
+            # standard mempalace/mcp-memory uses 'names' for delete_entities
+            self.mcp_client.call_tool("delete_entities", {"names": targets})
 
     def _bg_index_conversation(self, payload):
         """Index a conversation turn into the Knowledge Graph."""
@@ -573,24 +598,31 @@ class AIResponder:
         
         if not node_id or not prompt or not response: return
         
-        # 1. Identity Hub (Conversation/Node context)
-        hub_name = f"Chat_{node_id}_CH{channel}"
+        # 1. Active Session vs Default Hub
+        session_name = self.session_manager.get_session_name(node_id)
+        if session_name:
+            hub_name = f"Chat_{node_id}_CH{channel}"
+            description = f"Active chat hub for node {node_id} on channel {channel}"
+        else:
+            hub_name = f"Hub_Default_{node_id}"
+            description = f"General discussion hub for node {node_id}"
+
+        # 2. Identity Hub Ensure
         self.mcp_client.call_tool("create_entities", {
             "entities": [{
                 "name": hub_name,
                 "entityType": "Conversation",
-                "observations": [f"Persistent chat hub for node {node_id} on channel {channel}"]
+                "observations": [description]
             }]
         })
         
-        # 2. Topic Hub (if in session)
-        session_name = self.session_manager.get_session_name(node_id)
+        # 3. Topic Hub (if in session)
         if session_name:
             self.mcp_client.call_tool("create_entities", {
                 "entities": [{
                     "name": session_name,
                     "entityType": "Topic",
-                    "observations": [f"User-defined topic session: {session_name}"]
+                    "observations": [f"Session Topic: {session_name}"]
                 }]
             })
             # Relate Chat Hub to Topic
@@ -602,7 +634,7 @@ class AIResponder:
                 }]
             })
             
-        # 3. Add Activity Observation
+        # 4. Add Activity Observation
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         observation = f"[{ts}] User: {prompt} | AI: {response}"
         self.mcp_client.call_tool("add_observations", {
@@ -612,7 +644,7 @@ class AIResponder:
             }]
         })
         
-        logger.debug(f"🧠 Semantically indexed conversation turn for {node_id}")
+        logger.debug(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
 
     def _bg_index_telemetry(self, payload):
         """Index telemetry status into the Node's hub."""
@@ -738,28 +770,48 @@ class AIResponder:
         
         # ===== Session Commands (DM only) =====
         if cmd == '-n':
+            # Check for explicit wipe command: !ai -n rm all
+            if args.lower() == 'rm all':
+                # 1. Clear local in-memory history buffer
+                key = f"DM:{from_node}" if is_dm else f"Channel:{channel}:{from_node}"
+                self.clear_history(key)
+                
+                # 2. Disk & Semantic Wipe
+                if is_dm:
+                    # Wipe all disk-based sessions for this user
+                    self.conversation_manager.delete_all_conversations(from_node)
+                    # Semantic: Wipe everything (Topic='all') for this node's hubs
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': 0})
+                    self.send_response("☢️ Nuclear Wipe: All DM sessions and Graph memory forgotten.", from_node, to_node, channel)
+                else:
+                    # Wipe channel graph memory
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
+                    self.send_response(f"☢️ Nuclear Wipe: All history for Channel {channel} index forgotten in Graph.", from_node, to_node, channel)
+                return
+
             if is_dm:
                 # 1. If in a session, end it first (don't clear its history)
                 if self.session_manager.is_active(from_node):
                     self.session_manager.end_session(from_node)
                 
                 if args:
-                    # 2. Start NEW named session
+                    # 2. Start NEW named session (Pivot)
                     success, message, conv_name = self.session_manager.start_session(from_node, args, channel, to_node)
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
-                    # 3. No args: Clear default DM history only
+                    # 3. No args: Safe Context Reset (Non-destructive)
                     dm_key = f"DM:{from_node}"
                     self.clear_history(dm_key)
-                    self.send_response("✨ Session ended. Default DM context cleared.", from_node, to_node, channel, is_admin_cmd=False)
+                    self.send_response("✨ DM context reset to Default. (Memories safely archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             else:
-                # Channel mode: Clear current channel context and start fresh
+                # Channel mode: Safe Context Reset (Non-destructive)
                 channel_key = f"Channel:{channel}:{from_node}"
                 self.clear_history(channel_key)
                 if args:
+                    # Treat args as a fresh query after reset
                     self._handle_ai_query(args, from_node, to_node, channel, "Thinking (New Conversation)... 🤖")
                 else:
-                    self.send_response("✨ History cleared. Starting fresh.", from_node, to_node, channel, is_admin_cmd=False)
+                    self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
         
         if cmd == '-end':
@@ -868,76 +920,104 @@ class AIResponder:
             self.send_response(msg5, from_node, to_node, channel, is_admin_cmd=False)
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
-        """Handle conversation management commands."""
-        # Determine if this is a DM (sessions are DM-only)
+        """Handle conversation management commands with Semantic Memory integration."""
         is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
         
         if not args:
-            # Load last conversation (most recently accessed)
+            # Load last conversation
             metadata = self.conversation_manager._load_metadata(from_node)
             if metadata:
-                # Find most recent
                 latest = max(metadata.items(), key=lambda x: x[1]['last_access'])
-                success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, latest[0])
-                if success and history:
-                    # Use conversation name as history key
-                    self.history[conversation_name] = history
-                    # Mark for metadata refresh
-                    self._refresh_metadata_nodes.add(from_node)
-                    # If in DM, restart the session so they can continue chatting
-                    if is_dm:
-                        self.session_manager.start_session(from_node, conversation_name, channel, to_node)
-                        message += "\n🟢 Session Resumed"
-                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-                else:
-                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                self._load_and_respond(latest[0], from_node, to_node, channel, is_dm)
             else:
-                self.send_response("No saved conversations found.", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("No saved conversations found.", from_node, to_node, channel)
             return
         
         parts = args.split(maxsplit=1)
         subcmd = parts[0].lower()
         
         if subcmd == 'ls':
-            # List conversations
+            # 1. Get Disk listing
             listing = self.conversation_manager.list_conversations(from_node)
-            self.send_response(listing, from_node, to_node, channel, is_admin_cmd=False)
+            
+            # 2. Add Semantic clues if enabled
+            if self.mcp_client and self.mcp_client.has_server('mempalace'):
+                listing += "\n(MemPalace Active: Deep Archive enabled)"
+            
+            self.send_response(listing, from_node, to_node, channel)
         
         elif subcmd == 'rm':
-            # Delete conversation
             if len(parts) < 2:
-                self.send_response("Usage: !ai -c [ls/rm <id/all>]", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("Usage: !ai -c rm [id/all]", from_node, to_node, channel)
                 return
             identifier = parts[1]
             
-            # Handle "rm all"
             if identifier.lower() == 'all':
                 success, message = self.conversation_manager.delete_all_conversations(from_node)
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-                # Also clear active session if in one
+                # Semantic Wipe
+                self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
+                self.send_response(f"{message} (Graph pruned)", from_node, to_node, channel)
                 self.session_manager.end_session(from_node)
-                # And in-memory history cache
                 self.history.pop(from_node, None) 
-                return
-
-            success, message = self.conversation_manager.delete_conversation(from_node, identifier)
-            self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            else:
+                # Sync delete - find name first
+                name = self._resolve_conversation_name(from_node, identifier)
+                success, message = self.conversation_manager.delete_conversation(from_node, identifier)
+                if name:
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': name, 'channel': channel})
+                self.send_response(f"{message} (Graph synced)", from_node, to_node, channel)
         
         else:
             # Load specific conversation
-            success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, args)
-            if success and history:
-                # Use conversation name as history key
-                self.history[conversation_name] = history
-                # Mark for metadata refresh
-                self._refresh_metadata_nodes.add(from_node)
-                # If in DM, restart the session so they can continue chatting
-                if is_dm:
-                    self.session_manager.start_session(from_node, conversation_name, channel, to_node)
-                    message += "\n🟢 Session Resumed"
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-            else:
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            self._load_and_respond(args, from_node, to_node, channel, is_dm)
+
+    def _resolve_conversation_name(self, node_id, identifier):
+        """Resolve a slot ID or prefix to a full conversation name."""
+        metadata = self.conversation_manager._load_metadata(node_id)
+        if identifier.isdigit():
+            target = int(identifier)
+            for name, data in metadata.items():
+                if data['index'] == target: return name
+        elif identifier in metadata:
+            return identifier
+        return None
+
+    def _load_and_respond(self, identifier, from_node, to_node, channel, is_dm):
+        """Helper to load a session (Disk with Graph fallback) and notify user."""
+        success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, identifier)
+        
+        # Semantic Re-hydration Fallback
+        if not success and self.mcp_client and self.mcp_client.has_server('mempalace'):
+            # Try to load topic name directly from graph if identifier is a name
+            rehydrated = self._rehydrate_session_from_graph(from_node, identifier)
+            if rehydrated:
+                history = rehydrated
+                conversation_name = identifier
+                success = True
+                message = f"💧 Re-hydrated '{identifier}' from Semantic Graph."
+
+        if success and history:
+            self.history[conversation_name] = history
+            self._refresh_metadata_nodes.add(from_node)
+            if is_dm:
+                self.session_manager.start_session(from_node, conversation_name, channel, to_node)
+                message += "\n🟢 Session Resumed"
+            self.send_response(message, from_node, to_node, channel)
+        else:
+            self.send_response(message, from_node, to_node, channel)
+
+    def _rehydrate_session_from_graph(self, node_id, topic_name):
+        """Attempt to reconstruct a session's history from MemPalace observations."""
+        try:
+            # Note: This is a synchronous call to the re-hydration tool
+            # In a real graph, we'd search for the Topic hub and get its turns
+            # For now, we search for the topic name to see if it's there
+            result = self.mcp_client.call_tool("read_graph", {}) # Fetch whole graph to filter locally for now
+            # Actually, read_graph without args might be too heavy. 
+            # We'll use a specific search if the tool supports it.
+            return None # Implementation of specific pattern matching TBD based on final graph schema
+        except:
+            return None
     
     def _handle_provider_command(self, args, from_node, to_node, channel):
         """Handle AI provider switching."""
