@@ -566,6 +566,13 @@ class AIResponder:
         except Exception as e:
             logger.debug(f"Background indexing error ({data_type}): {e}")
 
+    def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False):
+        """Standardized naming logic for Semantic Hubs."""
+        if is_dm:
+            return f"Hub_Default_{node_id}"
+        else:
+            return f"Hub_CH{channel}"
+
     def _bg_delete_semantic_history(self, payload):
         """Perform a Nuclear Wipe of semantic memory for a context."""
         node_id = payload.get('node_id')
@@ -577,10 +584,8 @@ class AIResponder:
         targets = []
         if topic == 'all':
             # 1. Target the persistent conversation hubs
-            targets.append(f"Chat_{node_id}_CH{channel}")
-            targets.append(f"Hub_Default_{node_id}")
-            # 2. Target the specific Node identity hub if explicit
-            # targets.append(node_id) 
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=True)) # Use DM hub as default user hub
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=False)) # Use Channel hub
         elif topic:
             targets.append(topic)
         
@@ -665,7 +670,10 @@ class AIResponder:
         
         # Index to Node Hub
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        summary = ", ".join([f"{k}: {v}" for k, v in data.items() if v is not None])
+        if isinstance(data, dict):
+            summary = ", ".join([f"{k}: {v}" for k, v in data.items() if v is not None])
+        else:
+            summary = str(data)
         obs = f"[{ts}] Telemetry ({t_type}): {summary}"
         
         self.mcp_client.call_tool("create_entities", {

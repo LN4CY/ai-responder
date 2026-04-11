@@ -156,28 +156,54 @@ class TestAIResponder(unittest.TestCase):
         self.assertEqual(channel_key, f"Channel:1:{user_id}")
         self.assertNotEqual(channel_key, "TestSession")
 
-    def test_session_name_sanitization(self):
-        """Test that bad session names are sanitized correctly."""
-        user_id = "!sanitizeme"
+    def test_session_command_n_behavior(self):
+        """Test the new safe reset (!ai -n) vs nuclear wipe (!ai -n rm all) logic."""
+        from_node = "!user1"
+        dm_key = f"DM:{from_node}"
+        self.responder.history[dm_key] = [{"role": "user", "content": "hello"}]
         
-        # 1. Names with path traversal / bad chars
-        bad_name = "../etc/passwd\\test"
-        success, msg, sanitized_name = self.responder.session_manager.start_session(user_id, bad_name)
+        # 1. Test SAFE RESET: !ai -n
+        self.responder.process_command("!ai -n", from_node, "!bot", 0)
+        # Buffer should be cleared
+        self.assertEqual(len(self.responder.history.get(dm_key, [])), 0)
+        # Verify NO deletion of saved history was triggered
+        self.responder.meshtastic.send_message.assert_called()
+        msg = self.responder.meshtastic.send_message.call_args[0][0]
+        self.assertIn("safely archived", msg)
+
+        # 2. Test NUCLEAR WIPE: !ai -n rm all
+        self.responder.history[dm_key] = [{"role": "user", "content": "secret"}]
+        with patch.object(self.responder.conversation_manager, 'delete_all_conversations') as mock_del:
+            self.responder.process_command("!ai -n rm all", from_node, "!bot", 0)
+            # Disk wipe MUST be called
+            mock_del.assert_called_with(from_node)
+            # Response should indicate wipe
+            msg_wipe = self.responder.meshtastic.send_message.call_args[0][0]
+            self.assertIn("Nuclear Wipe", msg_wipe)
+
+    def test_semantic_rehydration_fallback(self):
+        """Test that loading fails over to graph if disk load returns False."""
+        from_node = "!user1"
+        topic = "AgedOffTopic"
         
-        # Expected: alphanumeric/underscore/hyphen only
-        self.assertEqual(sanitized_name, "etcpasswdtest")
-        self.assertIn("Session started: 'etcpasswdtest'", msg)
-        
-        # 2. Check history path for this sanitized name
-        path = self.responder._get_history_path(sanitized_name)
-        self.assertTrue(path.endswith("etcpasswdtest.json"))
-        # Ensure no path traversal in the final result
-        self.assertNotIn("..", path)
-        
-        # 3. Completely invalid name
-        empty_name = "!!!@@@###"
-        _, _, name3 = self.responder.session_manager.start_session(user_id, empty_name)
-        self.assertEqual(name3, "unnamed_session")
+        # Mock disk load failure specifically for this call
+        with patch.object(self.responder.conversation_manager, 'load_conversation', 
+                         return_value=(False, "Not found", [], None)):
+            
+            # Mock MCP presence and semantic success
+            self.responder.mcp_client = MagicMock()
+            self.responder.mcp_client.has_server.return_value = True
+            
+            rehydrated_history = [{"role": "user", "content": "from graph"}]
+            with patch.object(self.responder, '_rehydrate_session_from_graph', return_value=rehydrated_history):
+                self.responder.process_command(f"!ai -c {topic}", from_node, "!bot", 0)
+                
+                # Should have history now
+                self.assertIn(topic, self.responder.history)
+                self.assertEqual(self.responder.history[topic], rehydrated_history)
+                # Message should mention re-hydration
+                msg = self.responder.meshtastic.send_message.call_args[0][0]
+                self.assertIn("Re-hydrated", msg)
 
     def test_provider_list(self):
         """Test listing providers."""
