@@ -964,7 +964,7 @@ class AIResponder:
             identifier = parts[1]
             
             if identifier.lower() == 'all':
-                self.conversation_manager.delete_all_conversations(from_node)
+                success, message = self.conversation_manager.delete_all_conversations(from_node)
                 # Semantic Wipe
                 self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
                 self.send_response(f"{message} (Graph pruned)", from_node, to_node, channel)
