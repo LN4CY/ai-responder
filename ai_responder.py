@@ -24,6 +24,7 @@ import itertools
 import requests
 import pathlib
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 from pubsub import pub
 
 
@@ -133,7 +134,10 @@ class AIResponder:
         self._proactive_event_collector = {} # {node_id_lower: {'timer': Timer, 'events': [str], 'targets': str, 'from_node': str, 'to_node': str, 'channel': int}}
         self._collector_lock = threading.Lock()
         
-        # Ensure history directory exists
+        # --- Background Memory Indexing ---
+        self._bg_executor = ThreadPoolExecutor(max_workers=3)
+        self._mcp_indexing_cache = {} # {node_id: {type: last_index_time}}
+        
         # Ensure history directory exists
         if not os.path.exists(self.history_dir):
             os.makedirs(self.history_dir)
@@ -400,11 +404,7 @@ class AIResponder:
         # Resolve the active history key to match what AI queries use
         history_key = self._get_history_key(user_id, channel=0, is_dm=True)
         
-        # Load history if not in memory
-        if history_key not in self.history:
-            self.load_history(history_key)
-        
-        # Get history stats
+        # 1. Disk/Session Stats
         message_count = len(self.history[history_key])
         history_path = self._get_history_path(history_key)
         
@@ -416,22 +416,29 @@ class AIResponder:
             size_kb = 0
             max_kb = config.HISTORY_MAX_BYTES / 1024
         
-        # Get conversation slot usage
         metadata = self.conversation_manager._load_metadata(user_id)
         user_conversations = [name for name in metadata if not name.startswith('channel_')]
         slot_usage = len(user_conversations)
         
-        # Get current provider
+        # 2. Semantic Indexing Stats
+        semantic_status = "Disabled"
+        if self.mcp_client and self.mcp_client.has_server('mempalace'):
+            # Basic stats from our indexing attempt cache
+            active_hubs = len(self._mcp_indexing_cache)
+            semantic_status = f"Active ({active_hubs} hubs traced)"
+
+        # 3. Provider Info
         provider = self.config.get('current_provider', 'ollama')
         
         # Format status message
         from config import MAX_CONVERSATIONS
         status = (
             f"💾 Memory Status\n"
-            f"Messages: {message_count}/{config.HISTORY_MAX_MESSAGES}\n"
-            f"Size: {size_kb:.1f}KB/{max_kb:.0f}KB\n"
-            f"Slots: {slot_usage}/{MAX_CONVERSATIONS}\n"
-            f"Provider: {provider.upper()}"
+            f"Local History: {message_count}/{config.HISTORY_MAX_MESSAGES} msgs\n"
+            f"Disk Usage: {size_kb:.1f}KB/{max_kb:.0f}KB\n"
+            f"Conv Slots: {slot_usage}/{MAX_CONVERSATIONS}\n"
+            f"Semantic DB: {semantic_status}\n"
+            f"AI Provider: {provider.upper()}"
         )
         
         return status
@@ -526,6 +533,114 @@ class AIResponder:
             logger.error(f"Unexpected error getting AI response: {e}")
             return f"Error: {str(e)}"
     
+    # ==================== Background Semantic Indexing ====================
+    
+    def _index_to_mcp(self, data_type, payload):
+        """Dispatch indexing task to the background executor."""
+        # Only proceed if MemPalace is connected
+        if not self.mcp_client or not self.mcp_client.has_server('mempalace'):
+            return
+        
+        self._bg_executor.submit(self._index_task_wrapper, data_type, payload)
+
+    def _index_task_wrapper(self, data_type, payload):
+        """Internal wrapper for the background executor to handle Knowledge Graph logic."""
+        try:
+            if data_type == 'conversation':
+                self._bg_index_conversation(payload)
+            elif data_type == 'telemetry':
+                self._bg_index_telemetry(payload)
+        except Exception as e:
+            logger.error(f"Background indexing error ({data_type}): {e}")
+
+    def _bg_index_conversation(self, payload):
+        """Index a conversation turn into the Knowledge Graph."""
+        node_id = payload.get('node_id')
+        channel = payload.get('channel', 0)
+        prompt = payload.get('prompt')
+        response = payload.get('response')
+        
+        if not node_id or not prompt or not response: return
+        
+        # 1. Identity Hub (Conversation/Node context)
+        hub_name = f"Chat_{node_id}_CH{channel}"
+        self.mcp_client.call_tool("create_entities", {
+            "entities": [{
+                "name": hub_name,
+                "entityType": "Conversation",
+                "observations": [f"Persistent chat hub for node {node_id} on channel {channel}"]
+            }]
+        })
+        
+        # 2. Topic Hub (if in session)
+        session_name = self.session_manager.get_session_name(node_id)
+        if session_name:
+            self.mcp_client.call_tool("create_entities", {
+                "entities": [{
+                    "name": session_name,
+                    "entityType": "Topic",
+                    "observations": [f"User-defined topic session: {session_name}"]
+                }]
+            })
+            # Relate Chat Hub to Topic
+            self.mcp_client.call_tool("create_relations", {
+                "relations": [{
+                    "from": hub_name,
+                    "to": session_name,
+                    "relationType": "IS_ABOUT"
+                }]
+            })
+            
+        # 3. Add Activity Observation
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        observation = f"[{ts}] User: {prompt} | AI: {response}"
+        self.mcp_client.call_tool("add_observations", {
+            "observations": [{
+                "entityName": hub_name,
+                "contents": [observation]
+            }]
+        })
+        
+        logger.debug(f"🧠 Semantically indexed conversation turn for {node_id}")
+
+    def _bg_index_telemetry(self, payload):
+        """Index telemetry status into the Node's hub."""
+        node_id = payload.get('node_id')
+        t_type = payload.get('type')
+        data = payload.get('data')
+        
+        if not node_id or not data: return
+        
+        # Throttle: Only index telemetry every 15 minutes per node to avoid bloat
+        now = time.time()
+        cache_key = f"{node_id}_{t_type}"
+        last_time = self._mcp_indexing_cache.get(cache_key, 0)
+        if now - last_time < 900: # 15 minutes
+            return
+            
+        self._mcp_indexing_cache[cache_key] = now
+        
+        # Index to Node Hub
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        summary = ", ".join([f"{k}: {v}" for k, v in data.items() if v is not None])
+        obs = f"[{ts}] Telemetry ({t_type}): {summary}"
+        
+        self.mcp_client.call_tool("create_entities", {
+            "entities": [{
+                "name": node_id,
+                "entityType": "MeshNode",
+                "observations": [f"Mesh node hardware identity: {node_id}"]
+            }]
+        })
+        
+        self.mcp_client.call_tool("add_observations", {
+            "observations": [{
+                "entityName": node_id,
+                "contents": [obs]
+            }]
+        })
+        logger.debug(f"🧠 Semantically indexed telemetry for {node_id}")
+
     # ==================== Message Sending ====================
     
     def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=False):
@@ -1686,6 +1801,14 @@ class AIResponder:
             if 'rxSnr' in packet:
                 metric_values['snr'] = packet['rxSnr']
 
+            # --- 3. Background Semantic Indexing ---
+            # Index current telemetry snapshot into MemPalace Knowledge Graph
+            self._index_to_mcp('telemetry', {
+                'node_id': from_id,
+                'type': 'status_snapshot',
+                'data': metric_values
+            })
+
 
             with self._condition_watchers_lock:
                 triggered = []
@@ -1964,6 +2087,14 @@ class AIResponder:
                 if session_name:
                     self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                     self.session_manager.update_activity(from_node)
+                
+                # 9. Background Semantic Indexing
+                self._index_to_mcp('conversation', {
+                    'node_id': from_node,
+                    'channel': channel,
+                    'prompt': query,
+                    'response': response
+                })
             
             logger.info(f"💬 {provider.name} response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
