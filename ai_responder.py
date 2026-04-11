@@ -391,21 +391,24 @@ class AIResponder:
     
     # ==================== Memory Status ====================
     
-    def get_memory_status(self, user_id):
+    def get_memory_status(self, user_id, channel=0, is_dm=True):
         """
         Get memory and conversation status for a user.
         
         Args:
             user_id: Unique identifier for the user
+            channel: Current radio channel
+            is_dm: Whether in DM context
             
         Returns:
             str: Formatted status message
         """
         # Resolve the active history key to match what AI queries use
-        history_key = self._get_history_key(user_id, channel=0, is_dm=True)
+        history_key = self._get_history_key(user_id, channel, is_dm)
         
         # 1. Disk/Session Stats
-        message_count = len(self.history[history_key])
+        active_buffer = self.history.get(history_key, [])
+        message_count = len(active_buffer)
         history_path = self._get_history_path(history_key)
         
         if os.path.exists(history_path):
@@ -771,8 +774,8 @@ class AIResponder:
             return
         
         # ===== Memory Status =====
-        if cmd == '-m':
-            status = self.get_memory_status(from_node)
+        elif cmd == '-m':
+            status = self.get_memory_status(from_node, channel, is_dm)
             self.send_response(status, from_node, to_node, channel, is_admin_cmd=False)
             return
         
@@ -961,12 +964,15 @@ class AIResponder:
             identifier = parts[1]
             
             if identifier.lower() == 'all':
-                success, message = self.conversation_manager.delete_all_conversations(from_node)
+                self.conversation_manager.delete_all_conversations(from_node)
                 # Semantic Wipe
                 self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
                 self.send_response(f"{message} (Graph pruned)", from_node, to_node, channel)
                 self.session_manager.end_session(from_node)
-                self.history.pop(from_node, None) 
+                
+                # Clear correct active history key
+                key = self._get_history_key(from_node, channel, is_dm)
+                self.clear_history(key)
             else:
                 # Sync delete - find name first
                 name = self._resolve_conversation_name(from_node, identifier)
