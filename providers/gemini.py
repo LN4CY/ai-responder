@@ -150,9 +150,9 @@ class GeminiProvider(BaseProvider):
                 for turn in range(max_turns):
                     response = self._make_request(url, payload)
                     
-                    # Check for transient errors to retry (outer loop)
-                    if response.status_code in [500, 502, 503, 504] and attempt < max_retries:
-                        logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
+                    # Check for transient errors or rate limits to retry (outer loop)
+                    if response.status_code in [429, 500, 502, 503, 504] and attempt < max_retries:
+                        logger.warning(f"⚠️ Gemini service error/rate-limit ({response.status_code}). Retrying...")
                         break # break turn loop, fall back to attempt retry
                     
                     # Process Success
@@ -258,8 +258,14 @@ class GeminiProvider(BaseProvider):
                         
                         continue # Internal retry turn
                     
+                    elif response.status_code == 429:
+                        # Terminal error for this attempt (if out of retries, it breaks here quietly, but we should log)
+                        logger.warning(f"⚠️ Gemini rate limit or quota exceeded (429). Response: {response.text[:200]}")
+                        break
+                        
                     else:
                         # Terminal error for this attempt
+                        logger.error(f"🛑 Gemini request failed with status: {response.status_code}, body: {response.text}")
                         break 
                 
                 
@@ -276,4 +282,4 @@ class GeminiProvider(BaseProvider):
                     logger.error(f"Gemini request final failure: {e}")
                     return f"❌ Unexpected error: {str(e)[:100]}"
         
-        return "❌ Failed to get response after multiple attempts."
+        return "❌ Failed to get response after multiple attempts (Quota/Rate Limit reached?)."
