@@ -1,9 +1,9 @@
-FROM python:3.12-slim
+# nikolaik/python-nodejs bundles Python 3.12 + Node 22 in a slim Debian image.
+# Using this as the base avoids a slow apt-get install of nodejs/npm on every build.
+# Ref: https://hub.docker.com/r/nikolaik/python-nodejs
+FROM nikolaik/python-nodejs:python3.12-nodejs22
 
 WORKDIR /app
-
-# Install Node.js for MemPalace MCP server
-RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 COPY requirements.txt .
