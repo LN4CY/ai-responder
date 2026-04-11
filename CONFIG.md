@@ -53,7 +53,9 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
-The responder uses **Model Context Protocol (MCP)** to dynamically fetch tools from both internal systems and external servers. This eliminates noisy metadata injection and allows the AI to autonomously query only what it needs.
+*   **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+*   **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability.
+*   **Recursive Autonomous Scheduling**: AI can schedule future tasks...
 
 **MCP Routing Implementation:**
 - **Internal Meshtastic MCP Server**: Provides all radio capabilities directly via the unified MCP client.
@@ -97,6 +99,29 @@ volumes:
 |----------|---------|-------------|
 | `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd,!9e044360`). Automatically loaded and deduplicated on startup—any corrupted entries from previous configs are cleaned and saved back to `config.json` automatically. |
 | `ALLOWED_CHANNELS` | `0,3` | Comma-separated list of channel indices the bot listens on. |
+
+## Session & Semantic Memory Management
+
+The AI Responder uses a hybrid memory system combining **Local History (Disk)** for speed and **Semantic Knowledge (Graph/MemPalace)** for deep, long-term recall.
+
+### Core Commands
+
+| Command | Behavior | Context | Example |
+| :--- | :--- | :--- | :--- |
+| `!ai -n [Topic]` | **Pivot**: Starts a named session. Archives current context to the Knowledge Graph and resets the active buffer. | All | `!ai -n Solar Project` |
+| `!ai -n` | **Reset**: Clears the bot’s current train of thought and reverts to the 'Default' context. (Safe: No data is deleted). | All | `!ai -n` |
+| `!ai -n rm all` | **Nuclear Wipe**: Explicitly deletes all history for the current context from both disk and graph. | DM | `!ai -n rm all` |
+| `!ai -end` | **Archive & Close**: Ends the active named session and returns to default mode. | DM | `!ai -end` |
+| `!ai -c ls` | **Merged List**: Lists all 10 local disk slots PLUS archived topics found in the Knowledge Graph. | DM | `!ai -c ls` |
+| `!ai -c [id/name]` | **Load/Re-hydrate**: Resumes a session. If the slot is gone from disk, the AI "re-hydrates" it from the Graph. | DM | `!ai -c 1` or `!ai -c Solar` |
+
+### Multi-Dimensional Hubs (Knowledge Graph)
+When MemPalace is enabled, data is indexed into three distinct "Hubs":
+*   **Identity Hub (`MeshNode`)**: Permanent facts about your node and hardware trends.
+*   **Topic Hub (`Topic`)**: Records tied to specific sessions (e.g., "Solar Project").
+*   **Default Hub (`Default`)**: A "kitchen drawer" for out-of-session talk and loose information.
+
+---
 
 ## Remote Administration (Admin Only)
 

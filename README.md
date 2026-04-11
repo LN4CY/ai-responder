@@ -18,7 +18,10 @@ One agent, many brains. Choose the provider that fits your deployment:
 ### 🔌 Modular Model Context Protocol (MCP)
 The architecture routes capabilities exclusively through standard MCP:
 - **Plug-and-Play Tools**: AI capabilities are dynamically fetched from your configured MCP servers. Connecting a new service (like home automation or search) automatically makes it available to the bot on the mesh.
-- **External Memory (MemPalace)**: Deep topic isolation and long-term conversation storage are handed off natively to specialized external servers, decoupling massive history files from the core app.
+- **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+    - **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability for privacy and resource control.
+    - **Deep Memory Re-hydration**: Ability to load and reconstruct sessions directly from the Knowledge Graph even after they've aged off the local disk.
+    - **Recursive Autonomous Scheduling**: AI can schedule future tasks, recurring reminders, or complex multi-step workflows.
 - **Internal Integration**: The core Meshtastic capabilities (sending messages, requesting telemetry, mapping nodes) are exposed dynamically as standard MCP tool endpoints to the AI processors.
 
 ### 🔗 Industrial-Grade Resiliency
