@@ -183,8 +183,14 @@ class GeminiProvider(BaseProvider):
                             
                             if mcp_client:
                                 try:
-                                    result = mcp_client.call_tool(f_name, f_args)
-                                    logger.info(f"✅ Tool result: {str(result)[:100]}...")
+                                    raw_result = mcp_client.call_tool(f_name, f_args)
+                                    # Normalize MCP CallToolResult/TextContent objects to a plain string
+                                    if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                        result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                                    else:
+                                        result = str(raw_result)
+                                        
+                                    logger.info(f"✅ Tool result: {result[:100]}...")
                                 except Exception as e:
                                     logger.error(f"❌ Error executing tool {f_name}: {e}")
                                     result = f"Error: {str(e)}"

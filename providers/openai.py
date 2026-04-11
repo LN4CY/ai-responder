@@ -118,7 +118,12 @@ class OpenAIProvider(BaseProvider):
                     
                     if mcp_client:
                         try:
-                            result = mcp_client.call_tool(function_name, arguments)
+                            raw_result = mcp_client.call_tool(function_name, arguments)
+                            if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                            else:
+                                result = raw_result
+                                
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             
                             messages.append({
