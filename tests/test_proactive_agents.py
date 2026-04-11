@@ -36,7 +36,7 @@ def responder(tmp_path, mock_config, mock_meshtastic):
 def test_proactive_persistence(responder, tmp_path):
     import config
     # Register 1 task
-    responder._schedule_message_tool(delay_seconds=60, context_note="Test reminder")
+    responder._schedule_mcp_task(delay_seconds=60, context_note="Test reminder", from_node='!user1', to_node='!bot', channel=0)
     
     assert len(responder.scheduled_tasks) == 1
     task_id = responder.scheduled_tasks[0]['id']
@@ -63,7 +63,7 @@ def test_proactive_persistence(responder, tmp_path):
             321: {'start_time': 0, 'from_node': '!user1', 'to_node': '!bot_id', 'channel': 0}
         }
         with patch('threading.get_ident', return_value=321):
-            new_responder._schedule_message_tool(delay_seconds=60, context_note="Test reminder 2")
+            new_responder._schedule_mcp_task(delay_seconds=60, context_note="Test reminder 2", from_node='!user1', to_node='!bot', channel=0)
             assert new_responder.scheduled_tasks[1]['id'] == next_id
 
 def test_proactive_task_limits(responder):
@@ -71,27 +71,30 @@ def test_proactive_task_limits(responder):
     
     with patch('ai_responder.config.MAX_PROACTIVE_TASKS_PER_USER', 2):
         # Add 2 tasks (should succeed)
-        res1 = responder._schedule_message_tool(delay_seconds=60, context_note="T1")
+        res1 = responder._schedule_mcp_task(delay_seconds=60, context_note="T1", from_node='!user1', to_node='!bot', channel=0)
         assert "✅" in res1
         
-        res2 = responder._schedule_message_tool(delay_seconds=60, context_note="T2")
+        res2 = responder._schedule_mcp_task(delay_seconds=60, context_note="T2", from_node='!user1', to_node='!bot', channel=0)
         assert "✅" in res2
         
         assert len(responder.scheduled_tasks) == 2
         
         # Add 3rd task (should fail)
-        res3 = responder._schedule_message_tool(delay_seconds=60, context_note="T3")
+        res3 = responder._schedule_mcp_task(delay_seconds=60, context_note="T3", from_node='!user1', to_node='!bot', channel=0)
         assert "⚠️ Limit reached" in res3
         assert len(responder.scheduled_tasks) == 2
 
 def test_watch_condition_tool(responder):
     """Test adding a condition watcher."""
-    res = responder._watch_condition_tool(
+    res = responder._watch_condition_mcp(
         node_id_or_name="!abcd",
         metric="battery_level",
         operator="<",
         threshold=20,
-        context_note="Low battery"
+        context_note="Low battery",
+        from_node="!user1",
+        to_node="!bot",
+        channel=0
     )
     assert "✅" in res
     assert len(responder.condition_watchers) == 1
@@ -104,9 +107,12 @@ def test_watch_condition_tool(responder):
 
 def test_watch_node_online_tool(responder):
     """Test adding a node online watcher."""
-    res = responder._watch_node_online_tool(
+    res = responder._watch_node_online_mcp(
         node_id_or_name="!1234",
-        context_note="Node returned"
+        context_note="Node returned",
+        from_node="!user1",
+        to_node="!bot",
+        channel=0
     )
     assert "✅" in res
     assert len(responder.node_online_watchers) == 1
@@ -128,7 +134,7 @@ def test_list_proactive_tasks_tool(responder):
         'id': 'node-1', 'node_id': '!efgh', 'context_note': 'Online', 'from_node': '!user1', 'targets': 'requester'
     })
     
-    res = responder._list_proactive_tasks_tool()
+    res = responder._list_proactive_tasks_mcp(from_node='!user1')
     assert "sched-1" in res
     assert "cond-1" in res
     assert "node-1" in res
@@ -141,13 +147,13 @@ def test_cancel_proactive_task_tool(responder):
     responder.node_online_watchers.append({'id': 'node-1', 'from_node': '!user1'})
     
     # Target single cancellation
-    res = responder._cancel_proactive_task_tool('cond-1')
+    res = responder._cancel_proactive_task_mcp('cond-1', from_node='!user1')
     assert "✅" in res
     assert len(responder.condition_watchers) == 0
     assert len(responder.scheduled_tasks) == 1
     
     # Target 'all'
-    res_all = responder._cancel_proactive_task_tool('all')
+    res_all = responder._cancel_proactive_task_mcp('all', from_node='!user1')
     assert "✅" in res_all
     assert len(responder.scheduled_tasks) == 0
     assert len(responder.node_online_watchers) == 0

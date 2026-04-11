@@ -15,6 +15,12 @@ One agent, many brains. Choose the provider that fits your deployment:
 - **Local (Ollama)**: Full privacy and off-grid autonomy using models like Llama 3.2.
 - **Cloud (Gemini, OpenAI, Anthropic)**: High-reasoning capabilities with advanced tool orchestration and grounding.
 
+### 🔌 Modular Model Context Protocol (MCP)
+The architecture routes capabilities exclusively through standard MCP:
+- **Plug-and-Play Tools**: AI capabilities are dynamically fetched from your configured MCP servers. Connecting a new service (like home automation or search) automatically makes it available to the bot on the mesh.
+- **External Memory (MemPalace)**: Deep topic isolation and long-term conversation storage are handed off natively to specialized external servers, decoupling massive history files from the core app.
+- **Internal Integration**: The core Meshtastic capabilities (sending messages, requesting telemetry, mapping nodes) are exposed dynamically as standard MCP tool endpoints to the AI processors.
+
 ### 🔗 Industrial-Grade Resiliency
 Designed for 24/7 autonomous operation in remote environments:
 - **Radio Watchdog**: Automatically detects and recovers from "zombie" connections where the radio hardware is active but the logic link has failed.
@@ -53,8 +59,7 @@ The AI can now spontaneously send messages to users or manage its own future beh
 
 | Feature | Status | Description |
 | :--- | :--- | :--- |
-| **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
-| **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
+| **Modular MCP Architecture** | ✅ Done | Native Model Context Protocol (MCP) integration for dynamic tool discovery. |
 | **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
 | **Proactive Agents** | ✅ Done | Scheduled msgs, condition watchers, and deferred telemetry callbacks. |
 | **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
@@ -89,6 +94,8 @@ Add to your `docker-compose.yml`:
       - ADMIN_NODE_ID=!your_admin_id
     volumes:
       - ai-data:/app/data
+      # Optional: Map your custom tools configuration (e.g. MemPalace)
+      # - ./mcp_servers.json:/app/data/mcp_servers.json
     depends_on:
       - meshmonitor
       - ollama

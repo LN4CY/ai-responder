@@ -30,8 +30,8 @@ class OllamaProvider(BaseProvider):
         supported_patterns = ['3.1', 'nemo', 'vision', 'command-r', 'firefunction']
         return any(p in model for p in supported_patterns)
 
-    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
-        """Get response from Ollama. Note: location is currently unused."""
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
+        """Get response from Ollama."""
         url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
         
         system_prompt = load_system_prompt('ollama', context_id=context_id)
@@ -47,17 +47,13 @@ class OllamaProvider(BaseProvider):
         ollama_tools = None
         if tools and self.supports_tools:
             ollama_tools = []
-            for tool_key, tool_def in tools.items():
+            for mcp_tool in tools:
                 ollama_tools.append({
                     "type": "function",
                     "function": {
-                        "name": tool_def['declaration']['name'],
-                        "description": tool_def['declaration']['description'],
-                        "parameters": {
-                            "type": "object",
-                            "properties": tool_def['declaration']['parameters']['properties'],
-                            "required": tool_def['declaration']['parameters'].get('required', [])
-                        }
+                        "name": mcp_tool['name'],
+                        "description": mcp_tool.get('description', ''),
+                        "parameters": mcp_tool.get('inputSchema', {"type": "object", "properties": {}})
                     }
                 })
 
@@ -112,22 +108,11 @@ class OllamaProvider(BaseProvider):
                     function_name = tool_call['function']['name']
                     arguments = tool_call['function']['arguments']
                     
-                    if function_name in tools:
-                        handler = tools[function_name]['handler']
+                    if mcp_client:
                         try:
-                            result = handler(**arguments)
+                            result = mcp_client.call_tool(function_name, arguments)
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             
-                            if function_name in action_tools:
-                                action_tools_executed += 1
-                                if result == "__SILENT_ACK__":
-                                    silent_ack_tools += 1
-                                    
-                            # Silent-ACK: proactive callback already sent the response
-                            if result == "__SILENT_ACK__":
-                                result = ("[Telemetry was sent to the user automatically. "
-                                          "Do NOT summarize or repeat the telemetry. "
-                                          "Proceed with any remaining tasks such as registering a watcher.")
                             messages.append({
                                 "role": "tool",
                                 "content": json.dumps(result)
@@ -139,10 +124,10 @@ class OllamaProvider(BaseProvider):
                                 "content": json.dumps({"error": str(e)})
                             })
                     else:
-                        logger.warning(f"⚠️ Tool {function_name} not found.")
+                        logger.warning(f"⚠️ MCP Client missing. Tool {function_name} cannot be executed.")
                         messages.append({
                             "role": "tool",
-                            "content": "Tool not found"
+                            "content": "MCP Client unavailable"
                         })
             
             return "⚠️ Ollama tool loop exceeded max turns."

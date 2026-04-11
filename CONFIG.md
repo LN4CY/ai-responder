@@ -28,6 +28,7 @@ The application is configured primarily via environment variables passed to the 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFIG_FILE` | `/app/data/config.json` | Path to the persistent configuration file. |
+| `MCP_SERVERS_FILE` | `/app/data/mcp_servers.json` | Path to the active Model Context Protocol definitions. |
 | `AI_PROVIDER` | `ollama` | The default AI provider to use. Options: `ollama`, `gemini`, `openai`, `anthropic`. |
 | `OLLAMA_HOST` | `ollama` | Hostname of the Ollama service (if using Local AI). |
 | `OLLAMA_PORT` | `11434` | Port of the Ollama service. |
@@ -52,16 +53,13 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
-### Situational Awareness (AI Tool Use)
+The responder uses **Model Context Protocol (MCP)** to dynamically fetch tools from both internal systems and external servers. This eliminates noisy metadata injection and allows the AI to autonomously query only what it needs.
 
-The responder uses **AI Function Calling** (Adaptive Tools) to proactively query the network. This eliminates noisy metadata injection and allows the AI to only fetch what it needs.
+**MCP Routing Implementation:**
+- **Internal Meshtastic MCP Server**: Provides all radio capabilities directly via the unified MCP client.
+- **External Plugins (e.g. MemPalace)**: If configured in `mcp_servers.json`, tools like `store_memory` or `search_memory` are passed dynamically to the AI.
 
-**Provider Implementation:**
-- **Gemini**: Native function calling with multi-turn orchestration and **Dynamic Grounding Switch** (simulated mixed mode).
-- **OpenAI / Anthropic**: Multi-turn tool loops using structured API requests.
-- **Ollama**: Conditional tool support (Llama 3.1+, Nemo) with text fallback.
-
-**Available AI Tools:**
+**Internal MCP Capabilities:**
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
@@ -154,6 +152,22 @@ The application also persists runtime configuration changes (like allowed channe
 }
 ```
 
+### External MCP Servers (Plugins)
+
+You can connect third-party MCP plugins (like MemPalace for long-term memory) by defining them in `mcp_servers.json`.
+
+- **Path**: `/app/data/mcp_servers.json`
+
+**Example `mcp_servers.json`:**
+```json
+{
+  "mempalace": {
+    "command": "npx",
+    "args": ["-y", "@mempalace/mcp-server"]
+  }
+}
+```
+
 > [!NOTE]
 > - Values in `config.json` take precedence over environment variables if the file already exists.
 > - `admin_nodes` must be an array of individual hex IDs. The application auto-repairs any comma-concatenated strings (e.g., from `ADMIN_NODE_ID=!a,!b`) into a clean array on startup.
@@ -175,6 +189,8 @@ The application also persists runtime configuration changes (like allowed channe
       - ADMIN_NODE_ID=!myadminid
     volumes:
       - ai-responder-data:/app/data
+      # Optional: Map your custom MCP tools configuration (e.g. MemPalace)
+      # - ./mcp_servers.json:/app/data/mcp_servers.json
     depends_on:
       - meshmonitor
       - ollama

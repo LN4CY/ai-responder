@@ -108,7 +108,7 @@ class TestAIResponder(unittest.TestCase):
                 self.responder.meshtastic.telemetry_timestamps = MagicMock()
                 self.responder.meshtastic.telemetry_timestamps.get.return_value.get.side_effect = [0, 200]
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("Success! New telemetry received", result)
                 self.assertIn("Temp: 25C", result)
@@ -135,7 +135,7 @@ class TestAIResponder(unittest.TestCase):
                     'channel': 0
                 }
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("The mesh is slow", result)
                 # Cleanup the mock worker

@@ -42,7 +42,7 @@ class GeminiProvider(BaseProvider):
         """Gemini Flash/Pro models support function calling."""
         return True
 
-    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
         """Get response from Gemini with grounding tools, custom tools, and optional fallback."""
         api_key = self.config.get('gemini_api_key', config.GEMINI_API_KEY)
         if not api_key:
@@ -86,13 +86,14 @@ class GeminiProvider(BaseProvider):
         else:
              logger.info("🔧 Custom tools active - disabling incompatible Google Search grounding.")
             
-        # Add custom Meshtastic tools if provided
-        custom_tool_map = {}
         if tools:
             function_declarations = []
-            for t_name, t_info in tools.items():
-                function_declarations.append(t_info['declaration'])
-                custom_tool_map[t_name] = t_info['handler']
+            for mcp_tool in tools:
+                function_declarations.append({
+                    "name": mcp_tool['name'],
+                    "description": mcp_tool.get('description', ''),
+                    "parameters": mcp_tool.get('inputSchema', {"type": "OBJECT", "properties": {}})
+                })
             
             # Dynamic Grounding: Inject a "stub" search tool to let the AI request search.
             if has_custom_tools and self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
@@ -176,29 +177,16 @@ class GeminiProvider(BaseProvider):
 
                             logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
                             
-                            if f_name in custom_tool_map:
+                            if mcp_client:
                                 try:
-                                    result = custom_tool_map[f_name](**f_args)
+                                    result = mcp_client.call_tool(f_name, f_args)
                                     logger.info(f"✅ Tool result: {str(result)[:100]}...")
-                                    
-                                    if f_name in action_tools:
-                                        action_tools_executed += 1
-                                        if result == "__SILENT_ACK__":
-                                            silent_ack_tools += 1
-                                    
-                                    # Silent-ACK: proactive callback already sent the response; tell the
-                                    # AI not to summarize but still continue the tool loop (it may have
-                                    # more tool calls to execute, e.g. watch_condition after telemetry).
-                                    if result == "__SILENT_ACK__":
-                                        result = ("[Telemetry was sent to the user automatically. "
-                                                  "Do NOT summarize or repeat the telemetry. "
-                                                  "Proceed with any remaining tasks such as registering a watcher.")
                                 except Exception as e:
                                     logger.error(f"❌ Error executing tool {f_name}: {e}")
                                     result = f"Error: {str(e)}"
                             else:
-                                logger.warning(f"⚠️ AI requested unknown tool: {f_name}")
-                                result = "Error: Tool not found"
+                                logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
+                                result = "Error: MCP Client unavailable."
                             
                             # Add function call and response to contents
                             payload["contents"].append({

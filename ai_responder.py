@@ -40,6 +40,8 @@ from providers import get_provider
 from conversation.manager import ConversationManager
 from conversation.session import SessionManager
 from meshtastic_handler import MeshtasticHandler
+from mcp_client import UnifiedMCPClient
+from mcp_server_meshtastic import init_meshtastic_mcp
 
 # Logging setup
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -81,6 +83,10 @@ class AIResponder:
         )
         self.conversation_manager = ConversationManager()
         self.session_manager = SessionManager(self.conversation_manager)
+        
+        # Initialize MCP Architecture
+        init_meshtastic_mcp(self)
+        self.mcp_client = UnifiedMCPClient(self.config)
         
         # Track nodes that need a metadata refresh in their next message
         self._refresh_metadata_nodes = set()
@@ -467,7 +473,6 @@ class AIResponder:
             history_key: Key for history context
             is_session: Whether this is an active continuous session
             location: Optional location dict {'latitude': float, 'longitude': float}
-            tools: Optional dict of tools for function calling
             
         Returns:
             str: AI response or error message
@@ -477,6 +482,11 @@ class AIResponder:
         try:
             # Get provider instance
             provider = get_provider(provider_name, self.config)
+            
+            # Fetch dynamic tools from MCP client
+            tools = None
+            if provider.supports_tools:
+                tools = self.mcp_client.get_all_tools()
             
             # Get history for context
             history = None
@@ -488,7 +498,10 @@ class AIResponder:
                 history = self.history[history_key][-limit:]
             
             # Get response
-            response = provider.get_response(prompt, history, context_id=history_key, location=location, tools=tools)
+            response = provider.get_response(
+                prompt, history, context_id=history_key, location=location, 
+                tools=tools, mcp_client=self.mcp_client
+            )
             return response
             
         except ValueError as e:
@@ -1086,273 +1099,7 @@ class AIResponder:
             if thread_id in self._active_workers:
                 self._active_workers[thread_id]['start_time'] = time.time()
 
-    def get_tools(self):
-        """
-        Define tools available to the AI.
-        
-        Returns:
-            dict: Tool definitions and handlers
-        """
-        return {
-            "get_my_info": {
-                "declaration": {
-                    "name": "get_my_info",
-                    "description": "Get information about the bot itself, including name, battery, and SNR.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": lambda: self.meshtastic.get_node_metadata(
-                    self.meshtastic.get_node_info().get('user', {}).get('id')
-                )
-            },
-            "get_mesh_nodes": {
-                "declaration": {
-                    "name": "get_mesh_nodes",
-                    "description": "Get a summary of all nodes currently seen on the network, including their calculated distance from the bot (if coordinates are available).",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": lambda: self.meshtastic.get_node_list_summary()
-            },
-            "get_node_details": {
-                "declaration": {
-                    "name": "get_node_details",
-                    "description": "Get detailed metadata, battery, and environment data for a specific node.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
-                            }
-                        },
-                        "required": ["node_id_or_name"]
-                    }
-                },
-                "handler": self._get_node_details_tool
-            },
-            "request_node_telemetry": {
-                "declaration": {
-                    "name": "request_node_telemetry",
-                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 60 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
-                            },
-                            "telemetry_type": {
-                                "type": "STRING",
-                                "description": "Type of telemetry to request: 'device', 'environment', 'local_stats', 'air_quality', 'power', 'health', or 'host'.",
-                                "enum": ["device", "environment", "local_stats", "air_quality", "power", "health", "host"]
-                            }
-                        },
-                        "required": ["node_id_or_name", "telemetry_type"]
-                    }
-                },
-                "handler": self._request_node_telemetry_tool
-            },
-            "schedule_message": {
-                "declaration": {
-                    "name": "schedule_message",
-                    "description": (
-                        "Schedule a proactive task for the future. "
-                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "When this fires, your future self will wake up, see the history, and MUST use tools for any dynamic data requested. "
-                        "RECURSIVE RULE: If this is a recurring or chained task, you MUST include an instruction in the 'context_note' for your future self to schedule the NEXT iteration. "
-                        "This 'Self-Rescheduling' instruction ensures the autonomous loop continues. "
-                        "Instructions like 'Check SNR and report it, then schedule another check in 10m' go in the 'context_note'—DO NOT say you cannot do this."
-                    ),
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "delay_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. Seconds from now before the first message is sent. Provide either this or absolute_time."
-                            },
-                            "absolute_time": {
-                                "type": "STRING",
-                                "description": "Optional. Absolute time/date string (e.g. '10:00' or '2026-06-01 10:00'). Use this if the user specifies a clock time."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "The instruction for your future self (e.g., 'Fetch SNR and report it with count')."
-                            },
-                            "recur_interval_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. If set, the message repeats every this many seconds."
-                            },
-                            "max_duration_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. If recurring, stop sending after this many seconds from now."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            }
-                        },
-                        "required": ["context_note"]
-                    }
-                },
-                "handler": self._schedule_message_tool
-            },
-            "watch_condition": {
-                "declaration": {
-                    "name": "watch_condition",
-                    "description": (
-                        "Monitor node telemetry and alert the user when a condition is met. "
-                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "When the condition fires, your future self MUST use tools for any follow-up data or checks."
-                    ),
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
-                            },
-                            "metric": {
-                                "type": "STRING",
-                                "description": "The telemetry metric to check. Supported values: battery_level, voltage, temperature, humidity, barometric_pressure, iaq, snr.",
-                                "enum": ["battery_level", "voltage", "temperature", "humidity", "barometric_pressure", "iaq", "snr"]
-                            },
-                            "operator": {
-                                "type": "STRING",
-                                "description": "Comparison operator.",
-                                "enum": ["<", ">", "<=", ">=", "=="]
-                            },
-                            "threshold": {
-                                "type": "NUMBER",
-                                "description": "Numeric threshold value to compare against."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "Short description of the alert, e.g. 'L4B1 battery low'."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            },
-                            "is_persistent": {
-                                "type": "BOOLEAN",
-                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
-                            }
-                        },
-                        "required": ["node_id_or_name", "metric", "operator", "threshold", "context_note"]
-                    }
-                },
-                "handler": self._watch_condition_tool
-            },
-            "watch_node_online": {
-                "declaration": {
-                    "name": "watch_node_online",
-                    "description": "Register a watcher that fires when a specific mesh node sends any packet (i.e. comes online or is heard for the first time). Use when the user asks to be alerted when a node appears on the mesh.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "Short description, e.g. 'L4B1 came online'."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            },
-                            "is_persistent": {
-                                "type": "BOOLEAN",
-                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
-                            }
-                        },
-                        "required": ["node_id_or_name", "context_note"]
-                    }
-                },
-                "handler": self._watch_node_online_tool
-            },
-            "list_proactive_tasks": {
-                "declaration": {
-                    "name": "list_proactive_tasks",
-                    "description": "List all active proactive tasks (scheduled reminders, condition watchers, node-online watchers) registered by the current user. Returns task IDs that can be used to cancel tasks.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": self._list_proactive_tasks_tool
-            },
-            "cancel_proactive_task": {
-                "declaration": {
-                    "name": "cancel_proactive_task",
-                    "description": "Cancel a specific proactive task by its task ID (e.g. 'sched-1', 'cond-2'). Use task_id='all' to remove all tasks registered by the current user.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "task_id": {
-                                "type": "STRING",
-                                "description": "The task ID to cancel (from list_proactive_tasks), or 'all' to cancel everything."
-                            }
-                        },
-                        "required": ["task_id"]
-                    }
-                },
-                "handler": self._cancel_proactive_task_tool
-            },
-            "get_location_address": {
-                "declaration": {
-                    "name": "get_location_address",
-                    "description": "Convert latitude and longitude coordinates into a real-world street address, city, and state.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "lat": {
-                                "type": "NUMBER",
-                                "description": "The latitude coordinate."
-                            },
-                            "lon": {
-                                "type": "NUMBER",
-                                "description": "The longitude coordinate."
-                            }
-                        },
-                        "required": ["lat", "lon"]
-                    }
-                },
-                "handler": self._get_location_address_tool
-            },
-            "send_message": {
-                "declaration": {
-                    "name": "send_message",
-                    "description": "Send a one-off message to a specific node or channel. Useful when the user asks to 'Tell X that...' or 'Inform the group that...'.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "target": {
-                                "type": "STRING",
-                                "description": "The recipient: node name, Hex ID (!1234abcd), or channel index (e.g. 'ch:0')."
-                            },
-                            "message": {
-                                "type": "STRING",
-                                "description": "The content of the message to send."
-                            },
-                        },
-                        "required": ["target", "message"]
-                    }
-                },
-                "handler": self._send_message_tool
-            }
-        }
-
-    def _get_location_address_tool(self, lat, lon):
+    def _get_location_address_mcp(self, lat, lon):
         """Tool to reverse geocode lat/lon to a physical address using OpenStreetMap"""
         logger.info(f"📍 Reverse geocoding requested for {lat}, {lon}")
         url = "https://nominatim.openstreetmap.org/reverse"
@@ -1400,7 +1147,7 @@ class AIResponder:
             return f"Error: No information available for {node_id}."
         return metadata
 
-    def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
+    def _request_node_telemetry_mcp(self, node_id_or_name, telemetry_type, from_node=None, to_node=None, channel=0):
         """Internal handler for request_node_telemetry tool with short polling."""
         self._touch_worker()
         node_id = node_id_or_name
@@ -1425,20 +1172,14 @@ class AIResponder:
         }
         metric_key = type_map.get(telemetry_type, 'environment_metrics')
 
-        # 2. Register deferred callback eagerly (prevents race condition)
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-            
-        if thread_data:
-            self.pending_telemetry_requests[node_id] = {
-                'from_node': thread_data.get('from_node'),
-                'to_node': thread_data.get('to_node'),
-                'channel': thread_data.get('channel'),
-                'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
-                'registered_at': time.time()
-            }
-            logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
+        self.pending_telemetry_requests[node_id] = {
+            'from_node': from_node,
+            'to_node': to_node,
+            'channel': channel,
+            'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
+            'registered_at': time.time()
+        }
+        logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
 
         # 3. Send Request
         request_time = time.time()
@@ -1495,17 +1236,10 @@ class AIResponder:
 
     # ==================== Proactive Agent Tools & Handlers ====================
 
-    def _schedule_message_tool(self, delay_seconds=None, context_note=None, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None):
+    def _schedule_mcp_task(self, delay_seconds=None, context_note=None, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None, from_node=None, to_node=None, channel=0):
         """Tool handler: schedule a one-shot or recurring proactive message."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1547,16 +1281,16 @@ class AIResponder:
             'end_time': now + (max_duration_seconds or delay_seconds),
             'interval': recur_interval_seconds,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
         }
         with self._scheduled_tasks_lock:
             # Enforce 50 tasks per user limit
-            user_tasks = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            user_tasks = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(user_tasks) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1572,7 +1306,7 @@ class AIResponder:
             time_desc = f"at {absolute_time}" if absolute_time else f"in {int(delay_seconds)}s"
             return f"✅ [{task_id}] Reminder scheduled {time_desc} about: {context_note}"
 
-    def _send_message_tool(self, target, message):
+    def _send_message_mcp(self, target, message):
         """Tool handler: send a one-off message to a specific node or channel."""
         logger.info(f"📤 Tool request: send_message to {target}: {message}")
         
@@ -1606,17 +1340,10 @@ class AIResponder:
         
         return f"✅ Message queued for {target}."
 
-    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None, is_persistent=False):
+    def _watch_condition_mcp(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None, is_persistent=False, from_node=None, to_node=None, channel=0):
         """Tool handler: add a telemetry condition watcher."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1638,17 +1365,17 @@ class AIResponder:
             'operator': operator,
             'threshold': threshold,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
             'is_persistent': is_persistent,
         }
         with self._condition_watchers_lock:
             # Enforce limit
-            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1660,17 +1387,10 @@ class AIResponder:
         logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
 
-    def _watch_node_online_tool(self, node_id_or_name, context_note, notify_targets=None, is_persistent=False):
+    def _watch_node_online_mcp(self, node_id_or_name, context_note, notify_targets=None, is_persistent=False, from_node=None, to_node=None, channel=0):
         """Tool handler: add a node-online watcher."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1689,17 +1409,17 @@ class AIResponder:
             'id': task_id,
             'node_id': node_id,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
             'is_persistent': is_persistent,
         }
         with self._node_online_watchers_lock:
             # Enforce limit
-            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1711,12 +1431,9 @@ class AIResponder:
         logger.info(f"👀 Node-online watcher [{task_id}] registered for {node_id}")
         return f"✅ [{task_id}] Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh"
 
-    def _list_proactive_tasks_tool(self):
+    def _list_proactive_tasks_mcp(self, from_node=None):
         """Tool handler: list all active proactive tasks for the current user."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-        caller = thread_data.get('from_node')
+        caller = from_node
         lines = []
         now = time.time()
 
@@ -1744,12 +1461,9 @@ class AIResponder:
             return "📋 You have no active proactive tasks."
         return "📋 Your active tasks:\n" + "\n".join(lines)
 
-    def _cancel_proactive_task_tool(self, task_id):
+    def _cancel_proactive_task_mcp(self, task_id, from_node=None):
         """Tool handler: cancel a proactive task by ID, or 'all' to cancel everything."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-        caller = thread_data.get('from_node')
+        caller = from_node
         cancelled = []
         cancel_all = (task_id.strip().lower() == 'all')
 
@@ -2097,6 +1811,14 @@ class AIResponder:
                 'is_system_trigger': is_system_trigger
             }
             
+        # Inject context for MCP tools running in this thread
+        threading.current_thread().ai_context = {
+            'from_node': from_node,
+            'to_node': to_node,
+            'channel': channel,
+            'is_system_trigger': is_system_trigger
+        }
+            
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
             time.sleep(2)
@@ -2165,7 +1887,7 @@ class AIResponder:
                 if provider.supports_tools:
                     if not disable_tools:
                         logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
-                        tools = self.get_tools()
+                        tools = self.mcp_client.get_all_tools()
                     else:
                         logger.info(f"🤖 Provider '{provider.name}' supports tools, but they are disabled for this turn.")
                     
