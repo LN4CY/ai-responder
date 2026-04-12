@@ -10,11 +10,31 @@ from ai_responder import AIResponder
 
 class TestProactiveIndexing(unittest.TestCase):
     def setUp(self):
+        # Setup temporary directories for tests
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.mock_history_dir = os.path.join(self.test_dir, 'proactive_history')
+        self.mock_conv_dir = os.path.join(self.test_dir, 'proactive_conversations')
+        self.mock_config_file = os.path.join(self.test_dir, 'proactive_config.json')
+
+        for d in [self.mock_history_dir, self.mock_conv_dir]:
+            if not os.path.exists(d):
+                os.makedirs(d)
+
+        # Patch config paths to avoid /app permission errors
+        self.patchers = [
+            patch('config.HISTORY_DIR', self.mock_history_dir),
+            patch('config.CONVERSATIONS_DIR', self.mock_conv_dir),
+            patch('config.CONFIG_FILE', self.mock_config_file)
+        ]
+        for p in self.patchers:
+            p.start()
+            self.addCleanup(p.stop)
+
         # Mock dependencies to avoid real network/disk access
         with patch('ai_responder.AIResponder._load_proactive_tasks'), \
              patch('config.Config.load', return_value={'current_provider': 'ollama', 'meshtastic_awareness': True}), \
              patch('providers.get_provider'):
-            self.responder = AIResponder(history_dir='/tmp/history')
+            self.responder = AIResponder(history_dir=self.mock_history_dir)
             
         self.responder.mcp_client = MagicMock()
         self.responder.mcp_client.has_server.return_value = True
