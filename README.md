@@ -85,23 +85,17 @@ The AI can now spontaneously send messages to users or manage its own future beh
 Add to your `docker-compose.yml`:
 
 ```yaml
-  ai-responder:
-    image: ghcr.io/ln4cy/ai-responder:latest
-    environment:
-      - MESHTASTIC_HOST=meshmonitor
-      - MESHTASTIC_PORT=4404
-      - AI_PROVIDER=gemini
-      - GEMINI_API_KEY=your_key_here
-      - GEMINI_SEARCH_GROUNDING=true # Optional
-      - GEMINI_MAPS_GROUNDING=true   # Optional
-      - ADMIN_NODE_ID=!your_admin_id
-    volumes:
-      - ai-data:/app/data
-      # Optional: Map your custom tools configuration (e.g. MemPalace)
-      # - ./mcp_servers.json:/app/data/mcp_servers.json
-    depends_on:
-      - meshmonitor
-      - ollama
+   ai-responder:
+     image: ghcr.io/ln4cy/ai-responder:latest
+     environment:
+       - MESHTASTIC_HOST=meshmonitor
+       - MESHTASTIC_PORT=4404
+       - AI_PROVIDER=gemini
+       - GEMINI_API_KEY=your_key_here
+       - MEMPALACE_URL=http://mempalace-viz:8000/sse  # Link to modular memory
+       - ADMIN_NODE_ID=!your_admin_id
+     depends_on:
+       - mempalace-viz
 ```
 
 ### Ollama Setup (Local AI)

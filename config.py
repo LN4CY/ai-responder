@@ -51,6 +51,7 @@ HISTORY_MAX_BYTES = int(os.getenv('HISTORY_MAX_BYTES', '2097152'))  # 2MB
 
 # MCP Configuration
 MCP_SERVERS_FILE = os.getenv('MCP_SERVERS_FILE', '/app/data/mcp_servers.json')
+MEMPALACE_URL = os.getenv('MEMPALACE_URL', '')
 
 # Conversation Configuration
 CONVERSATIONS_DIR = os.getenv('CONVERSATIONS_DIR', '/app/data/conversations')

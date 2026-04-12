@@ -559,6 +559,12 @@ class AIResponder:
 
     def _index_task_wrapper(self, data_type, payload):
         """Internal wrapper for the background executor to handle Knowledge Graph logic."""
+        # 1. Graceful Fallback check
+        if not self.mcp_client.has_server('mempalace'):
+            # Silently skip if the service is down; this is expected in some environments
+            # or during service restarts.
+            return
+
         try:
             if data_type == 'conversation':
                 self._bg_index_conversation(payload)
@@ -567,7 +573,7 @@ class AIResponder:
             elif data_type == 'delete_history':
                 self._bg_delete_semantic_history(payload)
         except Exception as e:
-            logger.debug(f"Background indexing error ({data_type}): {e}")
+            logger.warning(f"⚠️ Background indexing failed ({data_type}). MemPalace service may be unreachable: {e}")
 
     def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False):
         """Standardized naming logic for Semantic Hubs."""

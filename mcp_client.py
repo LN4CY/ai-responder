@@ -8,6 +8,7 @@ from typing import Dict, Any, List
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 from mcp.types import Tool
 
 # Local tools
@@ -17,59 +18,100 @@ logger = logging.getLogger(__name__)
 
 class UnifiedMCPClient:
     """
-    Manages connections to multiple MCP servers (both internal and external via stdio).
-    Provides synchronous wrappers for async MCP operations so the standard AI threaded
-    generation loops can easily use them.
+    Manages connections to multiple MCP servers (both internal and external via sse/stdio).
+    Provides synchronous wrappers for async MCP operations that lazily initialize.
     """
+
     def __init__(self, config):
         self.config = config
         self.servers = {} # {name: {'session': ClientSession, 'tools': list[Tool]}}
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="MCP_Client_Loop")
-        self._thread.start()
-        
-        # Load configured servers
-        self._initialize_servers()
-        
+        self._loop = None
+        self._thread = None
+        self._lock = threading.Lock()
+        self._ready_event = threading.Event()
+        self._started = False
+
+    def _ensure_started(self):
+        """Lazily starts the background event loop thread if not already running."""
+        if self._started and self._ready_event.is_set():
+            return
+            
+        with self._lock:
+            if self._started:
+                # Still wait if it is starting but not ready
+                self._ready_event.wait(timeout=10.0)
+                return
+            
+            print("[MCP] Handshaking background thread...", flush=True)
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._run_loop, daemon=True, name="MCP_Client_Loop")
+            self._thread.start()
+            self._started = True
+            
+            # Critical: Wait for the loop to be running before returning
+            # This prevents run_coroutine_threadsafe from hanging
+            if not self._ready_event.wait(timeout=10.0):
+                logger.error("MCP background thread failed to signal ready in time.")
+
     def _run_loop(self):
         """Run the dedicated asyncio event loop for MCP clients."""
         asyncio.set_event_loop(self._loop)
+        
+        # Schedule initialization immediately on the loop's first tick
+        self._loop.call_soon_threadsafe(self._initialize_servers)
+        
+        # Signal that the loop is officially running
+        self._ready_event.set()
+        
+        print("[MCP] Event loop healthy and ready.", flush=True)
         self._loop.run_forever()
 
     def _initialize_servers(self):
-        """Load and connect to defined MCP servers asynchronously."""
-        # 1. First, register the internal Meshtastic MCP Server tools
-        # FastMCP tools can be accessed via `internal_meshtastic_mcp._tool_manager.list_tools()` or similar
-        # But for simplicity, we mock them into our dictionary. Since it's internal we can just bridge it.
-        asyncio.run_coroutine_threadsafe(self._init_internal_server(), self._loop)
+        """Internal wrapper to schedule initialization on the loop."""
+        # Parallel tasks for isolation
+        asyncio.create_task(self._init_internal_server())
         
-        # 2. Connect to configured external servers (like MemPalace)
+        from config import MEMPALACE_URL
+        if MEMPALACE_URL:
+            asyncio.create_task(self._connect_sse_server('mempalace', MEMPALACE_URL))
+        
         mcp_servers_file = self.config.get('mcp_servers_file', '/app/data/mcp_servers.json')
         if os.path.exists(mcp_servers_file):
-            try:
-                with open(mcp_servers_file, 'r') as f:
-                    servers = json.load(f)
-                    for name, mcp_config in servers.get('mcpServers', {}).items():
-                        cmd = mcp_config.get('command')
-                        args = mcp_config.get('args', [])
-                        env = mcp_config.get('env', None)
-                        if cmd:
-                            # Schedule connection in the background event loop
-                            asyncio.run_coroutine_threadsafe(self._connect_stdio_server(name, cmd, args, env), self._loop)
-            except Exception as e:
-                logger.error(f"Failed to load MCP servers from {mcp_servers_file}: {e}")
+            asyncio.create_task(self._load_json_servers(mcp_servers_file))
+
+    async def _load_json_servers(self, file_path: str):
+        """Load external servers from JSON and launch their tasks."""
+        try:
+            with open(file_path, 'r') as f:
+                servers_config = json.load(f)
+                from config import MEMPALACE_URL
+                for name, cfg in servers_config.items():
+                    if name == 'mempalace' and MEMPALACE_URL: continue
+                    url = cfg.get('url')
+                    cmd = cfg.get('command')
+                    if url:
+                        asyncio.create_task(self._connect_sse_server(name, url))
+                    elif cmd:
+                        args = cfg.get('args', [])
+                        env = cfg.get('env')
+                        asyncio.create_task(self._connect_stdio_server(name, cmd, args, env))
+        except Exception as e:
+            logger.error(f"Failed to load JSON servers: {e}")
 
     async def _init_internal_server(self):
         """Initialize the in-process tools."""
+        print(f"[MCP] Initializing internal meshtastic tools...", flush=True)
         try:
             tools = await internal_meshtastic_mcp.list_tools()
             self.servers['meshtastic'] = {
                 'type': 'internal',
                 'tools': tools,
-                'session': None # internal uses direct execution
+                'session': None
             }
+            print(f"[MCP] Internal tools loaded: {len(tools)} items.", flush=True)
             logger.info("Internal Meshtastic MCP tools loaded.")
         except Exception as e:
+            print(f"[MCP] Internal tools FAILED: {e}", flush=True)
             logger.error(f"Failed to load internal Meshtastic tools: {e}")
 
     async def _connect_stdio_server(self, name: str, command: str, args: List[str], env: Dict[str, str] = None):
@@ -116,6 +158,53 @@ class UnifiedMCPClient:
             # Wait before attempting to reconnect
             await asyncio.sleep(10)
             
+    async def _connect_sse_server(self, name: str, url: str):
+        """Connect to an external MCP server via SSE with exponential backoff."""
+        import sys
+        base_delay = 5
+        max_delay = 300
+        attempt = 0
+        
+        while True:
+            try:
+                print(f"[MCP] Connecting to SSE {name} at {url}...", flush=True)
+                async with sse_client(url) as (read_ctx, write_ctx):
+                    print(f"[MCP] SSE transport established for {name}.", flush=True)
+                    async with ClientSession(read_ctx, write_ctx) as session:
+                        print(f"[MCP] Initializing session {name}...", flush=True)
+                        await asyncio.wait_for(session.initialize(), timeout=15.0)
+                        
+                        print(f"[MCP] Fetching tools for {name}...", flush=True)
+                        tools_result = await asyncio.wait_for(session.list_tools(), timeout=15.0)
+                        tools = tools_result.tools
+                        
+                        self.servers[name] = {
+                            'type': 'sse',
+                            'session': session,
+                            'tools': tools,
+                            'url': url
+                        }
+                        print(f"[MCP] {name} CONNECTED with {len(tools)} tools.", flush=True)
+                        attempt = 0
+                        
+                        # Keep alive as long as the context manager is open
+                        while True:
+                            await asyncio.sleep(60)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except BaseException as e:
+                # Catching BaseException to handle TaskGroup ExceptionGroups
+                attempt += 1
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                msg = f"Remote MCP {name} error: {e}"
+                print(f"[MCP] {msg}. Retrying in {delay}s...", flush=True)
+                logger.error(msg)
+                
+                if name in self.servers:
+                    self.servers.pop(name, None)
+                
+                await asyncio.sleep(delay)
+            
     # --- Sync Wrappers for Provider Usage ---
     
     def has_server(self, name: str) -> bool:
@@ -128,8 +217,9 @@ class UnifiedMCPClient:
         Synchronously return a unified list of all tools in a standard generic dict format
         ready to be parsed by Gemini/OpenAI/Ollama.
         """
+        self._ensure_started()
         future = asyncio.run_coroutine_threadsafe(self._async_get_all_tools(), self._loop)
-        return future.result(timeout=10)
+        return future.result(timeout=20)
         
     async def _async_get_all_tools(self) -> List[Dict]:
         all_tools = []
@@ -147,9 +237,8 @@ class UnifiedMCPClient:
         return all_tools
         
     def call_tool(self, tool_name: str, arguments: dict) -> Any:
-        """
-        Synchronously route and execute a tool call string.
-        """
+        """Synchronously route and execute a tool call string."""
+        self._ensure_started()
         future = asyncio.run_coroutine_threadsafe(self._async_call_tool(tool_name, arguments), self._loop)
         return future.result(timeout=60) # Some tools might take time
         
@@ -174,7 +263,7 @@ class UnifiedMCPClient:
                 # Execute native sync/async fastmcp tool
                 result = await internal_meshtastic_mcp.call_tool(tool_name, arguments)
                 return result
-            elif target_server['type'] == 'stdio':
+            elif target_server['type'] in ('stdio', 'sse'):
                 # Execute via MCP session
                 result = await target_server['session'].call_tool(tool_name, arguments)
                 # Parse CallToolResult

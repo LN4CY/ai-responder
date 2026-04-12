@@ -177,21 +177,30 @@ The application also persists runtime configuration changes (like allowed channe
 }
 ```
 
-### External MCP Servers (Plugins)
+### External MCP Servers (Standardized Tools)
 
-You can connect third-party MCP plugins (like MemPalace for long-term memory) by defining them in `mcp_servers.json`.
+The responder can connect to remote services using the Model Context Protocol (MCP).
 
-- **Path**: `/app/data/mcp_servers.json`
+#### Networked Memory (MemPalace)
+The preferred way to connect to MemPalace is via the environment variable:
+- `MEMPALACE_URL`: Set this to the SSE endpoint of your `mempalace-viz` container.
+  - Example: `http://mempalace-viz:8000/sse`
 
-**Example `mcp_servers.json`:**
+#### Advanced / Legacy Config
+You can also define multiple remote or local servers in `/app/data/mcp_servers.json`:
+
 ```json
 {
-  "mempalace": {
-    "command": "npx",
-    "args": ["-y", "@mempalace/mcp-server"]
+  "remote_tool": {
+    "url": "http://some-other-service:8080/sse"
+  },
+  "local_plugin": {
+    "command": "python",
+    "args": ["-m", "some_module"]
   }
 }
 ```
+*Note: If `MEMPALACE_URL` is set, it will override any 'mempalace' entry in the JSON file.*
 
 > [!NOTE]
 > - Values in `config.json` take precedence over environment variables if the file already exists.
