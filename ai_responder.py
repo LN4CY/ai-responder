@@ -877,7 +877,7 @@ class AIResponder:
                 "!ai [msg] : Ask AI (No prefix in session)\n"
                 "!ai -h : Show this help\n"
                 "!ai -m : Memory/context status\n"
-                "!ai -n : End session & clear default context"
+                "!ai -n : Safely reset context"
             )
         else:
             msg1 = (
@@ -885,7 +885,7 @@ class AIResponder:
                 "!ai [msg] : Ask AI (prefix required)\n"
                 "!ai -h : Show this help\n"
                 "!ai -m : Memory/context status\n"
-                "!ai -n : Clear history & start fresh"
+                "!ai -n : Safely reset context"
             )
         self.send_response(msg1, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -894,6 +894,7 @@ class AIResponder:
             msg2 = (
                 "👤 Session Management\n"
                 "!ai -n [name] : New named session\n"
+                "!ai -n rm all : Nuclear Wipe\n"
                 "!ai -c ls : List saved convos\n"
                 "!ai -c [id] : Load convo #id\n"
                 "!ai -c rm [id] : Delete convo\n"
@@ -1035,7 +1036,7 @@ class AIResponder:
     
     def _handle_provider_command(self, args, from_node, to_node, channel):
         """Handle AI provider switching."""
-        if not args:
+        if not args or args.strip().lower() == 'ls':
             # List providers
             current = self.config.get('current_provider', 'ollama')
             providers_status = []
@@ -1077,7 +1078,7 @@ class AIResponder:
         parts = args.split(maxsplit=1) if args else []
         action = parts[0].lower() if parts else ""
         
-        if not action:
+        if not action or action == 'ls':
             # List channels
             allowed = self.config.get('allowed_channels', [0])
             available_channels = self.meshtastic.get_channels()
@@ -1098,8 +1099,8 @@ class AIResponder:
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        if len(parts) < 2 or action not in ['ls', 'add', 'rm']:
-            self.send_response("Usage: !ai -ch [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+        if len(parts) < 2 or action not in ['add', 'rm']:
+            self.send_response("Usage: !ai -ch [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         channel_id_str = parts[1]
@@ -1134,7 +1135,7 @@ class AIResponder:
     
     def _handle_admin_command(self, args, from_node, to_node, channel):
         """Handle admin node management."""
-        if not args:
+        if not args or args.strip().lower() == 'ls':
             # List admins
             admins = self.config.get('admin_nodes', [])
             if admins:
@@ -1146,7 +1147,7 @@ class AIResponder:
         
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            self.send_response("Usage: !ai -a [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response("Usage: !ai -a [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         action = parts[0].lower()
