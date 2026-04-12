@@ -25,7 +25,6 @@ import requests
 import pathlib
 import datetime
 from concurrent.futures import ThreadPoolExecutor
-from pubsub import pub
 
 
 
@@ -33,9 +32,8 @@ from pubsub import pub
 import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
-    HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
     ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER,
-    HEALTH_CHECK_ACTIVITY_TIMEOUT, HEALTH_CHECK_PROBE_INTERVAL
+    HEALTH_CHECK_ACTIVITY_TIMEOUT
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -359,7 +357,8 @@ class AIResponder:
                 my_info = self.meshtastic.get_node_info()
                 if my_info:
                     name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
-            except: pass
+            except Exception:
+                pass
             parts.append(f"[{name}: {local_metadata}]")
         
         return " ".join(parts) if parts else None
@@ -588,7 +587,8 @@ class AIResponder:
         topic = payload.get('topic')
         channel = payload.get('channel', 0)
         
-        if not node_id: return
+        if not node_id:
+            return
         
         targets = []
         if topic == 'all':
@@ -611,7 +611,8 @@ class AIResponder:
         response = payload.get('response')
         is_system = payload.get('is_system', False)
         
-        if not node_id or not prompt or not response: return
+        if not node_id or not prompt or not response:
+            return
         
         # 1. Active Session vs Default Hub
         session_name = self.session_manager.get_session_name(node_id)
@@ -676,7 +677,8 @@ class AIResponder:
         t_type = payload.get('type')
         data = payload.get('data')
         
-        if not node_id or not data: return
+        if not node_id or not data:
+            return
         
         # Throttle: Only index telemetry every 15 minutes per node to avoid bloat
         now = time.time()
@@ -770,7 +772,7 @@ class AIResponder:
         # Track node for telemetry logging of active users
         try:
             self.meshtastic.track_node(from_node)
-        except:
+        except Exception:
             pass
             
         # Extract command and arguments
@@ -1008,7 +1010,8 @@ class AIResponder:
         if identifier.isdigit():
             target = int(identifier)
             for name, data in metadata.items():
-                if data['index'] == target: return name
+                if data['index'] == target:
+                    return name
         elif identifier in metadata:
             return identifier
         return None
@@ -1043,11 +1046,11 @@ class AIResponder:
             # Note: This is a synchronous call to the re-hydration tool
             # In a real graph, we'd search for the Topic hub and get its turns
             # For now, we search for the topic name to see if it's there
-            result = self.mcp_client.call_tool("read_graph", {}) # Fetch whole graph to filter locally for now
+            self.mcp_client.call_tool("read_graph", {}) # Fetch whole graph to filter locally for now
             # Actually, read_graph without args might be too heavy. 
             # We'll use a specific search if the tool supports it.
             return None # Implementation of specific pattern matching TBD based on final graph schema
-        except:
+        except Exception:
             return None
     
     def _handle_provider_command(self, args, from_node, to_node, channel):
@@ -2052,9 +2055,12 @@ class AIResponder:
         user_info = self.meshtastic.get_node_metadata(from_node)
         
         metadata_block = "\n\n[RADIO CONTEXT]\n"
-        if my_info: metadata_block += f"Self: {my_info}\n"
-        if user_info: metadata_block += f"User ({from_node}): {user_info}\n"
-        if neighbor_summary: metadata_block += f"{neighbor_summary}\n"
+        if my_info:
+            metadata_block += f"Self: {my_info}\n"
+        if user_info:
+            metadata_block += f"User ({from_node}): {user_info}\n"
+        if neighbor_summary:
+            metadata_block += f"{neighbor_summary}\n"
         metadata_block += "[/RADIO CONTEXT]"
         
         return f"{query}{metadata_block}"
@@ -2102,7 +2108,7 @@ class AIResponder:
             final_query = query
             
             if not awareness_enabled:
-                logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
+                logger.info("🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
                 if not is_system_trigger:
                     self.add_to_history(history_key, 'user', query, node_id=from_node)
                 else:
@@ -2197,7 +2203,7 @@ class AIResponder:
             # 6. Silent-ACK: if every tool fired proactively, the provider returns the sentinel.
             # In this case do not send any reply — the user already received the info.
             if response == "__SILENT_ACK__":
-                logger.info(f"🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
+                logger.info("🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
                 return
             
             # 7. Add assistant response to history (skip for system triggers to avoid pollution)
@@ -2327,7 +2333,7 @@ class AIResponder:
             from pubsub import pub
             try:
                 pub.unsubscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
-            except:
+            except Exception:
                 pass
             pub.subscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
             logger.info("✅ Subscribed to meshtastic.receive.telemetry for proactive agents")
@@ -2442,12 +2448,15 @@ class AIResponder:
                     try:
                         with open("/tmp/healthy", "w") as f:
                             f.write(str(current_time))
-                    except: pass
+                    except Exception:
+                        pass
                 else:
                     logger.error(f"Health check FAILED: {', '.join(reasons)}. Exiting...")
                     if os.path.exists("/tmp/healthy"):
-                        try: os.remove("/tmp/healthy")
-                        except: pass
+                        try:
+                            os.remove("/tmp/healthy")
+                        except Exception:
+                            pass
                     sys.exit(1)
 
                 # 4. Periodic session timeout check

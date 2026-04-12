@@ -1,5 +1,3 @@
-import os
-import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -67,7 +65,6 @@ def test_proactive_persistence(responder, tmp_path):
             assert new_responder.scheduled_tasks[1]['id'] == next_id
 
 def test_proactive_task_limits(responder):
-    import config
     
     with patch('ai_responder.config.MAX_PROACTIVE_TASKS_PER_USER', 2):
         # Add 2 tasks (should succeed)
@@ -314,7 +311,7 @@ def test_system_trigger_with_history(responder):
             {'role': 'assistant', 'content': 'Count is 1'}
         ]
         
-        with patch.object(responder, 'config') as mock_config, \
+        with patch.object(responder, 'config'), \
              patch('ai_responder.get_provider') as mock_get_provider:
             
             mock_provider = MagicMock()

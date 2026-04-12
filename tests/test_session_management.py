@@ -1,9 +1,6 @@
 import unittest
 import os
 import shutil
-import json
-import time
-from unittest.mock import MagicMock, patch
 from conversation.manager import ConversationManager
 
 class TestSessionManagement(unittest.TestCase):

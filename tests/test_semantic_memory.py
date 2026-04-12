@@ -1,10 +1,8 @@
 import unittest
 import os
 import shutil
-import time
 from unittest.mock import MagicMock, patch
 from ai_responder import AIResponder
-import config
 
 class TestSemanticMemory(unittest.TestCase):
     def setUp(self):

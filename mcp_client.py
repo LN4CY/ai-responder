@@ -3,13 +3,11 @@ import json
 import logging
 import asyncio
 import threading
-import concurrent.futures
 from typing import Dict, Any, List
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
-from mcp.types import Tool
 
 # Local tools
 from mcp_server_meshtastic import mcp as internal_meshtastic_mcp
@@ -86,7 +84,8 @@ class UnifiedMCPClient:
                 servers_config = json.load(f)
                 from config import MEMPALACE_URL
                 for name, cfg in servers_config.items():
-                    if name == 'mempalace' and MEMPALACE_URL: continue
+                    if name == 'mempalace' and MEMPALACE_URL:
+                        continue
                     url = cfg.get('url')
                     cmd = cfg.get('command')
                     if url:
@@ -100,7 +99,7 @@ class UnifiedMCPClient:
 
     async def _init_internal_server(self):
         """Initialize the in-process tools."""
-        print(f"[MCP] Initializing internal meshtastic tools...", flush=True)
+        print("[MCP] Initializing internal meshtastic tools...", flush=True)
         try:
             tools = await internal_meshtastic_mcp.list_tools()
             self.servers['meshtastic'] = {
@@ -160,7 +159,6 @@ class UnifiedMCPClient:
             
     async def _connect_sse_server(self, name: str, url: str):
         """Connect to an external MCP server via SSE with exponential backoff."""
-        import sys
         base_delay = 5
         max_delay = 300
         attempt = 0
@@ -224,7 +222,8 @@ class UnifiedMCPClient:
     async def _async_get_all_tools(self) -> List[Dict]:
         all_tools = []
         for s_name, server in self.servers.items():
-            if not server['tools']: continue
+            if not server['tools']:
+                continue
             for t in server['tools']:
                 # t is an mcp.types.Tool object with name, description, inputSchema
                 tool_dict = {
@@ -244,16 +243,16 @@ class UnifiedMCPClient:
         
     async def _async_call_tool(self, tool_name: str, arguments: dict) -> Any:
         # Find which server owns this tool
-        target_server_name = None
         target_server = None
         for s_name, server in self.servers.items():
-            if not server['tools']: continue
+            if not server['tools']:
+                continue
             for t in server['tools']:
                 if getattr(t, 'name') == tool_name:
-                    target_server_name = s_name
                     target_server = server
                     break
-            if target_server: break
+            if target_server:
+                break
             
         if not target_server:
             return f"Error: Tool '{tool_name}' not found on any active MCP server."

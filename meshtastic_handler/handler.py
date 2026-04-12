@@ -13,7 +13,6 @@ import time
 import logging
 import threading
 import math
-from datetime import datetime
 from pubsub import pub
 from meshtastic.serial_interface import SerialInterface
 from meshtastic.tcp_interface import TCPInterface
@@ -92,7 +91,7 @@ class SafeTCPInterface(TCPInterface):
                         logger.debug(f"⚡ forcing manual ACK event for ID {rid}")
                         pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
 
-                except:
+                except Exception:
                     logger.debug("Failed to decode raw bytes for debug log")
         except Exception as e:
             logger.error(f"Error in debug logger: {e}")
@@ -220,7 +219,7 @@ class MeshtasticHandler:
                     # Unsubscribe first to ensure no duplicates if reconnecting
                     try:
                         pub.unsubscribe(on_receive_callback, "meshtastic.receive")
-                    except:
+                    except Exception:
                         pass
                     pub.subscribe(on_receive_callback, "meshtastic.receive")
                     logger.info("✅ Subscribed to meshtastic.receive")
@@ -228,7 +227,7 @@ class MeshtasticHandler:
                 # Subscribe to telemetry specifically to populate our internal cache
                 try:
                     pub.unsubscribe(self._on_telemetry, "meshtastic.receive.telemetry")
-                except:
+                except Exception:
                     pass
                 pub.subscribe(self._on_telemetry, "meshtastic.receive.telemetry")
                 logger.debug("✅ Subscribed to meshtastic.receive.telemetry for caching")
@@ -236,7 +235,7 @@ class MeshtasticHandler:
                 # Subscribe to ACKs for reliable sending
                 try:
                     pub.unsubscribe(self._on_ack, "meshtastic.ack")
-                except:
+                except Exception:
                     pass
                 pub.subscribe(self._on_ack, "meshtastic.ack")
                 logger.info("✅ Subscribed to meshtastic.ack")
@@ -244,14 +243,14 @@ class MeshtasticHandler:
                 # Subscribe to general packets for activity tracking
                 try:
                     pub.unsubscribe(self._on_packet_activity, "meshtastic.receive")
-                except:
+                except Exception:
                     pass
                 pub.subscribe(self._on_packet_activity, "meshtastic.receive")
                 
                 # Subscribe to connection lost
                 try:
                     pub.unsubscribe(self._on_connection_lost, "meshtastic.connection.lost")
-                except:
+                except Exception:
                     pass
                 pub.subscribe(self._on_connection_lost, "meshtastic.connection.lost")
 
@@ -268,7 +267,8 @@ class MeshtasticHandler:
                 if self.interface:
                     try:
                         self.interface.close()
-                    except: pass
+                    except Exception:
+                        pass
                     self.interface = None
                     
                 if attempt < max_retries - 1:
@@ -415,7 +415,7 @@ class MeshtasticHandler:
             bool: True if request sent successfully.
         """
         if not self.interface or not self.running:
-            logger.warning(f"Cannot request telemetry: Not connected")
+            logger.warning("Cannot request telemetry: Not connected")
             return False
             
         try:
@@ -572,7 +572,8 @@ class MeshtasticHandler:
                 try:
                     node_int = int(node_id[1:], 16)
                     node_hex = node_id
-                except: pass
+                except Exception:
+                    pass
             elif node_id.isdigit():
                 node_int = int(node_id)
                 node_hex = f"!{node_int:08x}"
@@ -583,11 +584,13 @@ class MeshtasticHandler:
         # 3. Try lookup by normalized forms
         if node_int is not None:
             info = self.interface.nodes.get(node_int)
-            if info: return info
+            if info:
+                return info
             
         if node_hex is not None:
             info = self.interface.nodes.get(node_hex)
-            if info: return info
+            if info:
+                return info
 
         return None
 
@@ -672,7 +675,8 @@ class MeshtasticHandler:
 
         lines = ["Neighbor nodes on mesh:"]
         for n in nodes:
-            if not n['id']: continue
+            if not n['id']:
+                continue
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
             
@@ -833,16 +837,23 @@ class MeshtasticHandler:
                 # Check current node_info (API usually snake_case or camelCase depending on library version)
                 # Meshtastic python lib uses camelCase for the top-level keys in the node dict
                 msg_key = m_type
-                if m_type == 'environment_metrics': msg_key = 'environmentMetrics'
-                elif m_type == 'air_quality_metrics': msg_key = 'airQualityMetrics'
-                elif m_type == 'power_metrics': msg_key = 'powerMetrics'
-                elif m_type == 'health_metrics': msg_key = 'healthMetrics'
-                elif m_type == 'local_stats': msg_key = 'localStats'
-                elif m_type == 'host_metrics': msg_key = 'hostMetrics'
+                if m_type == 'environment_metrics':
+                    msg_key = 'environmentMetrics'
+                elif m_type == 'air_quality_metrics':
+                    msg_key = 'airQualityMetrics'
+                elif m_type == 'power_metrics':
+                    msg_key = 'powerMetrics'
+                elif m_type == 'health_metrics':
+                    msg_key = 'healthMetrics'
+                elif m_type == 'local_stats':
+                    msg_key = 'localStats'
+                elif m_type == 'host_metrics':
+                    msg_key = 'hostMetrics'
                 
                 # Get the best source of data
                 data = node_info.get(msg_key) or cached_data.get(m_type)
-                if not data: continue
+                if not data:
+                    continue
                 
                 if isinstance(data, dict):
                     for field, (label, unit) in field_map.items():

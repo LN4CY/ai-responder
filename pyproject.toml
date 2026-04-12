@@ -33,13 +33,7 @@ exclude = [
 # Enable the pycodestyle (E) and Pyflakes (F) rules by default.
 select = ["E", "F"]
 ignore = [
-    "E501", # Line too long
-    "E722", # Bare except
-    "F401", # Unused import
-    "E701", # Multiple statements on one line
-    "F841", # Unused variable
-    "F811", # Redefined function
-    "E402", # Module level import not at top of file
+    "E501", # Line too long (to be handled separately)
 ]
 
 # Allow unused variables when underscore-prefixed.

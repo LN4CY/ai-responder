@@ -3,7 +3,7 @@
 # See LICENSE file in the project root for full license details.
 
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch
 import sys
 import os
 import threading
@@ -18,10 +18,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import modules to test
 import config
 from ai_responder import AIResponder
-import providers.ollama
-import providers.gemini
-import providers.openai
-import providers.anthropic
 from conversation.session import SessionManager
 
 class TestAIResponder(unittest.TestCase):
@@ -407,7 +403,7 @@ class TestAIResponder(unittest.TestCase):
         self.assertNotIn(0, self.responder.config['allowed_channels'])
         
         # 3. Verify IGNORE on Channel 0 (disabled BROADCAST)
-        with patch.object(self.responder, 'process_command') as mock_process_2:
+        with patch.object(self.responder, 'process_command'):
             pkt = {'decoded': {'text': '!ai hi', 'portnum': 'TEXT_MESSAGE_APP'}, 
                    'fromId': '!tester', 'toId': '^all', 'channel': 0}
             self.responder.on_receive(pkt, None)
@@ -438,19 +434,6 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
-    def test_channel_ls_command(self):
-        """Test the channel list command output."""
-        self.responder.send_response = MagicMock()
-        self.responder.config['allowed_channels'] = [0, 3]
-        
-        # Mock available channels
-        mock_channels = [
-            {'index': 0, 'name': 'Primary'},
-            {'index': 1, 'name': ''},
-            {'index': 3, 'name': 'Admin'}
-        ]
-        self.responder.meshtastic.get_channels = MagicMock(return_value=mock_channels)
-        
     def test_channel_ls_command(self):
         """Test the channel list command output."""
         self.responder.send_response = MagicMock()
@@ -657,7 +640,6 @@ class TestSessionNotifications(unittest.TestCase):
         """Test that !ai -end correctly unpacks the 4 values from end_session."""
         from_node = "!sender"
         to_node = "!bot"
-        channel = 5
         
         # Mock end_session to return 4 values
         with patch.object(self.session_manager, 'end_session') as mock_end:
@@ -766,7 +748,7 @@ class TestSessionNotifications(unittest.TestCase):
         
         # 2. Mock get_node_metadata to return a string (simulating real handler output)
         self.responder.meshtastic.get_node_metadata.side_effect = lambda node_id: \
-            f"(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
+            "(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
 
         # 3. Test metadata formatting (Direct check)
         meta = self.responder.meshtastic.get_node_metadata("!bot")

@@ -216,7 +216,7 @@ def load_system_prompt(provider, context_id="Unknown"):
     logger.info(f"Using default system prompt for {provider}")
     try:
         return default.format(context_id=context_id, current_time=current_time)
-    except:
+    except Exception:
         return default
 
 

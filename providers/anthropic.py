@@ -65,9 +65,6 @@ class AnthropicProvider(BaseProvider):
             # Multi-turn tool loop
             action_tools_executed = 0
             silent_ack_tools = 0
-            # Tools that represent a side effect or request (vs simple lookups)
-            action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
-                            "rm_proactive_task", "send_message"}
             
             for turn in range(5):
                 payload = {
@@ -87,7 +84,7 @@ class AnthropicProvider(BaseProvider):
                         user_msg = self.format_error(response.status_code, error_msg)
                         logger.error(f"Anthropic error: {response.status_code} - {error_msg}")
                         return user_msg
-                    except:
+                    except Exception:
                         logger.error(f"Anthropic HTTP {response.status_code}: {response.text[:200]}")
                         return f"❌ HTTP {response.status_code} error"
 

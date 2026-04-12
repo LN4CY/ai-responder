@@ -1,6 +1,6 @@
 import logging
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,8 @@ def request_node_telemetry(node_id_or_name: str, telemetry_type: str) -> str:
     Trigger an active refresh of telemetry from a specific node.
     telemetry_type can be: device, environment, local_stats, air_quality, power, health, host.
     """
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._request_node_telemetry_mcp(
         node_id_or_name=node_id_or_name, 
@@ -75,7 +76,8 @@ def request_node_telemetry(node_id_or_name: str, telemetry_type: str) -> str:
 @mcp.tool()
 def schedule_message(delay_seconds: float = None, context_note: str = "", recur_interval_seconds: int = None, max_duration_seconds: int = None, notify_targets: str = None, absolute_time: str = None) -> str:
     """Schedule a reminder or recurring proactive task. Returns the task ID."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._schedule_mcp_task(
         delay_seconds=delay_seconds, context_note=context_note, 
@@ -87,7 +89,8 @@ def schedule_message(delay_seconds: float = None, context_note: str = "", recur_
 @mcp.tool()
 def watch_condition(node_id_or_name: str, metric: str, operator: str, threshold: float, context_note: str, notify_targets: str = None, is_persistent: bool = False) -> str:
     """Set an alert when a node's telemetry threshold is met."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._watch_condition_mcp(
         node_id_or_name=node_id_or_name, metric=metric, operator=operator, threshold=threshold,
@@ -98,7 +101,8 @@ def watch_condition(node_id_or_name: str, metric: str, operator: str, threshold:
 @mcp.tool()
 def watch_node_online(node_id_or_name: str, context_note: str, notify_targets: str = None, is_persistent: bool = False) -> str:
     """Alert when a specific node comes online or sends any packet."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._watch_node_online_mcp(
         node_id_or_name=node_id_or_name, context_note=context_note, 
@@ -109,25 +113,29 @@ def watch_node_online(node_id_or_name: str, context_note: str, notify_targets: s
 @mcp.tool()
 def list_proactive_tasks() -> str:
     """List all active proactive tasks for the current user."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._list_proactive_tasks_mcp(from_node=ctx['from_node'])
 
 @mcp.tool()
 def cancel_proactive_task(task_id: str) -> str:
     """Cancel a scheduled task or watcher (supply ID or 'all')."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     ctx = _get_caller_context()
     return responder_app._cancel_proactive_task_mcp(task_id=task_id, from_node=ctx['from_node'])
 
 @mcp.tool()
 def send_message(target: str, message: str) -> str:
     """Send a message to another node ID or channel (like 'ch:0') immediately."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     return responder_app._send_message_mcp(target=target, message=message)
 
 @mcp.tool()
 def get_location_address(lat: float, lon: float) -> str:
     """Convert latitude and longitude coordinates into a real-world address."""
-    if not responder_app: return "Error"
+    if not responder_app:
+        return "Error"
     return responder_app._get_location_address_mcp(lat=lat, lon=lon)
