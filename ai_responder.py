@@ -603,17 +603,21 @@ class AIResponder:
         channel = payload.get('channel', 0)
         prompt = payload.get('prompt')
         response = payload.get('response')
+        is_system = payload.get('is_system', False)
         
         if not node_id or not prompt or not response: return
         
         # 1. Active Session vs Default Hub
         session_name = self.session_manager.get_session_name(node_id)
-        if session_name:
+        
+        # Override: System actions ALWAYS go to the private default hub to maintain 
+        # cross-session continuity and privacy (per user agreement).
+        if is_system or not session_name:
+            hub_name = f"Hub_Default_{node_id}"
+            description = f"General discussion and system activity hub for node {node_id}"
+        else:
             hub_name = f"Chat_{node_id}_CH{channel}"
             description = f"Active chat hub for node {node_id} on channel {channel}"
-        else:
-            hub_name = f"Hub_Default_{node_id}"
-            description = f"General discussion hub for node {node_id}"
 
         # 2. Identity Hub Ensure
         self.mcp_client.call_tool("create_entities", {
@@ -644,7 +648,13 @@ class AIResponder:
             
         # 4. Add Activity Observation
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        observation = f"[{ts}] User: {prompt} | AI: {response}"
+        if is_system:
+            # For system triggers, 'prompt' is the context_note which might be instructions.
+            # We clean it up for indexing.
+            trigger_context = prompt.split("COMMAND/CONTEXT:")[1].split("CRITICAL INSTRUCTIONS:")[0].strip() if "COMMAND/CONTEXT:" in prompt else prompt
+            observation = f"[{ts}] [SYSTEM ACTION] Task: {trigger_context} | Result: {response}"
+        else:
+            observation = f"[{ts}] User: {prompt} | AI: {response}"
         self.mcp_client.call_tool("add_observations", {
             "observations": [{
                 "entityName": hub_name,
@@ -652,7 +662,7 @@ class AIResponder:
             }]
         })
         
-        logger.debug(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
+        logger.info(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
 
     def _bg_index_telemetry(self, payload):
         """Index telemetry status into the Node's hub."""
@@ -693,7 +703,7 @@ class AIResponder:
                 "contents": [obs]
             }]
         })
-        logger.debug(f"🧠 Semantically indexed telemetry for {node_id}")
+        logger.info(f"🧠 Semantically indexed telemetry for {node_id}")
 
     # ==================== Message Sending ====================
     
@@ -1798,10 +1808,10 @@ class AIResponder:
             f"COMMAND/CONTEXT: {context_note}\n\n"
             f"CRITICAL INSTRUCTIONS:\n"
             f"1. You MUST execute any instructions or checks contained in the COMMAND/CONTEXT above.\n"
-            f"2. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
-            f"3. Your natural text response will be delivered automatically to: {targets}.\n"
-            f"4. DO NOT use the 'send_message' tool to deliver the final report; your text response handles this.\n"
-            f"5. If the user asked for a count or persistent state, check the conversation history to increment it."
+            f"2. SEMANTIC CONTINUITY: Check your Knowledge Graph (MemPalace) for previous '[SYSTEM ACTION]' observations related to this task. This allows you to track state, counts, or trends across recurring events.\n"
+            f"3. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
+            f"4. Your natural text response will be delivered automatically to: {targets}.\n"
+            f"5. DO NOT use the 'send_message' tool to deliver the final report; your text response handles this."
         )
         logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
 
@@ -2184,7 +2194,7 @@ class AIResponder:
                 logger.info(f"🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
                 return
             
-            # 7. Add assistant response to history (skip for system triggers)
+            # 7. Add assistant response to history (skip for system triggers to avoid pollution)
             if not is_system_trigger:
                 self.add_to_history(history_key, 'assistant', response)
                 
@@ -2193,14 +2203,15 @@ class AIResponder:
                 if session_name:
                     self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
                     self.session_manager.update_activity(from_node)
-                
-                # 9. Background Semantic Indexing
-                self._index_to_mcp('conversation', {
-                    'node_id': from_node,
-                    'channel': channel,
-                    'prompt': query,
-                    'response': response
-                })
+            
+            # 9. Background Semantic Indexing (Enabled for both users and system triggers)
+            self._index_to_mcp('conversation', {
+                'node_id': from_node,
+                'channel': channel,
+                'prompt': query,
+                'response': response,
+                'is_system': is_system_trigger
+            })
             
             logger.info(f"💬 {provider.name} response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
