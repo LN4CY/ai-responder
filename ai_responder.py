@@ -574,10 +574,12 @@ class AIResponder:
         except Exception as e:
             logger.warning(f"⚠️ Background indexing failed ({data_type}). MemPalace service may be unreachable: {e}")
 
-    def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False):
+    def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False, is_system=False):
         """Standardized naming logic for Semantic Hubs."""
+        if is_system:
+            return f"Hub_System_{node_id}"
         if is_dm:
-            return f"Hub_Default_{node_id}"
+            return f"Hub_Chat_{node_id}"
         else:
             return f"Hub_CH{channel}"
 
@@ -614,14 +616,18 @@ class AIResponder:
         if not node_id or not prompt or not response:
             return
         
-        # 1. Active Session vs Default Hub
+        # 1. Active Session vs Special-Purpose Hubs
         session_name = self.session_manager.get_session_name(node_id)
         
-        # Override: System actions ALWAYS go to the private default hub to maintain 
-        # cross-session continuity and privacy (per user agreement).
-        if is_system or not session_name:
-            hub_name = f"Hub_Default_{node_id}"
-            description = f"General discussion and system activity hub for node {node_id}"
+        # New Taxonomy: 
+        # is_system -> Hub_System_{node_id} (Persistent)
+        # not session_name -> Hub_Chat_{node_id} (Deletable)
+        # session_name -> Chat_{node_id}_CH{channel} (Deletable)
+        hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=True, is_system=is_system)
+        if is_system:
+            description = f"System continuity and activity hub for node {node_id}"
+        elif not session_name:
+            description = f"General chat for node {node_id}"
         else:
             hub_name = f"Chat_{node_id}_CH{channel}"
             description = f"Active chat hub for node {node_id} on channel {channel}"
@@ -2210,11 +2216,12 @@ class AIResponder:
             if not is_system_trigger:
                 self.add_to_history(history_key, 'assistant', response)
                 
-                # 8. Save to conversation if in session
-                session_name = self.session_manager.get_session_name(from_node)
-                if session_name:
-                    self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
-                    self.session_manager.update_activity(from_node)
+                # 8. Save to conversation if in session (strictly DM-only for Topic sessions)
+                if is_dm:
+                    session_name = self.session_manager.get_session_name(from_node)
+                    if session_name:
+                        self.conversation_manager.save_conversation(from_node, session_name, current_history)
+                        self.session_manager.update_activity(from_node)
             
             # 9. Background Semantic Indexing (Enabled for both users and system triggers)
             self._index_to_mcp('conversation', {

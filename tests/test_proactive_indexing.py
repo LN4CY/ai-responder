@@ -88,7 +88,7 @@ class TestProactiveIndexing(unittest.TestCase):
         obs_call = [c for c in self.responder.mcp_client.call_tool.call_args_list if c[0][0] == "add_observations"]
         self.assertTrue(len(obs_call) > 0)
         entity_name = obs_call[0][0][1]['observations'][0]['entityName']
-        self.assertEqual(entity_name, "Hub_Default_!node1")
+        self.assertEqual(entity_name, "Hub_System_!node1")
         
         # Verify observation content has [SYSTEM ACTION]
         content = obs_call[0][0][1]['observations'][0]['contents'][0]

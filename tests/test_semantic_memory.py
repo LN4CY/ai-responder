@@ -29,6 +29,10 @@ class TestSemanticMemory(unittest.TestCase):
         self.responder.mcp_client = MagicMock()
         self.responder.mcp_client.has_server.return_value = True
         
+        # Test System hub separately
+        hub_sys = self.responder._get_semantic_hub_name("!node1", is_system=True)
+        self.assertEqual(hub_sys, "Hub_System_!node1")
+        
     def tearDown(self):
         for p in self.patchers:
             p.stop()
@@ -62,7 +66,7 @@ class TestSemanticMemory(unittest.TestCase):
         """Verify that Hub names are correctly derived for DMs and Channels."""
         # 1. DM Hub
         hub_dm = self.responder._get_semantic_hub_name("!user123", channel=0, is_dm=True)
-        self.assertEqual(hub_dm, "Hub_Default_!user123")
+        self.assertEqual(hub_dm, "Hub_Chat_!user123")
         
         # 2. Channel Hub
         hub_ch = self.responder._get_semantic_hub_name("!user123", channel=3, is_dm=False)
