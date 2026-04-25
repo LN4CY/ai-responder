@@ -601,9 +601,15 @@ class AIResponder:
             targets.append(topic)
         
         if targets:
-            logger.info(f"🗑️ Semantically deleting indexed hubs: {targets}")
-            # standard mempalace/mcp-memory uses 'names' for delete_entities
-            self.mcp_client.call_tool("delete_entities", {"names": targets})
+            logger.info(f"🗑️ Semantically applying deletion tombstone to hubs: {targets}")
+            ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            for target in targets:
+                self.mcp_client.call_tool("mempalace_kg_add", {
+                    "subject": target,
+                    "predicate": "has_status",
+                    "object": "Archived_by_User_Wipe",
+                    "started": ts
+                })
 
     def _bg_index_conversation(self, payload):
         """Index a conversation turn into the Knowledge Graph."""
@@ -619,60 +625,52 @@ class AIResponder:
         # 1. Active Session vs Special-Purpose Hubs
         session_name = self.session_manager.get_session_name(node_id)
         
-        # New Taxonomy: 
-        # is_system -> Hub_System_{node_id} (Persistent)
-        # not session_name -> Hub_Chat_{node_id} (Deletable)
-        # session_name -> Chat_{node_id}_CH{channel} (Deletable)
         hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=True, is_system=is_system)
         if is_system:
-            description = f"System continuity and activity hub for node {node_id}"
+            hub_type = "SystemHub"
         elif not session_name:
-            description = f"General chat for node {node_id}"
+            hub_type = "ChatHub"
         else:
             hub_name = f"Chat_{node_id}_CH{channel}"
-            description = f"Active chat hub for node {node_id} on channel {channel}"
+            hub_type = "SessionHub"
 
-        # 2. Identity Hub Ensure
-        self.mcp_client.call_tool("create_entities", {
-            "entities": [{
-                "name": hub_name,
-                "entityType": "Conversation",
-                "observations": [description]
-            }]
+        ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        # 2. Define the Hub
+        self.mcp_client.call_tool("mempalace_kg_add", {
+            "subject": hub_name,
+            "predicate": "is_a",
+            "object": hub_type,
+            "started": ts
+        })
+        self.mcp_client.call_tool("mempalace_kg_add", {
+            "subject": node_id,
+            "predicate": "participated_in",
+            "object": hub_name,
+            "started": ts
         })
         
-        # 3. Topic Hub (if in session)
+        # 3. Relate Topic if in session
         if session_name:
-            self.mcp_client.call_tool("create_entities", {
-                "entities": [{
-                    "name": session_name,
-                    "entityType": "Topic",
-                    "observations": [f"Session Topic: {session_name}"]
-                }]
-            })
-            # Relate Chat Hub to Topic
-            self.mcp_client.call_tool("create_relations", {
-                "relations": [{
-                    "from": hub_name,
-                    "to": session_name,
-                    "relationType": "IS_ABOUT"
-                }]
+            self.mcp_client.call_tool("mempalace_kg_add", {
+                "subject": hub_name,
+                "predicate": "discusses_topic",
+                "object": session_name,
+                "started": ts
             })
             
         # 4. Add Activity Observation
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         if is_system:
-            # For system triggers, 'prompt' is the context_note which might be instructions.
-            # We clean it up for indexing.
             trigger_context = prompt.split("COMMAND/CONTEXT:")[1].split("CRITICAL INSTRUCTIONS:")[0].strip() if "COMMAND/CONTEXT:" in prompt else prompt
-            observation = f"[{ts}] [SYSTEM ACTION] Task: {trigger_context} | Result: {response}"
+            observation = f"System Task: {trigger_context} | Result: {response}"
         else:
-            observation = f"[{ts}] User: {prompt} | AI: {response}"
-        self.mcp_client.call_tool("add_observations", {
-            "observations": [{
-                "entityName": hub_name,
-                "contents": [observation]
-            }]
+            observation = f"User: {prompt} | AI: {response}"
+            
+        self.mcp_client.call_tool("mempalace_kg_add", {
+            "subject": hub_name,
+            "predicate": "recorded_turn",
+            "object": observation,
+            "started": ts
         })
         
         logger.info(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
@@ -695,27 +693,24 @@ class AIResponder:
             
         self._mcp_indexing_cache[cache_key] = now
         
-        # Index to Node Hub
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         if isinstance(data, dict):
             summary = ", ".join([f"{k}: {v}" for k, v in data.items() if v is not None])
         else:
             summary = str(data)
-        obs = f"[{ts}] Telemetry ({t_type}): {summary}"
-        
-        self.mcp_client.call_tool("create_entities", {
-            "entities": [{
-                "name": node_id,
-                "entityType": "MeshNode",
-                "observations": [f"Mesh node hardware identity: {node_id}"]
-            }]
+            
+        self.mcp_client.call_tool("mempalace_kg_add", {
+            "subject": node_id,
+            "predicate": "is_a",
+            "object": "MeshNode",
+            "started": ts
         })
         
-        self.mcp_client.call_tool("add_observations", {
-            "observations": [{
-                "entityName": node_id,
-                "contents": [obs]
-            }]
+        self.mcp_client.call_tool("mempalace_kg_add", {
+            "subject": node_id,
+            "predicate": "reported_telemetry",
+            "object": f"Type {t_type}: {summary}",
+            "started": ts
         })
         logger.info(f"🧠 Semantically indexed telemetry for {node_id}")
 
