@@ -725,8 +725,12 @@ class MeshtasticHandler:
             
             # 0. Identification
             user = node_info.get('user', {})
+            hw_id = user.get('id')
             long_name = user.get('longName')
             short_name = user.get('shortName')
+            
+            if hw_id:
+                metadata_parts.append(f"NodeID: {hw_id}")
             if long_name:
                 metadata_parts.append(f"Name: {long_name}")
             if short_name:
