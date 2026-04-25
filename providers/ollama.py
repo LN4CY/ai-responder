@@ -54,6 +54,11 @@ class OllamaProvider(BaseProvider):
         if tools and self.supports_tools:
             ollama_tools = []
             for mcp_tool in tools:
+                tool_name = mcp_tool['name']
+                # Filter out MemPalace tools to prevent Ollama context exhaustion/hallucination
+                if tool_name.startswith('mempalace_') or tool_name == 'add_observations':
+                    continue
+                    
                 # Sanitize: Ollama (OpenAI-compatible) rejects '$schema' meta-fields
                 params = mcp_tool.get('inputSchema', {"type": "object", "properties": {}}).copy()
                 params.pop('$schema', None)
@@ -61,7 +66,7 @@ class OllamaProvider(BaseProvider):
                 ollama_tools.append({
                     "type": "function",
                     "function": {
-                        "name": mcp_tool['name'],
+                        "name": tool_name,
                         "description": mcp_tool.get('description', ''),
                         "parameters": params
                     }

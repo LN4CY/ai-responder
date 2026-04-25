@@ -187,9 +187,14 @@ class UnifiedMCPClient:
                         print(f"[MCP] {name} CONNECTED with {len(tools)} tools.", flush=True)
                         attempt = 0
 
-                        # Keep alive as long as the context manager is open
+                        # Keep alive as long as the context manager is open and the connection is healthy
                         while True:
-                            await asyncio.sleep(60)
+                            await asyncio.sleep(30)
+                            try:
+                                await asyncio.wait_for(session.send_ping(), timeout=10.0)
+                            except Exception as e:
+                                logger.warning(f"MCP server '{name}' ping failed or timed out: {e}")
+                                break
             except asyncio.CancelledError:
                 # Bug fix: anyio's TaskGroup cleanup can leak CancelledError into our
                 # outer coroutine even though our asyncio Task was not externally cancelled.
@@ -289,5 +294,5 @@ class UnifiedMCPClient:
                         content_list.append(content.text)
                 return "\n".join(content_list)
         except Exception as e:
-            logger.error(f"Error calling MCP tool {tool_name}: {e}")
+            logger.exception(f"Error calling MCP tool {tool_name}")
             return f"Tool execution failed: {e}"
