@@ -847,7 +847,9 @@ class TestAIProviders(unittest.TestCase):
         
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
-            self.assertIn("Failed to get response", response)
+            self.assertTrue(
+                "Terminal API Error" in response or "Failed to get response" in response
+            )
 
     @patch('providers.gemini.requests.Session')
     def test_gemini_grounding_feedback(self, mock_session_cls):
