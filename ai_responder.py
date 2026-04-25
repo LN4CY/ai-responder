@@ -602,7 +602,6 @@ class AIResponder:
         
         if targets:
             logger.info(f"🗑️ Semantically applying deletion tombstone to hubs: {targets}")
-            ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             for target in targets:
                 self.mcp_client.call_tool("mempalace_kg_add", {
                     "subject": target,
@@ -633,7 +632,6 @@ class AIResponder:
             hub_name = f"Chat_{node_id}_CH{channel}"
             hub_type = "SessionHub"
 
-        ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
         # 2. Define the Hub
         self.mcp_client.call_tool("mempalace_kg_add", {
