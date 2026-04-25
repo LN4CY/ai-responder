@@ -83,17 +83,17 @@ class TestProactiveIndexing(unittest.TestCase):
         
         self.responder._bg_index_conversation(payload)
         
-        # Verify that it used Hub_Default_!node1 instead of Chat_!node1_CH0
-        # Check call to add_observations
-        obs_call = [c for c in self.responder.mcp_client.call_tool.call_args_list if c[0][0] == "add_observations"]
+        # Verify that it used Hub_System_!node1 instead of Chat_!node1_CH0
+        # Check call to mempalace_kg_add where predicate is 'recorded_turn'
+        obs_call = [c for c in self.responder.mcp_client.call_tool.call_args_list if c[0][0] == "mempalace_kg_add" and c[0][1].get("predicate") == "recorded_turn"]
         self.assertTrue(len(obs_call) > 0)
-        entity_name = obs_call[0][0][1]['observations'][0]['entityName']
+        entity_name = obs_call[0][0][1]['subject']
         self.assertEqual(entity_name, "Hub_System_!node1")
         
-        # Verify observation content has [SYSTEM ACTION]
-        content = obs_call[0][0][1]['observations'][0]['contents'][0]
-        self.assertIn("[SYSTEM ACTION]", content)
-        self.assertIn("Task: Check SNR", content)
+        # Verify observation content has 'System Task:'
+        content = obs_call[0][0][1]['object']
+        self.assertIn("System Task:", content)
+        self.assertIn("Check SNR", content)
         self.assertNotIn("CRITICAL INSTRUCTIONS", content) # Should be cleaned up
 
 

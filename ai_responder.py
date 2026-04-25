@@ -607,8 +607,7 @@ class AIResponder:
                 self.mcp_client.call_tool("mempalace_kg_add", {
                     "subject": target,
                     "predicate": "has_status",
-                    "object": "Archived_by_User_Wipe",
-                    "started": ts
+                    "object": "Archived_by_User_Wipe"
                 })
 
     def _bg_index_conversation(self, payload):
@@ -640,14 +639,12 @@ class AIResponder:
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": hub_name,
             "predicate": "is_a",
-            "object": hub_type,
-            "started": ts
+            "object": hub_type
         })
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": node_id,
             "predicate": "participated_in",
-            "object": hub_name,
-            "started": ts
+            "object": hub_name
         })
         
         # 3. Relate Topic if in session
@@ -655,8 +652,7 @@ class AIResponder:
             self.mcp_client.call_tool("mempalace_kg_add", {
                 "subject": hub_name,
                 "predicate": "discusses_topic",
-                "object": session_name,
-                "started": ts
+                "object": session_name
             })
             
         # 4. Add Activity Observation
@@ -669,8 +665,7 @@ class AIResponder:
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": hub_name,
             "predicate": "recorded_turn",
-            "object": observation,
-            "started": ts
+            "object": observation
         })
         
         logger.info(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
@@ -702,15 +697,13 @@ class AIResponder:
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": node_id,
             "predicate": "is_a",
-            "object": "MeshNode",
-            "started": ts
+            "object": "MeshNode"
         })
         
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": node_id,
             "predicate": "reported_telemetry",
-            "object": f"Type {t_type}: {summary}",
-            "started": ts
+            "object": f"[{ts}] Type {t_type}: {summary}"
         })
         logger.info(f"🧠 Semantically indexed telemetry for {node_id}")
 

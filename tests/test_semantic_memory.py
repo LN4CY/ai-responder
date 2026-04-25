@@ -58,9 +58,7 @@ class TestSemanticMemory(unittest.TestCase):
         })
         
         # Verify tool calls are made to MemPalace
-        # Note: _bg_index_conversation calls create_entities and then add_observations
-        self.responder.mcp_client.call_tool.assert_any_call("create_entities", unittest.mock.ANY)
-        self.responder.mcp_client.call_tool.assert_any_call("add_observations", unittest.mock.ANY)
+        self.responder.mcp_client.call_tool.assert_called_with("mempalace_kg_add", unittest.mock.ANY)
 
     def test_hub_routing_dm_vs_channel(self):
         """Verify that Hub names are correctly derived for DMs and Channels."""
@@ -87,7 +85,8 @@ class TestSemanticMemory(unittest.TestCase):
         self.assertEqual(len(self.responder.history.get(dm_key, [])), 0)
         # BUT Disk/Graph should NOT be wiped (mcp_client NOT called for deletion)
         for call in self.responder.mcp_client.call_args_list:
-            self.assertNotEqual(call[0][0], "delete_entities")
+            if len(call[0]) > 1 and call[0][0] == "mempalace_kg_add":
+                self.assertNotEqual(call[0][1].get('predicate'), "has_status")
 
         # 2. Test NUCLEAR WIPE: !ai -n rm all
         self.responder.history[dm_key] = [{"role": "user", "content": "Delete me"}]
@@ -103,7 +102,7 @@ class TestSemanticMemory(unittest.TestCase):
                 
                 # Now test the wipe logic directly
                 self.responder._bg_delete_semantic_history({'node_id': from_node, 'topic': 'all', 'channel': 0})
-                self.responder.mcp_client.call_tool.assert_any_call("delete_entities", unittest.mock.ANY)
+                self.responder.mcp_client.call_tool.assert_any_call("mempalace_kg_add", unittest.mock.ANY)
 
     def test_telemetry_throttling(self):
         """Test that telemetry is only indexed every 15 minutes."""
