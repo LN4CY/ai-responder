@@ -263,7 +263,7 @@ class GeminiProvider(BaseProvider):
                     else:
                         # Terminal error for this attempt
                         logger.error(f"🛑 Gemini request failed with status: {response.status_code}, body: {response.text}")
-                        break 
+                        return f"❌ Terminal API Error ({response.status_code}): {response.text[:100]}"
                 
                 
             except requests.exceptions.Timeout as e:
