@@ -36,14 +36,14 @@ def get_my_info() -> Dict[str, Any]:
 
 @mcp.tool()
 def get_mesh_nodes() -> str:
-    """Get summarized list of active mesh nodes with their distances from the bot."""
+    """CRITICAL: ALWAYS USE THIS TOOL FIRST to get the authoritative list of all currently active mesh nodes, their names, and hardware IDs (!xxxxx). Use this instead of MemPalace for node discovery."""
     if not responder_app or not responder_app.meshtastic:
         return "Error: Meshtastic handler unavailable"
     return responder_app.meshtastic.get_node_list_summary()
 
 @mcp.tool()
 def get_node_details(node_id_or_name: str) -> str:
-    """Get cached Meshtastic data for a node including SNR, Battery, Temp, Hum, Air Quality, etc."""
+    """CRITICAL: ALWAYS USE THIS TOOL FIRST to look up a Meshtastic Node ID by its long name or short name. Gets real-time live Meshtastic data for a node including its exact hardware Node ID (!xxxxx), SNR, Battery, Temp, etc. Do not rely on MemPalace for Node IDs."""
     if not responder_app or not responder_app.meshtastic:
         return "Error: Meshtastic handler unavailable"
         
