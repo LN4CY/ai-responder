@@ -36,8 +36,8 @@ MEMPALACE_BOOTSTRAP_LOCAL  = int(os.getenv('MEMPALACE_BOOTSTRAP_LOCAL',  '6'))  
 MEMPALACE_BOOTSTRAP_ONLINE = int(os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20'))  # Gemini / OpenAI / Anthropic
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')          # fast model (simple queries)
-GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-2.5-flash')  # reasoning model (complex)
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')          # fast model (simple queries)
+GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-3.0-flash-preview')  # reasoning model (complex)
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
 GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
