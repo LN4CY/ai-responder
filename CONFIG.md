@@ -36,7 +36,7 @@ The application is configured primarily via environment variables passed to the 
 | `OLLAMA_THINKING_MODEL` | *(empty)* | The specific thinking model to use for complex queries (defaults to OLLAMA_MODEL if empty). |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | The specific Gemini fast model to use for simple queries. |
-| `GEMINI_THINKING_MODEL` | `gemini-3.0-flash-preview` | The specific Gemini thinking model to use for complex queries. |
+| `GEMINI_THINKING_MODEL` | `gemini-2.5-pro` | The specific Gemini thinking model to use for complex queries. |
 | `GEMINI_SEARCH_GROUNDING` | `false` | Enable Google Search grounding for real-time info. Set to `true` to enable (**Gemini Only**). |
 | `GEMINI_MAPS_GROUNDING` | `false` | Enable Google Maps grounding for location-based info. Set to `true` to enable (**Gemini Only**). |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
