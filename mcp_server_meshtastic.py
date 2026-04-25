@@ -26,13 +26,24 @@ def _get_caller_context():
         'to_node': thread_local.get('to_node', '^all')
     }
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively converts non-serializable objects (like protobufs) to strings."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items() if not k.startswith('_')}
+    elif isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        return str(obj)
+
 @mcp.tool()
 def get_my_info() -> Dict[str, Any]:
     """Get information about the local bot/node."""
     if not responder_app or not responder_app.meshtastic:
         return {"error": "Meshtastic handler unavailable"}
     info = responder_app.meshtastic.get_node_info()
-    return info if info else {"error": "Failed to get node info"}
+    return _sanitize_for_json(info) if info else {"error": "Failed to get node info"}
 
 @mcp.tool()
 def get_mesh_nodes() -> str:
