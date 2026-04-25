@@ -698,6 +698,23 @@ class AIResponder:
             "object": "MeshNode"
         })
         
+        # Build the semantic graph mapping of the node's name
+        node_info = self.meshtastic._get_node_by_id(node_id)
+        if node_info:
+            user = node_info.get('user', {})
+            if user.get('longName'):
+                self.mcp_client.call_tool("mempalace_kg_add", {
+                    "subject": node_id,
+                    "predicate": "has_name",
+                    "object": user.get('longName')
+                })
+            if user.get('shortName'):
+                self.mcp_client.call_tool("mempalace_kg_add", {
+                    "subject": node_id,
+                    "predicate": "has_short_name",
+                    "object": user.get('shortName')
+                })
+        
         self.mcp_client.call_tool("mempalace_kg_add", {
             "subject": node_id,
             "predicate": "reported_telemetry",
