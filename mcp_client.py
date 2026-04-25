@@ -162,8 +162,10 @@ class UnifiedMCPClient:
         base_delay = 5
         max_delay = 300
         attempt = 0
-        
+
         while True:
+            # Calculate delay at the top so it's always defined when we reach the sleep.
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay) if attempt > 0 else 0
             try:
                 print(f"[MCP] Connecting to SSE {name} at {url}...", flush=True)
                 async with sse_client(url) as (read_ctx, write_ctx):
@@ -171,11 +173,11 @@ class UnifiedMCPClient:
                     async with ClientSession(read_ctx, write_ctx) as session:
                         print(f"[MCP] Initializing session {name}...", flush=True)
                         await asyncio.wait_for(session.initialize(), timeout=15.0)
-                        
+
                         print(f"[MCP] Fetching tools for {name}...", flush=True)
                         tools_result = await asyncio.wait_for(session.list_tools(), timeout=15.0)
                         tools = tools_result.tools
-                        
+
                         self.servers[name] = {
                             'type': 'sse',
                             'session': session,
@@ -184,24 +186,38 @@ class UnifiedMCPClient:
                         }
                         print(f"[MCP] {name} CONNECTED with {len(tools)} tools.", flush=True)
                         attempt = 0
-                        
+
                         # Keep alive as long as the context manager is open
                         while True:
                             await asyncio.sleep(60)
-            except (asyncio.CancelledError, KeyboardInterrupt):
+            except asyncio.CancelledError:
+                # Bug fix: anyio's TaskGroup cleanup can leak CancelledError into our
+                # outer coroutine even though our asyncio Task was not externally cancelled.
+                # Only propagate if this task truly has a pending cancel() from the outside;
+                # otherwise treat it as a transient connection failure and keep retrying.
+                self.servers.pop(name, None)
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() > 0:
+                    raise
+                attempt += 1
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                print(f"[MCP] {name} disconnected (CancelledError). Retrying in {delay}s...", flush=True)
+                logger.warning(f"Remote MCP {name}: CancelledError during cleanup, retrying in {delay}s")
+            except (KeyboardInterrupt, SystemExit):
+                self.servers.pop(name, None)
                 raise
             except BaseException as e:
                 # Catching BaseException to handle TaskGroup ExceptionGroups
+                # Bug fix: always remove the stale session so callers don't keep
+                # trying to use a dead ClientSession.
+                self.servers.pop(name, None)
                 attempt += 1
                 delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
                 msg = f"Remote MCP {name} error: {e}"
                 print(f"[MCP] {msg}. Retrying in {delay}s...", flush=True)
                 logger.error(msg)
-                
-                if name in self.servers:
-                    self.servers.pop(name, None)
-                
-                await asyncio.sleep(delay)
+
+            await asyncio.sleep(delay)
             
     # --- Sync Wrappers for Provider Usage ---
     
