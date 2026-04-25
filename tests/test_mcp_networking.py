@@ -65,17 +65,33 @@ class TestMCPNetworking(unittest.TestCase):
         mock_session.initialize = AsyncMock(return_value=None)
         mock_session.list_tools = AsyncMock(return_value=tools_result)
         
+        # Capture server state at the moment the keepalive sleep is reached
+        # (i.e. after registration succeeds). The sleep then raises CancelledError
+        # to stop the infinite loop. After the loop exits the server is correctly
+        # removed from client.servers (disconnect cleanup), so we verify against
+        # the snapshot taken during the live connection, not after it ends.
+        captured_servers = {}
+        first_sleep = [True]
+
+        async def stop_after_registration(seconds):
+            if first_sleep[0]:
+                captured_servers.update(client.servers)
+                first_sleep[0] = False
+            raise asyncio.CancelledError()
+
         loop = asyncio.new_event_loop()
         try:
-            with patch('mcp_client.asyncio.sleep', side_effect=asyncio.CancelledError):
+            with patch('mcp_client.asyncio.sleep', new=stop_after_registration):
                 coro = client._connect_sse_server(name, url)
                 try:
                     loop.run_until_complete(coro)
                 except asyncio.CancelledError:
                     pass
-            
-            self.assertIn(name, client.servers)
-            self.assertEqual(client.servers[name]['tools'][0].name, "test_tool")
+
+            self.assertIn(name, captured_servers)
+            self.assertEqual(captured_servers[name]['tools'][0].name, "test_tool")
+            # Verify cleanup: server must be gone after disconnect
+            self.assertNotIn(name, client.servers)
         finally:
             loop.close()
 
