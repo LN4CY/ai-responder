@@ -32,15 +32,19 @@ The application is configured primarily via environment variables passed to the 
 | `AI_PROVIDER` | `ollama` | The default AI provider to use. Options: `ollama`, `gemini`, `openai`, `anthropic`. |
 | `OLLAMA_HOST` | `ollama` | Hostname of the Ollama service (if using Local AI). |
 | `OLLAMA_PORT` | `11434` | Port of the Ollama service. |
-| `OLLAMA_MODEL` | `llama3.2:1b` | The specific model to use with Ollama. |
+| `OLLAMA_MODEL` | `llama3.2:1b` | The specific fast model to use with Ollama for simple queries. |
+| `OLLAMA_THINKING_MODEL` | *(empty)* | The specific thinking model to use for complex queries (defaults to OLLAMA_MODEL if empty). |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | The specific Gemini model version to use. |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | The specific Gemini fast model to use for simple queries. |
+| `GEMINI_THINKING_MODEL` | `gemini-2.5-flash` | The specific Gemini thinking model to use for complex queries. |
 | `GEMINI_SEARCH_GROUNDING` | `false` | Enable Google Search grounding for real-time info. Set to `true` to enable (**Gemini Only**). |
 | `GEMINI_MAPS_GROUNDING` | `false` | Enable Google Maps grounding for location-based info. Set to `true` to enable (**Gemini Only**). |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
-| `OPENAI_MODEL` | `gpt-3.5-turbo` | The specific OpenAI model to use. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | The specific OpenAI fast model to use for simple queries. |
+| `OPENAI_REASONING_MODEL` | `o4-mini` | The specific OpenAI reasoning model to use for complex queries. |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
-| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic model to use. |
+| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic fast model to use for simple queries. |
+| `ANTHROPIC_THINKING_MODEL` | `claude-sonnet-4-6` | The specific Anthropic thinking model to use for complex queries. |
 
 ### AI Persona / System Prompt
 
