@@ -196,8 +196,9 @@ class UnifiedMCPClient:
                 # Only propagate if this task truly has a pending cancel() from the outside;
                 # otherwise treat it as a transient connection failure and keep retrying.
                 self.servers.pop(name, None)
+                # task.cancelling() is Python 3.12+; fall back to 0 on older runtimes.
                 task = asyncio.current_task()
-                if task is not None and task.cancelling() > 0:
+                if task is not None and getattr(task, 'cancelling', lambda: 0)() > 0:
                     raise
                 attempt += 1
                 delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
