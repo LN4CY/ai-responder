@@ -8,7 +8,8 @@ import requests
 import logging
 import json
 from .base import BaseProvider
-from config import OLLAMA_HOST, OLLAMA_PORT, OLLAMA_MODEL, OLLAMA_MAX_MESSAGES, load_system_prompt
+from config import OLLAMA_HOST, OLLAMA_PORT, OLLAMA_MODEL, OLLAMA_MAX_MESSAGES, OLLAMA_THINKING_MODEL, load_system_prompt
+from .routing import classify_complexity
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,13 @@ class OllamaProvider(BaseProvider):
 
     def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
         """Get response from Ollama."""
+        complexity = classify_complexity(prompt, history)
+        thinking_model = self.config.get('ollama_thinking_model', OLLAMA_THINKING_MODEL)
+        model = (thinking_model or OLLAMA_MODEL) if complexity == 'complex' else OLLAMA_MODEL
+        logger.info(f"[routing] complexity={complexity} → {model}")
+
         url = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/chat"
-        
+
         system_prompt = load_system_prompt('ollama', context_id=context_id)
         messages = [{'role': 'system', 'content': system_prompt}]
         
@@ -68,7 +74,7 @@ class OllamaProvider(BaseProvider):
             
             for turn in range(5):
                 payload = {
-                    "model": OLLAMA_MODEL,
+                    "model": model,
                     "messages": messages,
                     "stream": False
                 }

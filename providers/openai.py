@@ -8,7 +8,8 @@ import requests
 import logging
 import json
 from .base import BaseProvider
-from config import OPENAI_API_KEY, OPENAI_MODEL, load_system_prompt
+from config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_REASONING_MODEL, load_system_prompt
+from .routing import classify_complexity
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,13 @@ class OpenAIProvider(BaseProvider):
         if not OPENAI_API_KEY:
             return "Error: OpenAI API key missing."
         
+        complexity = classify_complexity(prompt, history)
+        reasoning_model = self.config.get('openai_reasoning_model', OPENAI_REASONING_MODEL)
+        model = reasoning_model if complexity == 'complex' else OPENAI_MODEL
+        logger.info(f"[routing] complexity={complexity} → {model}")
+
         url = 'https://api.openai.com/v1/chat/completions'
-        
+
         system_prompt = load_system_prompt('openai', context_id=context_id)
         messages = [{'role': 'system', 'content': system_prompt}]
         
@@ -70,7 +76,7 @@ class OpenAIProvider(BaseProvider):
             
             for turn in range(5):
                 payload = {
-                    'model': OPENAI_MODEL,
+                    'model': model,
                     'messages': messages,
                     'max_tokens': 150
                 }

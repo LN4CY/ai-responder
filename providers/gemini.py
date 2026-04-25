@@ -10,6 +10,7 @@ import time
 from .base import BaseProvider
 import config
 from config import load_system_prompt
+from .routing import classify_complexity
 
 
 
@@ -65,7 +66,11 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        model = self.config.get('gemini_model', config.GEMINI_MODEL)
+        complexity = classify_complexity(prompt, history)
+        fast_model = self.config.get('gemini_model', config.GEMINI_MODEL)
+        thinking_model = self.config.get('gemini_thinking_model', config.GEMINI_THINKING_MODEL)
+        model = thinking_model if complexity == 'complex' else fast_model
+        logger.info(f"[routing] complexity={complexity} → {model}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         
         # 1. Prepare Tools Payload

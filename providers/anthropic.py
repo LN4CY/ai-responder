@@ -8,7 +8,8 @@ import requests
 import logging
 import json
 from .base import BaseProvider
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, load_system_prompt
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_THINKING_MODEL, load_system_prompt
+from .routing import classify_complexity
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,13 @@ class AnthropicProvider(BaseProvider):
         if not ANTHROPIC_API_KEY:
             return "Error: Anthropic API key missing."
         
+        complexity = classify_complexity(prompt, history)
+        thinking_model = self.config.get('anthropic_thinking_model', ANTHROPIC_THINKING_MODEL)
+        model = thinking_model if complexity == 'complex' else ANTHROPIC_MODEL
+        logger.info(f"[routing] complexity={complexity} → {model}")
+
         url = 'https://api.anthropic.com/v1/messages'
-        
+
         system_prompt = load_system_prompt('anthropic', context_id=context_id)
         messages = []
         
@@ -68,7 +74,7 @@ class AnthropicProvider(BaseProvider):
             
             for turn in range(5):
                 payload = {
-                    'model': ANTHROPIC_MODEL,
+                    'model': model,
                     'max_tokens': 150,
                     'system': system_prompt,
                     'messages': messages
