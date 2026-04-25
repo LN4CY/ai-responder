@@ -112,9 +112,15 @@ If using the `ollama` provider, you must run the Ollama container and pull a mod
 ### Connecting to MeshMonitor
 
 The `ai-responder` acts as a "client" to [MeshMonitor](https://github.com/yeraze/meshmonitor).
-- **MeshMonitor** must have `ENABLE_VIRTUAL_NODE=true` configured.
-- The `ai-responder` connects to MeshMonitor's virtual node TCP port (default `4404`).
+- The `ai-responder` connects to MeshMonitor's Virtual Node TCP port (default `4404`).
 - This allows the AI bot to "see" chat messages on the mesh without needing its own dedicated LoRa radio hardware, leveraging the radio connected to MeshMonitor.
+
+**Enabling the Virtual Node in MeshMonitor:**
+
+| Version | How to enable |
+|---------|---------------|
+| **v4.0+** | Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404` |
+| **v3.x** | Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars |
 
 61
 62
@@ -135,7 +141,12 @@ docker run -d \
 
 ### Integration with MeshMonitor
 
-To use with [MeshMonitor](https://github.com/Yeraze/meshmonitor), ensure MeshMonitor has `ENABLE_VIRTUAL_NODE=true`.
+To use with [MeshMonitor](https://github.com/Yeraze/meshmonitor), first enable the Virtual Node in MeshMonitor:
+
+- **v4.0+**: Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404`
+- **v3.x**: Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars
+
+Then configure ai-responder:
 
 1.  Add `ai-responder` to your `docker-compose.yml` (see installation above).
 2.  Set `MESHTASTIC_HOST=meshmonitor` (container name).
