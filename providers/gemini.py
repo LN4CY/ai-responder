@@ -152,7 +152,10 @@ class GeminiProvider(BaseProvider):
                     
                     # Check for transient errors or rate limits to retry (outer loop)
                     if response.status_code in [429, 500, 502, 503, 504] and attempt < max_retries:
-                        logger.warning(f"⚠️ Gemini service error/rate-limit ({response.status_code}). Retrying...")
+                        if response.status_code == 429:
+                            logger.warning("⚠️ Gemini rate-limit (429). Retrying...")
+                        else:
+                            logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
                         break # break turn loop, fall back to attempt retry
                     
                     # Process Success

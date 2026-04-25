@@ -40,8 +40,6 @@ def classify_complexity(prompt: str, history=None) -> str:
         if kw in text:
             return 'complex'
 
-    # A deep conversation context hints at an ongoing complex task
-    if history and len(history) >= 6:
-        return 'complex'
+    # Removed history length check: a long conversation doesn't mean the current turn is complex.
 
     return 'simple'
