@@ -1040,7 +1040,7 @@ class AIResponder:
                 history = rehydrated
                 success = True
                 source = 'graph'
-                message = f"💧 Session '{identifier}' re-hydrated from Semantic Graph ({len(rehydrated)//2} turns)."
+                message = f"💧 Re-hydrated '{identifier}' from Semantic Graph ({len(rehydrated)//2} turns)."
 
         # 2. Fallback to disk archive (verbatim, used when graph has no record)
         if not success:
