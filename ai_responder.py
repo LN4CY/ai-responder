@@ -54,6 +54,10 @@ logger = logging.getLogger('AI-Responder')
 # Set logging level for handler based on global log_level
 logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
+# Suppress noisy httpx INFO logs ("HTTP Request: POST ...") — only errors are useful
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+
 
 __version__ = "2.0.0"
 

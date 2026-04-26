@@ -278,7 +278,17 @@ class UnifiedMCPClient:
             
         if not target_server:
             return f"Error: Tool '{tool_name}' not found on any active MCP server."
-            
+
+        # Log the operation being performed with a human-readable summary
+        server_name = next(
+            (n for n, s in self.servers.items() if s is target_server), "unknown"
+        )
+        # Build a concise argument summary (truncate long values)
+        arg_summary = ", ".join(
+            f"{k}={repr(v)[:60]}" for k, v in (arguments or {}).items()
+        )
+        logger.info(f"MCP call [{server_name}] {tool_name}({arg_summary})")
+
         try:
             if target_server['type'] == 'internal':
                 # Execute native sync/async fastmcp tool
