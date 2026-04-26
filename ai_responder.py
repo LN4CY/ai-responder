@@ -1026,18 +1026,27 @@ class AIResponder:
         return None
 
     def _load_and_respond(self, identifier, from_node, to_node, channel, is_dm):
-        """Helper to load a session (Disk with Graph fallback) and notify user."""
-        success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, identifier)
-        
-        # Semantic Re-hydration Fallback
-        if not success and self.mcp_client and self.mcp_client.has_server('mempalace'):
-            # Try to load topic name directly from graph if identifier is a name
+        """Helper to load a session (MemPalace primary, disk fallback) and notify user."""
+        history = None
+        conversation_name = identifier
+        success = False
+        message = f"Conversation '{identifier}' not found."
+        source = None
+
+        # 1. Try MemPalace first — lighter than reading the disk archive
+        if self.mcp_client and self.mcp_client.has_server('mempalace'):
             rehydrated = self._rehydrate_session_from_graph(from_node, identifier)
             if rehydrated:
                 history = rehydrated
-                conversation_name = identifier
                 success = True
-                message = f"💧 Re-hydrated '{identifier}' from Semantic Graph."
+                source = 'graph'
+                message = f"💧 Session '{identifier}' re-hydrated from Semantic Graph ({len(rehydrated)//2} turns)."
+
+        # 2. Fallback to disk archive (verbatim, used when graph has no record)
+        if not success:
+            success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, identifier)
+            if success:
+                source = 'disk'
 
         if success and history:
             self.history[conversation_name] = history
@@ -1045,21 +1054,103 @@ class AIResponder:
             if is_dm:
                 self.session_manager.start_session(from_node, conversation_name, channel, to_node)
                 message += "\n🟢 Session Resumed"
+            logger.info(f"📂 Loaded session '{conversation_name}' for {from_node} from {source}")
             self.send_response(message, from_node, to_node, channel)
         else:
             self.send_response(message, from_node, to_node, channel)
 
     def _rehydrate_session_from_graph(self, node_id, topic_name):
-        """Attempt to reconstruct a session's history from MemPalace observations."""
+        """Reconstruct a session's conversation history from MemPalace KG observations.
+
+        The graph stores per turn:
+            hub_name  discusses_topic  session_name
+            node_id   participated_in  hub_name
+            hub_name  recorded_turn    "User: {prompt} | AI: {response}"
+
+        Strategy:
+          1. Find hubs that discuss topic_name (incoming edges on topic entity)
+          2. Intersect with hubs this node_id participated in (ownership check)
+          3. Gather recorded_turn facts from valid hubs, sort by valid_from
+          4. Parse each observation back into {"role": ..., "content": ...} pairs
+        """
         try:
-            # Note: This is a synchronous call to the re-hydration tool
-            # In a real graph, we'd search for the Topic hub and get its turns
-            # For now, we search for the topic name to see if it's there
-            self.mcp_client.call_tool("read_graph", {}) # Fetch whole graph to filter locally for now
-            # Actually, read_graph without args might be too heavy. 
-            # We'll use a specific search if the tool supports it.
-            return None # Implementation of specific pattern matching TBD based on final graph schema
-        except Exception:
+            # Step 1: hubs that link to this topic via discusses_topic
+            topic_result = self.mcp_client.call_tool("mempalace_kg_query", {
+                "entity": topic_name,
+                "direction": "incoming"
+            })
+            topic_hubs = set()
+            if isinstance(topic_result, dict):
+                for fact in topic_result.get("facts", []):
+                    if fact.get("predicate") == "discusses_topic":
+                        topic_hubs.add(fact["subject"])
+
+            # Step 2: hubs this node participated in
+            node_result = self.mcp_client.call_tool("mempalace_kg_query", {
+                "entity": node_id,
+                "direction": "outgoing"
+            })
+            node_hubs = set()
+            if isinstance(node_result, dict):
+                for fact in node_result.get("facts", []):
+                    if fact.get("predicate") == "participated_in":
+                        node_hubs.add(fact["object"])
+
+            # Validated candidates: hub discusses the topic AND belongs to this node
+            candidate_hubs = topic_hubs & node_hubs
+
+            # Fallback: topic_name might be the hub name itself (e.g. Chat_!abc_CH0)
+            if not candidate_hubs and topic_name in node_hubs:
+                candidate_hubs = {topic_name}
+
+            if not candidate_hubs:
+                logger.debug(f"Re-hydration: no hub found for {node_id}/{topic_name}")
+                return None
+
+            # Step 3: collect recorded_turn observations across all matching hubs
+            all_turns = []
+            for hub in candidate_hubs:
+                hub_result = self.mcp_client.call_tool("mempalace_kg_query", {
+                    "entity": hub,
+                    "direction": "outgoing"
+                })
+                if isinstance(hub_result, dict):
+                    for fact in hub_result.get("facts", []):
+                        if fact.get("predicate") == "recorded_turn":
+                            all_turns.append({
+                                "observation": fact.get("object", ""),
+                                "valid_from": fact.get("valid_from") or "",
+                            })
+
+            if not all_turns:
+                logger.debug(f"Re-hydration: hubs found but no recorded_turn facts for {node_id}/{topic_name}")
+                return None
+
+            # Step 4: chronological order then parse into history format
+            all_turns.sort(key=lambda t: t["valid_from"])
+
+            history = []
+            for turn in all_turns:
+                obs = turn["observation"]
+                if obs.startswith("User: ") and " | AI: " in obs:
+                    user_part, ai_part = obs.split(" | AI: ", 1)
+                    history.append({"role": "user",      "content": user_part[len("User: "):]})
+                    history.append({"role": "assistant", "content": ai_part})
+                elif obs.startswith("System Task: ") and " | Result: " in obs:
+                    # System-triggered turns — include as background context only
+                    history.append({"role": "user",      "content": f"[Context] {obs}"})
+                else:
+                    history.append({"role": "user", "content": obs})
+
+            if not history:
+                return None
+
+            logger.info(f"💧 Re-hydrated {len(all_turns)} turns for {node_id}/{topic_name} "
+                        f"from {len(candidate_hubs)} hub(s)")
+            return history
+
+        except Exception as e:
+            logger.warning(f"Re-hydration from graph failed for {node_id}/{topic_name}: {e}")
             return None
     
     def _handle_provider_command(self, args, from_node, to_node, channel):
