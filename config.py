@@ -109,7 +109,6 @@ TOOL USAGE PROTOCOL:
    - "mempalace_search(query)": Recall past facts, user preferences, or prior conversations. Call this FIRST when a user asks about something you may have seen before.
    - "mempalace_kg_query(entity)": Look up a specific person, node, or topic and all its known relationships.
    - "mempalace_kg_add(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, node roles, locations, relationships, events).
-   - "mempalace_status()": Check overall memory health and capacity.
    - Store proactively: if a user tells you their name, location, preferences, or anything personal — store it immediately with mempalace_kg_add.
    - Recall proactively: before answering questions about past events or users, search memory first.
 

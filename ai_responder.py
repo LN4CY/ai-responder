@@ -425,20 +425,38 @@ class AIResponder:
         # 2. Semantic Indexing Stats
         semantic_status = "Disabled"
         if self.mcp_client and self.mcp_client.has_server('mempalace'):
-            # Basic stats from our indexing attempt cache
-            active_hubs = len(self._mcp_indexing_cache)
-            
-            # Check disk size of MemPalace data directory
-            mcp_data_path = "/root/.local/share/mcp-memory"
-            sem_size_kb = 0
-            if os.path.exists(mcp_data_path):
-                total_size = 0
-                for dirpath, _, filenames in os.walk(mcp_data_path):
-                    for f in filenames:
-                        total_size += os.path.getsize(os.path.join(dirpath, f))
-                sem_size_kb = total_size / 1024
-                
-            semantic_status = f"Active ({active_hubs} hubs, {sem_size_kb:.1f}KB)"
+            try:
+                # Query mempalace-server for true status rather than relying on local cache
+                status_raw = self.mcp_client.call_tool("mempalace_status", {})
+                try:
+                    status_dict = json.loads(status_raw) if isinstance(status_raw, str) else status_raw
+
+                    triples = status_dict.get('kg_total_triples', status_dict.get('total_triples', '?'))
+                    entities = status_dict.get('kg_total_entities', status_dict.get('total_entities', '?'))
+                    size_bytes = status_dict.get('kg_size_bytes', status_dict.get('db_size_bytes', 0))
+
+                    # Also check for nested kg_status block if present
+                    kg_status = status_dict.get('kg_status', status_dict.get('semantic_db', {}))
+                    if isinstance(kg_status, dict) and kg_status:
+                        triples = kg_status.get('total_triples', triples)
+                        entities = kg_status.get('total_entities', entities)
+                        size_bytes = kg_status.get('size_bytes', size_bytes)
+
+                    size_str = f"{size_bytes / 1024:.1f}KB" if size_bytes else "Unknown Size"
+
+                    # If we couldn't find triples/entities, just show the cache size as fallback
+                    if triples == '?' and entities == '?':
+                        active_hubs = len(self._mcp_indexing_cache)
+                        semantic_status = f"Active ({active_hubs} local hubs cached, {size_str})"
+                    else:
+                        semantic_status = f"Active ({entities} entities, {triples} facts, {size_str})"
+                except Exception as e:
+                    logger.debug(f"Could not parse mempalace status JSON: {e}")
+                    active_hubs = len(self._mcp_indexing_cache)
+                    semantic_status = f"Active (Connected, {active_hubs} local hubs cached)"
+            except Exception as e:
+                logger.error(f"Failed to fetch mempalace status: {e}")
+                semantic_status = "Active (Status Unavailable)"
 
         # 3. Provider Info
         provider = self.config.get('current_provider', 'ollama')
