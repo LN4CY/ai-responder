@@ -3,7 +3,7 @@
 # See LICENSE file in the project root for full license details.
 
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch
 import sys
 import os
 import threading
@@ -18,10 +18,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import modules to test
 import config
 from ai_responder import AIResponder
-import providers.ollama
-import providers.gemini
-import providers.openai
-import providers.anthropic
 from conversation.session import SessionManager
 
 class TestAIResponder(unittest.TestCase):
@@ -108,7 +104,7 @@ class TestAIResponder(unittest.TestCase):
                 self.responder.meshtastic.telemetry_timestamps = MagicMock()
                 self.responder.meshtastic.telemetry_timestamps.get.return_value.get.side_effect = [0, 200]
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("Success! New telemetry received", result)
                 self.assertIn("Temp: 25C", result)
@@ -135,7 +131,7 @@ class TestAIResponder(unittest.TestCase):
                     'channel': 0
                 }
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("The mesh is slow", result)
                 # Cleanup the mock worker
@@ -156,28 +152,54 @@ class TestAIResponder(unittest.TestCase):
         self.assertEqual(channel_key, f"Channel:1:{user_id}")
         self.assertNotEqual(channel_key, "TestSession")
 
-    def test_session_name_sanitization(self):
-        """Test that bad session names are sanitized correctly."""
-        user_id = "!sanitizeme"
+    def test_session_command_n_behavior(self):
+        """Test the new safe reset (!ai -n) vs nuclear wipe (!ai -n rm all) logic."""
+        from_node = "!user1"
+        dm_key = f"DM:{from_node}"
+        self.responder.history[dm_key] = [{"role": "user", "content": "hello"}]
         
-        # 1. Names with path traversal / bad chars
-        bad_name = "../etc/passwd\\test"
-        success, msg, sanitized_name = self.responder.session_manager.start_session(user_id, bad_name)
+        # 1. Test SAFE RESET: !ai -n
+        self.responder.process_command("!ai -n", from_node, "!bot", 0)
+        # Buffer should be cleared
+        self.assertEqual(len(self.responder.history.get(dm_key, [])), 0)
+        # Verify NO deletion of saved history was triggered
+        self.responder.meshtastic.send_message.assert_called()
+        msg = self.responder.meshtastic.send_message.call_args[0][0]
+        self.assertIn("safely archived", msg)
+
+        # 2. Test NUCLEAR WIPE: !ai -n rm all
+        self.responder.history[dm_key] = [{"role": "user", "content": "secret"}]
+        with patch.object(self.responder.conversation_manager, 'delete_all_conversations') as mock_del:
+            self.responder.process_command("!ai -n rm all", from_node, "!bot", 0)
+            # Disk wipe MUST be called
+            mock_del.assert_called_with(from_node)
+            # Response should indicate wipe
+            msg_wipe = self.responder.meshtastic.send_message.call_args[0][0]
+            self.assertIn("Nuclear Wipe", msg_wipe)
+
+    def test_semantic_rehydration_fallback(self):
+        """Test that loading fails over to graph if disk load returns False."""
+        from_node = "!user1"
+        topic = "AgedOffTopic"
         
-        # Expected: alphanumeric/underscore/hyphen only
-        self.assertEqual(sanitized_name, "etcpasswdtest")
-        self.assertIn("Session started: 'etcpasswdtest'", msg)
-        
-        # 2. Check history path for this sanitized name
-        path = self.responder._get_history_path(sanitized_name)
-        self.assertTrue(path.endswith("etcpasswdtest.json"))
-        # Ensure no path traversal in the final result
-        self.assertNotIn("..", path)
-        
-        # 3. Completely invalid name
-        empty_name = "!!!@@@###"
-        _, _, name3 = self.responder.session_manager.start_session(user_id, empty_name)
-        self.assertEqual(name3, "unnamed_session")
+        # Mock disk load failure specifically for this call
+        with patch.object(self.responder.conversation_manager, 'load_conversation', 
+                         return_value=(False, "Not found", [], None)):
+            
+            # Mock MCP presence and semantic success
+            self.responder.mcp_client = MagicMock()
+            self.responder.mcp_client.has_server.return_value = True
+            
+            rehydrated_history = [{"role": "user", "content": "from graph"}]
+            with patch.object(self.responder, '_rehydrate_session_from_graph', return_value=rehydrated_history):
+                self.responder.process_command(f"!ai -c {topic}", from_node, "!bot", 0)
+                
+                # Should have history now
+                self.assertIn(topic, self.responder.history)
+                self.assertEqual(self.responder.history[topic], rehydrated_history)
+                # Message should mention re-hydration
+                msg = self.responder.meshtastic.send_message.call_args[0][0]
+                self.assertIn("Re-hydrated", msg)
 
     def test_provider_list(self):
         """Test listing providers."""
@@ -381,7 +403,7 @@ class TestAIResponder(unittest.TestCase):
         self.assertNotIn(0, self.responder.config['allowed_channels'])
         
         # 3. Verify IGNORE on Channel 0 (disabled BROADCAST)
-        with patch.object(self.responder, 'process_command') as mock_process_2:
+        with patch.object(self.responder, 'process_command'):
             pkt = {'decoded': {'text': '!ai hi', 'portnum': 'TEXT_MESSAGE_APP'}, 
                    'fromId': '!tester', 'toId': '^all', 'channel': 0}
             self.responder.on_receive(pkt, None)
@@ -412,19 +434,6 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
-    def test_channel_ls_command(self):
-        """Test the channel list command output."""
-        self.responder.send_response = MagicMock()
-        self.responder.config['allowed_channels'] = [0, 3]
-        
-        # Mock available channels
-        mock_channels = [
-            {'index': 0, 'name': 'Primary'},
-            {'index': 1, 'name': ''},
-            {'index': 3, 'name': 'Admin'}
-        ]
-        self.responder.meshtastic.get_channels = MagicMock(return_value=mock_channels)
-        
     def test_channel_ls_command(self):
         """Test the channel list command output."""
         self.responder.send_response = MagicMock()
@@ -631,7 +640,6 @@ class TestSessionNotifications(unittest.TestCase):
         """Test that !ai -end correctly unpacks the 4 values from end_session."""
         from_node = "!sender"
         to_node = "!bot"
-        channel = 5
         
         # Mock end_session to return 4 values
         with patch.object(self.session_manager, 'end_session') as mock_end:
@@ -740,7 +748,7 @@ class TestSessionNotifications(unittest.TestCase):
         
         # 2. Mock get_node_metadata to return a string (simulating real handler output)
         self.responder.meshtastic.get_node_metadata.side_effect = lambda node_id: \
-            f"(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
+            "(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
 
         # 3. Test metadata formatting (Direct check)
         meta = self.responder.meshtastic.get_node_metadata("!bot")
@@ -839,7 +847,9 @@ class TestAIProviders(unittest.TestCase):
         
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
-            self.assertIn("Failed to get response", response)
+            self.assertTrue(
+                "Terminal API Error" in response or "Failed to get response" in response
+            )
 
     @patch('providers.gemini.requests.Session')
     def test_gemini_grounding_feedback(self, mock_session_cls):

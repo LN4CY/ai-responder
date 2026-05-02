@@ -2,3 +2,4 @@
 meshtastic  # LGPL/GPLv3
 requests    # Apache 2.0
 pypubsub    # BSD 2-Clause
+mcp         # MIT

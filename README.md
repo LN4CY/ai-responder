@@ -15,6 +15,15 @@ One agent, many brains. Choose the provider that fits your deployment:
 - **Local (Ollama)**: Full privacy and off-grid autonomy using models like Llama 3.2.
 - **Cloud (Gemini, OpenAI, Anthropic)**: High-reasoning capabilities with advanced tool orchestration and grounding.
 
+### 🔌 Modular Model Context Protocol (MCP)
+The architecture routes capabilities exclusively through standard MCP:
+- **Plug-and-Play Tools**: AI capabilities are dynamically fetched from your configured MCP servers. Connecting a new service (like home automation or search) automatically makes it available to the bot on the mesh.
+- **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+    - **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability for privacy and resource control.
+    - **Deep Memory Re-hydration**: Ability to load and reconstruct sessions directly from the Knowledge Graph even after they've aged off the local disk.
+    - **Recursive Autonomous Scheduling**: AI can schedule future tasks, recurring reminders, or complex multi-step workflows.
+- **Internal Integration**: The core Meshtastic capabilities (sending messages, requesting telemetry, mapping nodes) are exposed dynamically as standard MCP tool endpoints to the AI processors.
+
 ### 🔗 Industrial-Grade Resiliency
 Designed for 24/7 autonomous operation in remote environments:
 - **Radio Watchdog**: Automatically detects and recovers from "zombie" connections where the radio hardware is active but the logic link has failed.
@@ -53,8 +62,7 @@ The AI can now spontaneously send messages to users or manage its own future beh
 
 | Feature | Status | Description |
 | :--- | :--- | :--- |
-| **Multi-Turn Tools** | ✅ Done | Native tool calling for all major AI providers. |
-| **Adaptive Logic** | ✅ Done | Automatic fallback between tools and metadata injection. |
+| **Modular MCP Architecture** | ✅ Done | Native Model Context Protocol (MCP) integration for dynamic tool discovery. |
 | **Radio Resilience** | ✅ Done | Implicit ACK detection and Pending ACK Buffer. |
 | **Proactive Agents** | ✅ Done | Scheduled msgs, condition watchers, and deferred telemetry callbacks. |
 | **Web UI Dashboard** | 🚧 In Progress | Portable browser interface for setup and management. |
@@ -77,21 +85,17 @@ The AI can now spontaneously send messages to users or manage its own future beh
 Add to your `docker-compose.yml`:
 
 ```yaml
-  ai-responder:
-    image: ghcr.io/ln4cy/ai-responder:latest
-    environment:
-      - MESHTASTIC_HOST=meshmonitor
-      - MESHTASTIC_PORT=4404
-      - AI_PROVIDER=gemini
-      - GEMINI_API_KEY=your_key_here
-      - GEMINI_SEARCH_GROUNDING=true # Optional
-      - GEMINI_MAPS_GROUNDING=true   # Optional
-      - ADMIN_NODE_ID=!your_admin_id
-    volumes:
-      - ai-data:/app/data
-    depends_on:
-      - meshmonitor
-      - ollama
+   ai-responder:
+     image: ghcr.io/ln4cy/ai-responder:latest
+     environment:
+       - MESHTASTIC_HOST=meshmonitor
+       - MESHTASTIC_PORT=4404
+       - AI_PROVIDER=gemini
+       - GEMINI_API_KEY=your_key_here
+       - MEMPALACE_URL=http://mempalace-viz:8000/sse  # Link to modular memory
+       - ADMIN_NODE_ID=!your_admin_id
+     depends_on:
+       - mempalace-viz
 ```
 
 ### Ollama Setup (Local AI)
@@ -108,9 +112,15 @@ If using the `ollama` provider, you must run the Ollama container and pull a mod
 ### Connecting to MeshMonitor
 
 The `ai-responder` acts as a "client" to [MeshMonitor](https://github.com/yeraze/meshmonitor).
-- **MeshMonitor** must have `ENABLE_VIRTUAL_NODE=true` configured.
-- The `ai-responder` connects to MeshMonitor's virtual node TCP port (default `4404`).
+- The `ai-responder` connects to MeshMonitor's Virtual Node TCP port (default `4404`).
 - This allows the AI bot to "see" chat messages on the mesh without needing its own dedicated LoRa radio hardware, leveraging the radio connected to MeshMonitor.
+
+**Enabling the Virtual Node in MeshMonitor:**
+
+| Version | How to enable |
+|---------|---------------|
+| **v4.0+** | Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404` |
+| **v3.x** | Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars |
 
 61
 62
@@ -131,7 +141,12 @@ docker run -d \
 
 ### Integration with MeshMonitor
 
-To use with [MeshMonitor](https://github.com/Yeraze/meshmonitor), ensure MeshMonitor has `ENABLE_VIRTUAL_NODE=true`.
+To use with [MeshMonitor](https://github.com/Yeraze/meshmonitor), first enable the Virtual Node in MeshMonitor:
+
+- **v4.0+**: Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404`
+- **v3.x**: Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars
+
+Then configure ai-responder:
 
 1.  Add `ai-responder` to your `docker-compose.yml` (see installation above).
 2.  Set `MESHTASTIC_HOST=meshmonitor` (container name).

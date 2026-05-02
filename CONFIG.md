@@ -28,18 +28,23 @@ The application is configured primarily via environment variables passed to the 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFIG_FILE` | `/app/data/config.json` | Path to the persistent configuration file. |
+| `MCP_SERVERS_FILE` | `/app/data/mcp_servers.json` | Path to the active Model Context Protocol definitions. |
 | `AI_PROVIDER` | `ollama` | The default AI provider to use. Options: `ollama`, `gemini`, `openai`, `anthropic`. |
 | `OLLAMA_HOST` | `ollama` | Hostname of the Ollama service (if using Local AI). |
 | `OLLAMA_PORT` | `11434` | Port of the Ollama service. |
-| `OLLAMA_MODEL` | `llama3.2:1b` | The specific model to use with Ollama. |
+| `OLLAMA_MODEL` | `llama3.2:1b` | The specific fast model to use with Ollama for simple queries. |
+| `OLLAMA_THINKING_MODEL` | *(empty)* | The specific thinking model to use for complex queries (defaults to OLLAMA_MODEL if empty). |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini (required if provider is `gemini`). |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | The specific Gemini model version to use. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | The specific Gemini fast model to use for simple queries. |
+| `GEMINI_THINKING_MODEL` | `gemini-2.5-pro` | The specific Gemini thinking model to use for complex queries. |
 | `GEMINI_SEARCH_GROUNDING` | `false` | Enable Google Search grounding for real-time info. Set to `true` to enable (**Gemini Only**). |
 | `GEMINI_MAPS_GROUNDING` | `false` | Enable Google Maps grounding for location-based info. Set to `true` to enable (**Gemini Only**). |
 | `OPENAI_API_KEY` | - | API Key for OpenAI (required if provider is `openai`). |
-| `OPENAI_MODEL` | `gpt-3.5-turbo` | The specific OpenAI model to use. |
+| `OPENAI_MODEL` | `gpt-4o-mini` | The specific OpenAI fast model to use for simple queries. |
+| `OPENAI_REASONING_MODEL` | `o4-mini` | The specific OpenAI reasoning model to use for complex queries. |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
-| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic model to use. |
+| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic fast model to use for simple queries. |
+| `ANTHROPIC_THINKING_MODEL` | `claude-sonnet-4-6` | The specific Anthropic thinking model to use for complex queries. |
 
 ### AI Persona / System Prompt
 
@@ -52,16 +57,15 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
-### Situational Awareness (AI Tool Use)
+*   **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+*   **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability.
+*   **Recursive Autonomous Scheduling**: AI can schedule future tasks...
 
-The responder uses **AI Function Calling** (Adaptive Tools) to proactively query the network. This eliminates noisy metadata injection and allows the AI to only fetch what it needs.
+**MCP Routing Implementation:**
+- **Internal Meshtastic MCP Server**: Provides all radio capabilities directly via the unified MCP client.
+- **External Plugins (e.g. MemPalace)**: If configured in `mcp_servers.json`, tools like `store_memory` or `search_memory` are passed dynamically to the AI.
 
-**Provider Implementation:**
-- **Gemini**: Native function calling with multi-turn orchestration and **Dynamic Grounding Switch** (simulated mixed mode).
-- **OpenAI / Anthropic**: Multi-turn tool loops using structured API requests.
-- **Ollama**: Conditional tool support (Llama 3.1+, Nemo) with text fallback.
-
-**Available AI Tools:**
+**Internal MCP Capabilities:**
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
@@ -99,6 +103,29 @@ volumes:
 |----------|---------|-------------|
 | `ADMIN_NODE_ID` | - | Comma-separated list of Node IDs authorized for admin commands (e.g., `!1234abcd,!9e044360`). Automatically loaded and deduplicated on startup—any corrupted entries from previous configs are cleaned and saved back to `config.json` automatically. |
 | `ALLOWED_CHANNELS` | `0,3` | Comma-separated list of channel indices the bot listens on. |
+
+## Session & Semantic Memory Management
+
+The AI Responder uses a hybrid memory system combining **Local History (Disk)** for speed and **Semantic Knowledge (Graph/MemPalace)** for deep, long-term recall.
+
+### Core Commands
+
+| Command | Behavior | Context | Example |
+| :--- | :--- | :--- | :--- |
+| `!ai -n [Topic]` | **Pivot**: Starts a named session. Archives current context to the Knowledge Graph and resets the active buffer. | All | `!ai -n Solar Project` |
+| `!ai -n` | **Reset**: Clears the bot’s current train of thought and reverts to the 'Default' context. (Safe: No data is deleted). | All | `!ai -n` |
+| `!ai -n rm all` | **Nuclear Wipe**: Explicitly deletes all history for the current context from both disk and graph. | DM | `!ai -n rm all` |
+| `!ai -end` | **Archive & Close**: Ends the active named session and returns to default mode. | DM | `!ai -end` |
+| `!ai -c ls` | **Merged List**: Lists all 10 local disk slots PLUS archived topics found in the Knowledge Graph. | DM | `!ai -c ls` |
+| `!ai -c [id/name]` | **Load/Re-hydrate**: Resumes a session. If the slot is gone from disk, the AI "re-hydrates" it from the Graph. | DM | `!ai -c 1` or `!ai -c Solar` |
+
+### Multi-Dimensional Hubs (Knowledge Graph)
+When MemPalace is enabled, data is indexed into three distinct "Hubs":
+*   **Identity Hub (`MeshNode`)**: Permanent facts about your node and hardware trends.
+*   **Topic Hub (`Topic`)**: Records tied to specific sessions (e.g., "Solar Project").
+*   **Default Hub (`Default`)**: A "kitchen drawer" for out-of-session talk and loose information.
+
+---
 
 ## Remote Administration (Admin Only)
 
@@ -154,6 +181,31 @@ The application also persists runtime configuration changes (like allowed channe
 }
 ```
 
+### External MCP Servers (Standardized Tools)
+
+The responder can connect to remote services using the Model Context Protocol (MCP).
+
+#### Networked Memory (MemPalace)
+The preferred way to connect to MemPalace is via the environment variable:
+- `MEMPALACE_URL`: Set this to the SSE endpoint of your `mempalace-viz` container.
+  - Example: `http://mempalace-viz:8000/sse`
+
+#### Advanced / Legacy Config
+You can also define multiple remote or local servers in `/app/data/mcp_servers.json`:
+
+```json
+{
+  "remote_tool": {
+    "url": "http://some-other-service:8080/sse"
+  },
+  "local_plugin": {
+    "command": "python",
+    "args": ["-m", "some_module"]
+  }
+}
+```
+*Note: If `MEMPALACE_URL` is set, it will override any 'mempalace' entry in the JSON file.*
+
 > [!NOTE]
 > - Values in `config.json` take precedence over environment variables if the file already exists.
 > - `admin_nodes` must be an array of individual hex IDs. The application auto-repairs any comma-concatenated strings (e.g., from `ADMIN_NODE_ID=!a,!b`) into a clean array on startup.
@@ -175,6 +227,8 @@ The application also persists runtime configuration changes (like allowed channe
       - ADMIN_NODE_ID=!myadminid
     volumes:
       - ai-responder-data:/app/data
+      # Optional: Map your custom MCP tools configuration (e.g. MemPalace)
+      # - ./mcp_servers.json:/app/data/mcp_servers.json
     depends_on:
       - meshmonitor
       - ollama

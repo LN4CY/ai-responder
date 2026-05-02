@@ -1,4 +1,3 @@
-import os
 import sys
 import json
 import urllib.request
@@ -9,7 +8,7 @@ def fetch_http(url, headers=None):
         req = urllib.request.Request(url, headers=headers or {})
         with urllib.request.urlopen(req, timeout=5) as response:
             return response.read().decode('utf-8')
-    except:
+    except Exception:
         return None
 
 def fetch_ollama_models():
@@ -18,7 +17,7 @@ def fetch_ollama_models():
         try:
             models = json.loads(data).get('models', [])
             return [m['name'] for m in models]
-        except:
+        except Exception:
             pass
     return ["llama3.2:1b", "llama3.1:8b", "mistral"]
 

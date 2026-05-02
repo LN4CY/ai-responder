@@ -8,7 +8,8 @@ import requests
 import logging
 import json
 from .base import BaseProvider
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, load_system_prompt
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_THINKING_MODEL, load_system_prompt
+from .routing import classify_complexity
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,18 @@ class AnthropicProvider(BaseProvider):
         """Claude 3 family supports function calling."""
         return True
 
-    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
-        """Get response from Anthropic. Note: location is currently unused."""
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
+        """Get response from Anthropic."""
         if not ANTHROPIC_API_KEY:
             return "Error: Anthropic API key missing."
         
+        complexity = classify_complexity(prompt, history)
+        thinking_model = self.config.get('anthropic_thinking_model', ANTHROPIC_THINKING_MODEL)
+        model = thinking_model if complexity == 'complex' else ANTHROPIC_MODEL
+        logger.info(f"[routing] complexity={complexity} → {model}")
+
         url = 'https://api.anthropic.com/v1/messages'
-        
+
         system_prompt = load_system_prompt('anthropic', context_id=context_id)
         messages = []
         
@@ -44,15 +50,15 @@ class AnthropicProvider(BaseProvider):
         anthropic_tools = None
         if tools:
             anthropic_tools = []
-            for tool_key, tool_def in tools.items():
+            for mcp_tool in tools:
+                # Sanitize: Anthropic/Claude is strict about JSON Schema fields
+                params = mcp_tool.get('inputSchema', {"type": "object", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
                 anthropic_tools.append({
-                    "name": tool_def['declaration']['name'],
-                    "description": tool_def['declaration']['description'],
-                    "input_schema": {
-                        "type": "object",
-                        "properties": tool_def['declaration']['parameters']['properties'],
-                        "required": tool_def['declaration']['parameters'].get('required', [])
-                    }
+                    "name": mcp_tool['name'],
+                    "description": mcp_tool.get('description', ''),
+                    "input_schema": params
                 })
 
         headers = {
@@ -65,13 +71,10 @@ class AnthropicProvider(BaseProvider):
             # Multi-turn tool loop
             action_tools_executed = 0
             silent_ack_tools = 0
-            # Tools that represent a side effect or request (vs simple lookups)
-            action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
-                            "rm_proactive_task", "send_message"}
             
             for turn in range(5):
                 payload = {
-                    'model': ANTHROPIC_MODEL,
+                    'model': model,
                     'max_tokens': 150,
                     'system': system_prompt,
                     'messages': messages
@@ -87,7 +90,7 @@ class AnthropicProvider(BaseProvider):
                         user_msg = self.format_error(response.status_code, error_msg)
                         logger.error(f"Anthropic error: {response.status_code} - {error_msg}")
                         return user_msg
-                    except:
+                    except Exception:
                         logger.error(f"Anthropic HTTP {response.status_code}: {response.text[:200]}")
                         return f"❌ HTTP {response.status_code} error"
 
@@ -118,22 +121,17 @@ class AnthropicProvider(BaseProvider):
                     arguments = tool_block['input']
                     tool_use_id = tool_block['id']
                     
-                    if function_name in tools:
-                        handler = tools[function_name]['handler']
+                    if mcp_client:
                         try:
-                            result = handler(**arguments)
+                            raw_result = mcp_client.call_tool(function_name, arguments)
+                            if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                            else:
+                                result = raw_result
+                                
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             
-                            if function_name in action_tools:
-                                action_tools_executed += 1
-                                if result == "__SILENT_ACK__":
-                                    silent_ack_tools += 1
-                                    
-                            # Silent-ACK: proactive callback already sent the response
-                            if result == "__SILENT_ACK__":
-                                result = ("[Telemetry was sent to the user automatically. "
-                                          "Do NOT summarize or repeat the telemetry. "
-                                          "Proceed with any remaining tasks such as registering a watcher.")
+                            # (Action tools / Silent ACK logic removed for MCP flexibility)
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
@@ -148,11 +146,11 @@ class AnthropicProvider(BaseProvider):
                                 "is_error": True
                             })
                     else:
-                        logger.warning(f"⚠️ Tool {function_name} not found in available tools.")
+                        logger.warning(f"⚠️ MCP Client missing. Tool {function_name} cannot be executed.")
                         tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
-                                "content": "Tool not found",
+                                "content": "MCP Client unavailable",
                                 "is_error": True
                             })
                 

@@ -13,7 +13,12 @@ graph TD
 
     subgraph Host / Docker
         MM[MeshMonitor]
-        AI[AI Responder]
+        AI[AI Responder Router]
+        
+        subgraph MCP Servers
+            Internal[Internal Meshtastic]
+            External[External Plugins e.g. MemPalace]
+        end
         
         subgraph AI Providers
             Ollama["Ollama (Local)"]
@@ -25,10 +30,9 @@ graph TD
 
     Radio <--> MM
     MM <-->|TCP :4404| AI
-    AI <--Multi-Turn Loop-->|HTTP API| Ollama
+    AI <--> MCP Servers
     AI <--Multi-Turn Loop-->|REST API| Gemini
-    AI <--Multi-Turn Loop-->|REST API| OpenAI
-    AI <--Multi-Turn Loop-->|REST API| Claude
+    AI <--Multi-Turn Loop-->|HTTP API| Ollama
     Nodes <--> Radio
 ```
 
@@ -47,7 +51,7 @@ Stateful interactions are managed by two core components:
     - **Name Sanitization**: All session names are strictly sanitized (alphanumeric/hyphen/underscore) to ensure filesystem safety and prevent path traversal.
     - **Timeout**: Tracks user inactivity (timeout: 5 min).
     - **Routing Memory**: Persists channel and node ID for proactive timeout notifications.
-- **`ConversationManager`**: Handles long-term persistence. Stores up to 10 conversations per user as compressed JSON files (`.json.gz`), managing slots and metadata.
+- **`ConversationManager`**: Handles short-term persistence and session slotting. For long-term memory, the system uses **MemPalace** via MCP, which provides specialized external capability for deep node indexing and isolation.
 
 ### 3. Adaptive Context Controller
 The `AIResponder` acts as a dynamic orchestration layer between the mesh and the AI models.
@@ -59,7 +63,7 @@ The `AIResponder` acts as a dynamic orchestration layer between the mesh and the
 
 ### 4. AI Provider System (Multi-Turn Loops)
 An abstract base class (`BaseProvider`) defines the interface for all AI models.
-- **Provider-Native Tool Loops**: The `OpenAIProvider`, `AnthropicProvider`, and `OllamaProvider` implement internal multi-turn loops. They intercept tool-call requests from the model, execute them via the `MeshtasticHandler`, and return the results in a single non-blocking session until a final text response is achieved.
+- **MCP Tool Orchestration**: All providers route tools dynamically via the `UnifiedMCPClient`. The client bridges asynchronous tool queries (e.g., to the internal `mcp_server_meshtastic` or an external node server) seamlessly back to the sync generation loops.
 - **Gemini**: Supports native function calling and advanced grounding for internet/maps context.
 
 ### 4. Event Loop & Packet Processing

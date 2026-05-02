@@ -5,3 +5,4 @@ __pycache__/
 data/
 scripts/verify_models.py
 scripts/*.log
+scripts/hil_test.py

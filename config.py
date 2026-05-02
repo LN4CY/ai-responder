@@ -28,19 +28,34 @@ OLLAMA_PORT = os.getenv('OLLAMA_PORT', '11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
 OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
+# When MemPalace is active, limit history injection to a short bootstrap window
+# so the AI doesn't get the full raw log AND MemPalace recall simultaneously.
+# Frontier models (Gemini, OpenAI, Anthropic) can tolerate a larger bootstrap;
+# Ollama's effective limit is already capped by OLLAMA_MAX_MESSAGES inside the provider.
+MEMPALACE_BOOTSTRAP_LOCAL  = int(os.getenv('MEMPALACE_BOOTSTRAP_LOCAL',  '6'))   # Ollama / local
+MEMPALACE_BOOTSTRAP_ONLINE = int(os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20'))  # Gemini / OpenAI / Anthropic
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')          # fast model (simple queries)
+GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-2.5-pro')  # reasoning model (complex)
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
 GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')               # fast model (simple queries)
+OPENAI_REASONING_MODEL = os.getenv('OPENAI_REASONING_MODEL', 'o4-mini')         # reasoning model (complex)
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')       # fast model (simple queries)
+ANTHROPIC_THINKING_MODEL = os.getenv('ANTHROPIC_THINKING_MODEL', 'claude-sonnet-4-6')  # thinking model (complex)
+OLLAMA_THINKING_MODEL = os.getenv('OLLAMA_THINKING_MODEL', '')         # empty = same as OLLAMA_MODEL
 
 # History and Storage Configuration
 HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
 HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '100'))
 HISTORY_MAX_BYTES = int(os.getenv('HISTORY_MAX_BYTES', '2097152'))  # 2MB
+
+# MCP Configuration
+MCP_SERVERS_FILE = os.getenv('MCP_SERVERS_FILE', '/app/data/mcp_servers.json')
+MEMPALACE_URL = os.getenv('MEMPALACE_URL', '')
 
 # Conversation Configuration
 CONVERSATIONS_DIR = os.getenv('CONVERSATIONS_DIR', '/app/data/conversations')
@@ -66,8 +81,9 @@ TIME AWARENESS:
 - Your internal clock runs on **UTC**: {current_time}
 
 PERSONA:
-- Keep responses concise (under 200 chars) for mesh efficiency.
-- You receive [Node ID] and minimal environment metadata with user messages."""
+- You receive [Node ID] and minimal environment metadata with user messages.
+- SEMANTIC MEMORY: Use mempalace_search(query) to recall past facts. Use mempalace_kg_add(subject, predicate, object) to store new facts about users, nodes, or events. Store proactively when you learn something worth remembering.
+"""
 
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
@@ -88,12 +104,20 @@ TOOL USAGE PROTOCOL:
     - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
     - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
 
-2. INTERNAL REASONING (Calculations & Logic):
+2. SEMANTIC MEMORY (MEMPALACE):
+   - You have a persistent external memory via MemPalace tools. Use them proactively.
+   - "mempalace_search(query)": Recall past facts, user preferences, or prior conversations. Call this FIRST when a user asks about something you may have seen before.
+   - "mempalace_kg_query(entity)": Look up a specific person, node, or topic and all its known relationships.
+   - "mempalace_kg_add(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, node roles, locations, relationships, events).
+   - Store proactively: if a user tells you their name, location, preferences, or anything personal — store it immediately with mempalace_kg_add.
+   - Recall proactively: before answering questions about past events or users, search memory first.
+
+3. INTERNAL REASONING (Calculations & Logic):
    - You MUST use your own internal capabilities for math, analysis, and logic.
    - DO NOT look for tools to calculate distance, convert units, or format data.
    - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
 
-3. LOCATION RESOLUTION:
+4. LOCATION RESOLUTION:
    - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
    - MAP LINKS: If the user asks for directions or to see a location, generate a clickable Google Maps URL. You MUST NOT use spaces in the URL. Either URL-encode the addresses (using '+' or '%20') or use pure coordinates. Example: `https://www.google.com/maps/dir/[start_lat],[start_lon]/[end_lat],[end_lon]`
 
@@ -125,6 +149,12 @@ TOOL USAGE PROTOCOL:
      * Use when user says "cancel [sched-1]", "remove my battery alert", "cancel all my alerts".
      * Pass task_id="all" to cancel everything the user registered.
 
+6. EXTERNAL MEMORY (MemPalace):
+   - You have access to persistent memory tools provided by external MCP servers (like MemPalace).
+   - Use these tools to store important facts about users, nodes, or the current conversation.
+   - Use these tools to recall past events or history that is not in your immediate short-term context.
+   - For long-term tracking or recalling past events, always check your memory FIRST.
+
 LOGIC FLOW:
 - User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.
 - User asks about General Knowledge -> Use Internal Model -> Respond.
@@ -132,12 +162,12 @@ LOGIC FLOW:
 - User asks for Math/Distance -> Use Internal Reasoning.
 - User asks to be notified/reminded LATER -> Call schedule_message or watch_condition or watch_node_online immediately, then confirm with task ID.
 - User asks for DYNAMIC pings (e.g. "Ping my SNR every 15s") -> You CAN do this! 
-  1. Call `schedule_message` with recursion.
-  2. Set `context_note` as an instruction for your future self (e.g. 'Fetch SNR for !1234abcd and reply with it. Also, schedule the next update in 15 seconds.').
-  3. RECURSIVE RULE: When scheduling for your future self, ALWAYS include an instruction in the `context_note` to schedule the NEXT iteration. This ensures the loop remains autonomous.
-  4. Your future self will wake up, see the history, execute the tools you requested, and re-schedule the next turn.
+  1. Call `schedule_message` with `recur_interval_seconds` to natively handle the loop.
+  2. Set `context_note` as an instruction for your future self (e.g. 'Fetch SNR for !1234abcd and reply with it. Include the current count.').
+  3. The system natively handles repeating the task every interval until `max_duration_seconds` is reached. DO NOT instruct your future self to manually schedule the next iteration!
+  4. Your future self will wake up, see the history, execute the tools you requested, and respond to the user.
   5. NEVER tell the user you cannot include live data in a reminder—you can, in the future turn.
-  6. EXAMPLE: `schedule_message(delay_seconds=15, context_note="Fetch SNR for !1234abcd and reply with it. Include current count. Then schedule this task again for 15s later.")`
+  6. EXAMPLE: `schedule_message(delay_seconds=15, context_note="Fetch SNR for !1234abcd and reply with it. Include current count.", recur_interval_seconds=15, max_duration_seconds=600)`
 - User asks to send a message to another node/channel NOW -> Call send_message tool.
 
 DIRECT ACTION POLICY:
@@ -191,7 +221,7 @@ def load_system_prompt(provider, context_id="Unknown"):
     logger.info(f"Using default system prompt for {provider}")
     try:
         return default.format(context_id=context_id, current_time=current_time)
-    except:
+    except Exception:
         return default
 
 
@@ -219,7 +249,8 @@ class Config:
             'allowed_channels': [0],
             'admin_nodes': [],
             'current_provider': 'ollama',
-            'meshtastic_awareness': True
+            'meshtastic_awareness': True,
+            'mcp_servers': {}
         }
     
     def save(self):
