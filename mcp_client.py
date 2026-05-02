@@ -247,9 +247,20 @@ class UnifiedMCPClient:
             if not server['tools']:
                 continue
             for t in server['tools']:
+                name = getattr(t, "name", "unknown")
+
+                # MemPalace server exposes both Semantic (KG) and Palace (Diary/Wings) APIs.
+                # AI Responder only uses the Semantic KG via LLM tool calling.
+                # We filter out the Palace tools so the AI doesn't get confused.
+                # However, mempalace_status is useful internally, but we don't want the AI to call it directly
+                # to assess its memory (it should rely on kg_search/kg_query).
+                if s_name == 'mempalace':
+                    if not (name.startswith('mempalace_kg_') or name == 'mempalace_search'):
+                        continue
+
                 # t is an mcp.types.Tool object with name, description, inputSchema
                 tool_dict = {
-                    "name": getattr(t, "name", "unknown"),
+                    "name": name,
                     "description": getattr(t, "description", ""),
                     "inputSchema": getattr(t, "inputSchema", {}),
                     "_server": s_name
