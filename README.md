@@ -18,11 +18,11 @@ One agent, many brains. Choose the provider that fits your deployment:
 ### 🔌 Modular Model Context Protocol (MCP)
 The architecture routes capabilities exclusively through standard MCP:
 - **Plug-and-Play Tools**: AI capabilities are dynamically fetched from your configured MCP servers. Connecting a new service (like home automation or search) automatically makes it available to the bot on the mesh.
-- **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+- **Built-in SQLite Semantic Memory (FTS5 + Knowledge Graph)**: Automatically indexes conversations, hardware status, and user-defined topics into an embedded `/app/data/memory.db` database with BM25 full-text search—requiring zero extra containers.
     - **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability for privacy and resource control.
     - **Deep Memory Re-hydration**: Ability to load and reconstruct sessions directly from the Knowledge Graph even after they've aged off the local disk.
     - **Recursive Autonomous Scheduling**: AI can schedule future tasks, recurring reminders, or complex multi-step workflows.
-- **Internal Integration**: The core Meshtastic capabilities (sending messages, requesting telemetry, mapping nodes) are exposed dynamically as standard MCP tool endpoints to the AI processors.
+- **Internal Integration**: The core Meshtastic capabilities (sending messages, requesting telemetry, mapping nodes) and long-term memory tools are exposed dynamically as standard MCP tool endpoints to the AI processors.
 
 ### 🔗 Industrial-Grade Resiliency
 Designed for 24/7 autonomous operation in remote environments:
@@ -92,10 +92,7 @@ Add to your `docker-compose.yml`:
        - MESHTASTIC_PORT=4404
        - AI_PROVIDER=gemini
        - GEMINI_API_KEY=your_key_here
-       - MEMPALACE_URL=http://mempalace-viz:8000/sse  # Link to modular memory
        - ADMIN_NODE_ID=!your_admin_id
-     depends_on:
-       - mempalace-viz
 ```
 
 ### Ollama Setup (Local AI)

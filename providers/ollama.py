@@ -55,8 +55,8 @@ class OllamaProvider(BaseProvider):
             ollama_tools = []
             for mcp_tool in tools:
                 tool_name = mcp_tool['name']
-                # Filter out MemPalace tools to prevent Ollama context exhaustion/hallucination
-                if tool_name.startswith('mempalace_') or tool_name == 'add_observations':
+                # Filter out memory graph tools to prevent small local Ollama context exhaustion/hallucination
+                if tool_name.startswith('memory_') or tool_name.startswith('mempalace_') or tool_name == 'add_observations':
                     continue
                     
                 # Sanitize: Ollama (OpenAI-compatible) rejects '$schema' meta-fields

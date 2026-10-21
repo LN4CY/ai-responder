@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "1.5.0"
+VERSION = "2.0.0"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -28,12 +28,14 @@ OLLAMA_PORT = os.getenv('OLLAMA_PORT', '11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
 OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
-# When MemPalace is active, limit history injection to a short bootstrap window
-# so the AI doesn't get the full raw log AND MemPalace recall simultaneously.
+# When Semantic Memory is active, limit history injection to a short bootstrap window
+# so the AI doesn't get the full raw log AND semantic recall simultaneously.
 # Frontier models (Gemini, OpenAI, Anthropic) can tolerate a larger bootstrap;
 # Ollama's effective limit is already capped by OLLAMA_MAX_MESSAGES inside the provider.
-MEMPALACE_BOOTSTRAP_LOCAL  = int(os.getenv('MEMPALACE_BOOTSTRAP_LOCAL',  '6'))   # Ollama / local
-MEMPALACE_BOOTSTRAP_ONLINE = int(os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20'))  # Gemini / OpenAI / Anthropic
+MEMORY_BOOTSTRAP_LOCAL  = int(os.getenv('MEMORY_BOOTSTRAP_LOCAL',  os.getenv('MEMPALACE_BOOTSTRAP_LOCAL', '6')))    # Ollama / local
+MEMORY_BOOTSTRAP_ONLINE = int(os.getenv('MEMORY_BOOTSTRAP_ONLINE', os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20')))  # Gemini / OpenAI / Anthropic
+MEMPALACE_BOOTSTRAP_LOCAL = MEMORY_BOOTSTRAP_LOCAL
+MEMPALACE_BOOTSTRAP_ONLINE = MEMORY_BOOTSTRAP_ONLINE
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')          # fast model (simple queries)
@@ -53,9 +55,10 @@ HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
 HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '100'))
 HISTORY_MAX_BYTES = int(os.getenv('HISTORY_MAX_BYTES', '2097152'))  # 2MB
 
-# MCP Configuration
+# MCP & Semantic Memory Configuration
 MCP_SERVERS_FILE = os.getenv('MCP_SERVERS_FILE', '/app/data/mcp_servers.json')
-MEMPALACE_URL = os.getenv('MEMPALACE_URL', '')
+MEMORY_ENABLED = os.getenv('MEMORY_ENABLED', 'true').lower() == 'true'
+MEMORY_DB_PATH = os.getenv('MEMORY_DB_PATH', '/app/data/memory.db')
 
 # Conversation Configuration
 CONVERSATIONS_DIR = os.getenv('CONVERSATIONS_DIR', '/app/data/conversations')
@@ -82,7 +85,7 @@ TIME AWARENESS:
 
 PERSONA:
 - You receive [Node ID] and minimal environment metadata with user messages.
-- SEMANTIC MEMORY: Use mempalace_search(query) to recall past facts. Use mempalace_kg_add(subject, predicate, object) to store new facts about users, nodes, or events. Store proactively when you learn something worth remembering.
+- SEMANTIC MEMORY: Use memory_search(query) to recall past facts. Use memory_add_fact(subject, predicate, object) to store new facts about users, nodes, or events. Store proactively when you learn something worth remembering.
 """
 
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
@@ -104,12 +107,12 @@ TOOL USAGE PROTOCOL:
     - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
     - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
 
-2. SEMANTIC MEMORY (MEMPALACE):
-   - You have a persistent external memory via MemPalace tools. Use them proactively.
-   - "mempalace_search(query)": Recall past facts, user preferences, or prior conversations. Call this FIRST when a user asks about something you may have seen before.
-   - "mempalace_kg_query(entity)": Look up a specific person, node, or topic and all its known relationships.
-   - "mempalace_kg_add(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, node roles, locations, relationships, events).
-   - Store proactively: if a user tells you their name, location, preferences, or anything personal — store it immediately with mempalace_kg_add.
+2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
+   - You have persistent long-term memory via built-in memory tools. Use them proactively.
+   - "memory_search(query)": Recall past facts, user preferences, or prior conversations using full-text search. Call this FIRST when a user asks about something you may have seen before.
+   - "memory_query_facts(entity)": Look up a specific person, node ID, or topic and all its known relationships in the Knowledge Graph.
+   - "memory_add_fact(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, callsigns, node roles, hardware, locations, relationships, events).
+   - Store proactively: if a user tells you their name, callsign, location, preferences, or hardware setup — store it immediately with memory_add_fact.
    - Recall proactively: before answering questions about past events or users, search memory first.
 
 3. INTERNAL REASONING (Calculations & Logic):
@@ -121,12 +124,12 @@ TOOL USAGE PROTOCOL:
    - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
    - MAP LINKS: If the user asks for directions or to see a location, generate a clickable Google Maps URL. You MUST NOT use spaces in the URL. Either URL-encode the addresses (using '+' or '%20') or use pure coordinates. Example: `https://www.google.com/maps/dir/[start_lat],[start_lon]/[end_lat],[end_lon]`
 
-4. GOOGLE SEARCH & MAPS (New/External Info & Places):
+5. GOOGLE SEARCH & MAPS (New/External Info & Places):
    - "google_search_stub(query)": Use this to search the web for real-time info (weather, news), OR to find nearby places/businesses (e.g., "closest pharmacy to [Address]").
    - If you only have coordinates, use `get_location_address` FIRST to get a readable address, then use `google_search_stub` with that address to find nearby places.
    - DO NOT use search for general knowledge (history, science, definitions). Use your internal model for that.
 
-5. PROACTIVE AGENT TOOLS (Schedule, Monitor & Manage):
+6. PROACTIVE AGENT TOOLS (Schedule, Monitor & Manage):
    - Use these when a user asks you to notify them later, watch for something, or manage existing tasks.
    - These tools only work from Direct Messages (DMs). Reject politely if user is in a channel.
    - "schedule_message(delay_seconds=None, context_note, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None)":
@@ -148,12 +151,6 @@ TOOL USAGE PROTOCOL:
    - "cancel_proactive_task(task_id)":
      * Use when user says "cancel [sched-1]", "remove my battery alert", "cancel all my alerts".
      * Pass task_id="all" to cancel everything the user registered.
-
-6. EXTERNAL MEMORY (MemPalace):
-   - You have access to persistent memory tools provided by external MCP servers (like MemPalace).
-   - Use these tools to store important facts about users, nodes, or the current conversation.
-   - Use these tools to recall past events or history that is not in your immediate short-term context.
-   - For long-term tracking or recalling past events, always check your memory FIRST.
 
 LOGIC FLOW:
 - User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.

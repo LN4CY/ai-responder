@@ -16,8 +16,8 @@ graph TD
         AI[AI Responder Router]
         
         subgraph MCP Servers
-            Internal[Internal Meshtastic]
-            External[External Plugins e.g. MemPalace]
+            Internal[Internal Meshtastic & SQLite Memory]
+            External[External MCP Plugins]
         end
         
         subgraph AI Providers
@@ -51,7 +51,7 @@ Stateful interactions are managed by two core components:
     - **Name Sanitization**: All session names are strictly sanitized (alphanumeric/hyphen/underscore) to ensure filesystem safety and prevent path traversal.
     - **Timeout**: Tracks user inactivity (timeout: 5 min).
     - **Routing Memory**: Persists channel and node ID for proactive timeout notifications.
-- **`ConversationManager`**: Handles short-term persistence and session slotting. For long-term memory, the system uses **MemPalace** via MCP, which provides specialized external capability for deep node indexing and isolation.
+- **`ConversationManager`**: Handles short-term persistence and session slotting. For long-term memory, the system uses the built-in **SQLite FTS5 + Knowledge Graph MCP server (`mcp_server_memory.py`)**, providing zero-container BM25 search and Knowledge Graph persistence in `/app/data/memory.db`.
 
 ### 3. Adaptive Context Controller
 The `AIResponder` acts as a dynamic orchestration layer between the mesh and the AI models.

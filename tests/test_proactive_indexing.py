@@ -84,8 +84,8 @@ class TestProactiveIndexing(unittest.TestCase):
         self.responder._bg_index_conversation(payload)
         
         # Verify that it used Hub_System_!node1 instead of Chat_!node1_CH0
-        # Check call to mempalace_kg_add where predicate is 'recorded_turn'
-        obs_call = [c for c in self.responder.mcp_client.call_tool.call_args_list if c[0][0] == "mempalace_kg_add" and c[0][1].get("predicate") == "recorded_turn"]
+        # Check call to memory_add_fact where predicate is 'recorded_turn'
+        obs_call = [c for c in self.responder.mcp_client.call_tool.call_args_list if c[0][0] == "memory_add_fact" and c[0][1].get("predicate") == "recorded_turn"]
         self.assertTrue(len(obs_call) > 0)
         entity_name = obs_call[0][0][1]['subject']
         self.assertEqual(entity_name, "Hub_System_!node1")

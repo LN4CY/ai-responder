@@ -11,6 +11,7 @@ from mcp.client.sse import sse_client
 
 # Local tools
 from mcp_server_meshtastic import mcp as internal_meshtastic_mcp
+from mcp_server_memory import mcp as internal_memory_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,13 @@ class UnifiedMCPClient:
         """Run the dedicated asyncio event loop for MCP clients."""
         asyncio.set_event_loop(self._loop)
         
-        # Schedule initialization immediately on the loop's first tick
+        # Initialize in-process servers before signaling ready so tool lookups never race
+        try:
+            self._loop.run_until_complete(self._init_internal_server())
+        except Exception as e:
+            logger.error(f"Error initializing internal MCP servers: {e}")
+
+        # Schedule external server initialization on the loop
         self._loop.call_soon_threadsafe(self._initialize_servers)
         
         # Signal that the loop is officially running
@@ -65,26 +72,27 @@ class UnifiedMCPClient:
         self._loop.run_forever()
 
     def _initialize_servers(self):
-        """Internal wrapper to schedule initialization on the loop."""
-        # Parallel tasks for isolation
-        asyncio.create_task(self._init_internal_server())
-        
-        from config import MEMPALACE_URL
-        if MEMPALACE_URL:
-            asyncio.create_task(self._connect_sse_server('mempalace', MEMPALACE_URL))
+        """Internal wrapper to schedule external server initialization on the loop."""
+        if 'meshtastic' not in self.servers:
+            asyncio.create_task(self._init_internal_server())
         
         mcp_servers_file = self.config.get('mcp_servers_file', '/app/data/mcp_servers.json')
-        if os.path.exists(mcp_servers_file):
+        if isinstance(mcp_servers_file, str) and os.path.exists(mcp_servers_file):
             asyncio.create_task(self._load_json_servers(mcp_servers_file))
 
     async def _load_json_servers(self, file_path: str):
         """Load external servers from JSON and launch their tasks."""
         try:
             with open(file_path, 'r') as f:
-                servers_config = json.load(f)
-                from config import MEMPALACE_URL
+                raw_config = json.load(f)
+                # Support both {"mcpServers": {"name": {...}}} and flat {"name": {...}} formats
+                servers_config = (
+                    raw_config.get('mcpServers', raw_config)
+                    if isinstance(raw_config, dict)
+                    else {}
+                )
                 for name, cfg in servers_config.items():
-                    if name == 'mempalace' and MEMPALACE_URL:
+                    if not isinstance(cfg, dict):
                         continue
                     url = cfg.get('url')
                     cmd = cfg.get('command')
@@ -98,12 +106,13 @@ class UnifiedMCPClient:
             logger.error(f"Failed to load JSON servers: {e}")
 
     async def _init_internal_server(self):
-        """Initialize the in-process tools."""
+        """Initialize the in-process tools (Meshtastic + SQLite Memory)."""
         print("[MCP] Initializing internal meshtastic tools...", flush=True)
         try:
             tools = await internal_meshtastic_mcp.list_tools()
             self.servers['meshtastic'] = {
                 'type': 'internal',
+                'mcp': internal_meshtastic_mcp,
                 'tools': tools,
                 'session': None
             }
@@ -112,6 +121,20 @@ class UnifiedMCPClient:
         except Exception as e:
             print(f"[MCP] Internal tools FAILED: {e}", flush=True)
             logger.error(f"Failed to load internal Meshtastic tools: {e}")
+
+        import config as app_config
+        if getattr(app_config, 'MEMORY_ENABLED', True):
+            try:
+                mem_tools = await internal_memory_mcp.list_tools()
+                self.servers['memory'] = {
+                    'type': 'internal',
+                    'mcp': internal_memory_mcp,
+                    'tools': mem_tools,
+                    'session': None
+                }
+                logger.info(f"Internal SQLite Memory MCP tools loaded ({len(mem_tools)} tools).")
+            except Exception as e:
+                logger.error(f"Failed to load internal Memory MCP tools: {e}")
 
     async def _connect_stdio_server(self, name: str, command: str, args: List[str], env: Dict[str, str] = None):
         """Connect to an external MCP server via stdio."""
@@ -229,6 +252,8 @@ class UnifiedMCPClient:
     
     def has_server(self, name: str) -> bool:
         """Return True if a named MCP server is connected and has tools loaded."""
+        if name in ('meshtastic', 'memory') and not self._started:
+            self._ensure_started()
         server = self.servers.get(name)
         return bool(server and server.get('tools'))
 
@@ -249,14 +274,9 @@ class UnifiedMCPClient:
             for t in server['tools']:
                 name = getattr(t, "name", "unknown")
 
-                # MemPalace server exposes both Semantic (KG) and Palace (Diary/Wings) APIs.
-                # AI Responder only uses the Semantic KG via LLM tool calling.
-                # We filter out the Palace tools so the AI doesn't get confused.
-                # However, mempalace_status is useful internally, but we don't want the AI to call it directly
-                # to assess its memory (it should rely on kg_search/kg_query).
-                if s_name == 'mempalace':
-                    if not (name.startswith('mempalace_kg_') or name == 'mempalace_search'):
-                        continue
+                # Hide internal-only memory management tools from LLM tool declarations
+                if s_name == 'memory' and name in ('memory_status', 'memory_delete_hub'):
+                    continue
 
                 # t is an mcp.types.Tool object with name, description, inputSchema
                 tool_dict = {
@@ -271,10 +291,13 @@ class UnifiedMCPClient:
     def call_tool(self, tool_name: str, arguments: dict) -> Any:
         """Synchronously route and execute a tool call string."""
         self._ensure_started()
-        future = asyncio.run_coroutine_threadsafe(self._async_call_tool(tool_name, arguments), self._loop)
+        caller_context = getattr(threading.current_thread(), "ai_context", None)
+        future = asyncio.run_coroutine_threadsafe(
+            self._async_call_tool(tool_name, arguments, caller_context), self._loop
+        )
         return future.result(timeout=60) # Some tools might take time
         
-    async def _async_call_tool(self, tool_name: str, arguments: dict) -> Any:
+    async def _async_call_tool(self, tool_name: str, arguments: dict, caller_context: dict = None) -> Any:
         # Find which server owns this tool
         target_server = None
         for s_name, server in self.servers.items():
@@ -302,8 +325,21 @@ class UnifiedMCPClient:
 
         try:
             if target_server['type'] == 'internal':
-                # Execute native sync/async fastmcp tool
-                result = await internal_meshtastic_mcp.call_tool(tool_name, arguments)
+                # Propagate caller thread context (from_node, to_node, channel) to the event loop thread
+                if caller_context is not None:
+                    threading.current_thread().ai_context = caller_context
+                mcp_instance = target_server.get('mcp', internal_meshtastic_mcp)
+                result = await mcp_instance.call_tool(tool_name, arguments)
+                if isinstance(result, (list, tuple)):
+                    texts = [getattr(c, 'text', str(c)) for c in result]
+                    joined = "\n".join(texts)
+                    try:
+                        parsed = json.loads(joined)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except Exception:
+                        pass
+                    return joined
                 return result
             elif target_server['type'] in ('stdio', 'sse'):
                 # Execute via MCP session

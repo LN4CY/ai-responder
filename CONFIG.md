@@ -57,19 +57,22 @@ System prompts are loaded from external text files, allowing easy customization 
   - Default: "You are a helpful AI assistant communicating via Meshtastic mesh network..."
   - **Context Isolation**: The prompt supports a `{context_id}` placeholder. The system automatically injects the current conversation ID (e.g., `Channel:0:!1234abcd`) into this placeholder to ground the AI in the specific user context.
 
-*   **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into MemPalace. 
+*   **Universal Knowledge Graph (Semantic Sync)**: Automatically indexes all conversations, hardware status, and user-defined topics into the built-in SQLite FTS5 + Knowledge Graph database (`/app/data/memory.db`). 
 *   **Safe Session Management**: Non-destructive context resets (!ai -n) with explicit "Nuclear Wipe" (!ai -n rm all) capability.
 *   **Recursive Autonomous Scheduling**: AI can schedule future tasks...
 
 **MCP Routing Implementation:**
-- **Internal Meshtastic MCP Server**: Provides all radio capabilities directly via the unified MCP client.
-- **External Plugins (e.g. MemPalace)**: If configured in `mcp_servers.json`, tools like `store_memory` or `search_memory` are passed dynamically to the AI.
+- **Internal Meshtastic & Memory MCP Servers**: Provides all radio capabilities (`mcp_server_meshtastic.py`) and persistent long-term memory (`mcp_server_memory.py`) directly in-process via the unified MCP client.
+- **External Plugins**: If configured in `mcp_servers.json`, external SSE or stdio MCP tools are passed dynamically to the AI.
 
 **Internal MCP Capabilities:**
 - **`get_my_info`**: Retrieves the bot's own telemetry (Battery, SNR, Name, Status).
 - **`get_mesh_nodes`**: Returns a list of all active neighbors currently seen on the mesh, including their calculated distance from the bot and precise coordinates (incl. altitude) if known.
 - **`get_node_details`**: Fetches detailed telemetry for a specific node by name or Hex ID.
 - **`request_node_telemetry`**: Actively requests a fresh telemetry update from a specific node. Uses a **fast synchronous poll (0.5s)** for immediate results, with a **deferred callback** backup—if the mesh is slow, the AI proactively delivers the data when it eventually arrives.
+- **`memory_search`**: Searches long-term facts and archived conversations using SQLite FTS5 (BM25 ranking).
+- **`memory_query_facts`**: Queries all incoming/outgoing Knowledge Graph relationships for a node ID, user, or topic.
+- **`memory_add_fact`**: Stores a persistent `(subject, predicate, object)` fact in the Knowledge Graph.
 - **`schedule_message`**: Schedules a future message or recurring task. 
   - **Stateful Memory**: The AI can maintain state (like counts) across recurring turns by referencing its **Conversation History**.
   - **Recursive Logic**: The AI can schedule new tasks from within a scheduled turn, allowing for complex autonomous behavior.
@@ -106,7 +109,7 @@ volumes:
 
 ## Session & Semantic Memory Management
 
-The AI Responder uses a hybrid memory system combining **Local History (Disk)** for speed and **Semantic Knowledge (Graph/MemPalace)** for deep, long-term recall.
+The AI Responder uses a hybrid memory system combining **Local History (Disk)** for speed and **Semantic Knowledge (Built-in SQLite FTS5 + Knowledge Graph)** for deep, long-term recall.
 
 ### Core Commands
 
@@ -116,11 +119,11 @@ The AI Responder uses a hybrid memory system combining **Local History (Disk)** 
 | `!ai -n` | **Reset**: Clears the bot’s current train of thought and reverts to the 'Default' context. (Safe: No data is deleted). | All | `!ai -n` |
 | `!ai -n rm all` | **Nuclear Wipe**: Explicitly deletes all history for the current context from both disk and graph. | DM | `!ai -n rm all` |
 | `!ai -end` | **Archive & Close**: Ends the active named session and returns to default mode. | DM | `!ai -end` |
-| `!ai -c ls` | **Merged List**: Lists all 10 local disk slots PLUS archived topics found in the Knowledge Graph. | DM | `!ai -c ls` |
-| `!ai -c [id/name]` | **Load/Re-hydrate**: Resumes a session. If the slot is gone from disk, the AI "re-hydrates" it from the Graph. | DM | `!ai -c 1` or `!ai -c Solar` |
+| `!ai -c ls` | **Merged List**: Lists all 10 local disk slots and indicates whether Semantic Memory is active. | DM | `!ai -c ls` |
+| `!ai -c [id/name]` | **Load/Re-hydrate**: Resumes a session from the Knowledge Graph or local disk slot. | DM | `!ai -c 1` or `!ai -c Solar` |
 
 ### Multi-Dimensional Hubs (Knowledge Graph)
-When MemPalace is enabled, data is indexed into three distinct "Hubs":
+When Semantic Memory is enabled (`MEMORY_ENABLED=true`, default), data is indexed into three distinct "Hubs" inside `/app/data/memory.db`:
 *   **Identity Hub (`MeshNode`)**: Permanent facts about your node and hardware trends.
 *   **Topic Hub (`Topic`)**: Records tied to specific sessions (e.g., "Solar Project").
 *   **Default Hub (`Default`)**: A "kitchen drawer" for out-of-session talk and loose information.
@@ -144,14 +147,16 @@ The following commands are only accessible to `ADMIN_NODE_ID` users via **Direct
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HISTORY_MAX_MESSAGES` | `1000` | Maximum number of messages to keep in history per user (Storage). |
+| `HISTORY_MAX_MESSAGES` | `100` | Maximum number of messages to keep in history per user (Storage). |
 | `HISTORY_MAX_BYTES` | `2097152` | Maximum size in bytes for the history file per user (default 2MB). |
-| `OLLAMA_MAX_MESSAGES` | `10` | Maximum number of messages sent to Ollama (Local) for context window. |
+| `OLLAMA_MAX_MESSAGES` | `30` | Maximum number of messages sent to Ollama (Local) for context window. |
+| `MEMORY_ENABLED` | `true` | Enable built-in SQLite FTS5 + Knowledge Graph semantic memory server. |
+| `MEMORY_DB_PATH` | `/app/data/memory.db` | Path to the SQLite semantic memory database file. |
 
 > [!NOTE]
 > **Behavior**:
-> - **Message Limit**: Acts as a **rolling buffer**. When the limit (1000) is reached, the oldest message is dropped to make room for the new one.
-> - **Storage Limit**: If the file size exceeds 2MB, the system automatically prunes the oldest 50% of messages to recover space.
+> - **Message Limit**: Acts as a **rolling buffer**. When the limit is reached, the oldest message is dropped to make room for the new one.
+> - **Storage Limit**: If the file size exceeds 2MB, the system automatically prunes the oldest 20% of messages to recover space.
 
 
 ### System Prompts (Advanced)
@@ -183,28 +188,21 @@ The application also persists runtime configuration changes (like allowed channe
 
 ### External MCP Servers (Standardized Tools)
 
-The responder can connect to remote services using the Model Context Protocol (MCP).
-
-#### Networked Memory (MemPalace)
-The preferred way to connect to MemPalace is via the environment variable:
-- `MEMPALACE_URL`: Set this to the SSE endpoint of your `mempalace-viz` container.
-  - Example: `http://mempalace-viz:8000/sse`
-
-#### Advanced / Legacy Config
-You can also define multiple remote or local servers in `/app/data/mcp_servers.json`:
+In addition to the built-in Meshtastic and SQLite Memory MCP servers, the responder can connect to remote or local MCP servers defined in `/app/data/mcp_servers.json` (supports both `"mcpServers"` wrapper and flat objects):
 
 ```json
 {
-  "remote_tool": {
-    "url": "http://some-other-service:8080/sse"
-  },
-  "local_plugin": {
-    "command": "python",
-    "args": ["-m", "some_module"]
+  "mcpServers": {
+    "remote_tool": {
+      "url": "http://some-other-service:8080/sse"
+    },
+    "local_plugin": {
+      "command": "python",
+      "args": ["-m", "some_module"]
+    }
   }
 }
 ```
-*Note: If `MEMPALACE_URL` is set, it will override any 'mempalace' entry in the JSON file.*
 
 > [!NOTE]
 > - Values in `config.json` take precedence over environment variables if the file already exists.
@@ -227,7 +225,7 @@ You can also define multiple remote or local servers in `/app/data/mcp_servers.j
       - ADMIN_NODE_ID=!myadminid
     volumes:
       - ai-responder-data:/app/data
-      # Optional: Map your custom MCP tools configuration (e.g. MemPalace)
+      # Optional: Map custom external MCP tools configuration
       # - ./mcp_servers.json:/app/data/mcp_servers.json
     depends_on:
       - meshmonitor

@@ -3,6 +3,7 @@ import os
 import shutil
 from unittest.mock import MagicMock, patch
 from ai_responder import AIResponder
+import mcp_server_memory
 
 class TestSemanticMemory(unittest.TestCase):
     def setUp(self):
@@ -10,6 +11,7 @@ class TestSemanticMemory(unittest.TestCase):
         self.mock_history_dir = os.path.join(self.test_dir, 'sem_history')
         self.mock_conv_dir = os.path.join(self.test_dir, 'sem_conversations')
         self.mock_config_file = os.path.join(self.test_dir, 'sem_config.json')
+        self.mock_memory_db = os.path.join(self.test_dir, 'sem_memory.db')
         
         for d in [self.mock_history_dir, self.mock_conv_dir]:
             if not os.path.exists(d):
@@ -19,7 +21,8 @@ class TestSemanticMemory(unittest.TestCase):
         self.patchers = [
             patch('config.HISTORY_DIR', self.mock_history_dir),
             patch('config.CONVERSATIONS_DIR', self.mock_conv_dir),
-            patch('config.CONFIG_FILE', self.mock_config_file)
+            patch('config.CONFIG_FILE', self.mock_config_file),
+            patch('config.MEMORY_DB_PATH', self.mock_memory_db),
         ]
         for p in self.patchers:
             p.start()
@@ -40,8 +43,17 @@ class TestSemanticMemory(unittest.TestCase):
         for d in [self.mock_history_dir, self.mock_conv_dir]:
             if os.path.exists(d):
                 shutil.rmtree(d)
-        if os.path.exists(self.mock_config_file):
-            os.remove(self.mock_config_file)
+        for f in [
+            self.mock_config_file,
+            self.mock_memory_db,
+            f"{self.mock_memory_db}-wal",
+            f"{self.mock_memory_db}-shm",
+        ]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
             
         # Use correct private attribute name for the executor
         if hasattr(self.responder, '_bg_executor'):
@@ -57,8 +69,8 @@ class TestSemanticMemory(unittest.TestCase):
             'is_dm': True
         })
         
-        # Verify tool calls are made to MemPalace
-        self.responder.mcp_client.call_tool.assert_called_with("mempalace_kg_add", unittest.mock.ANY)
+        # Verify tool calls are made to internal SQLite memory server
+        self.responder.mcp_client.call_tool.assert_called_with("memory_add_fact", unittest.mock.ANY)
 
     def test_hub_routing_dm_vs_channel(self):
         """Verify that Hub names are correctly derived for DMs and Channels."""
@@ -85,7 +97,7 @@ class TestSemanticMemory(unittest.TestCase):
         self.assertEqual(len(self.responder.history.get(dm_key, [])), 0)
         # BUT Disk/Graph should NOT be wiped (mcp_client NOT called for deletion)
         for call in self.responder.mcp_client.call_args_list:
-            if len(call[0]) > 1 and call[0][0] == "mempalace_kg_add":
+            if len(call[0]) > 1 and call[0][0] == "memory_add_fact":
                 self.assertNotEqual(call[0][1].get('predicate'), "has_status")
 
         # 2. Test NUCLEAR WIPE: !ai -n rm all
@@ -102,7 +114,8 @@ class TestSemanticMemory(unittest.TestCase):
                 
                 # Now test the wipe logic directly
                 self.responder._bg_delete_semantic_history({'node_id': from_node, 'topic': 'all', 'channel': 0})
-                self.responder.mcp_client.call_tool.assert_any_call("mempalace_kg_add", unittest.mock.ANY)
+                self.responder.mcp_client.call_tool.assert_any_call("memory_delete_hub", unittest.mock.ANY)
+                self.responder.mcp_client.call_tool.assert_any_call("memory_add_fact", unittest.mock.ANY)
 
     def test_telemetry_throttling(self):
         """Test that telemetry is only indexed every 15 minutes."""
@@ -110,12 +123,51 @@ class TestSemanticMemory(unittest.TestCase):
         
         # 1. First time -> Success
         self.responder._bg_index_telemetry(payload)
-        self.assertEqual(self.responder.mcp_client.call_tool.call_count, 2) # create_entities + add_observations
+        self.assertEqual(self.responder.mcp_client.call_tool.call_count, 2) # is_a + reported_telemetry
         
         # 2. Second time immediately -> Skip
         self.responder.mcp_client.call_tool.reset_mock()
         self.responder._bg_index_telemetry(payload)
         self.responder.mcp_client.call_tool.assert_not_called()
+
+    def test_sqlite_memory_server_end_to_end(self):
+        """Test SQLite FTS5 search, Knowledge Graph queries, status, and session rehydration."""
+        # 1. Add user facts and conversation turns
+        mcp_server_memory.memory_add_fact("!a20a0d78", "has_hardware", "RAK4631 solar repeater on 20W panel")
+        mcp_server_memory.memory_add_fact("Chat_!a20a0d78_CH0", "discusses_topic", "SolarSetup")
+        mcp_server_memory.memory_add_fact("!a20a0d78", "participated_in", "Chat_!a20a0d78_CH0")
+        mcp_server_memory.memory_add_fact(
+            "Chat_!a20a0d78_CH0",
+            "recorded_turn",
+            "User: My roof node is a RAK4631 | AI: Got it, tracking your RAK4631 roof node."
+        )
+
+        # 2. Full-text search via FTS5 BM25
+        search_res = mcp_server_memory.memory_search("RAK4631 solar")
+        self.assertIn("RAK4631", search_res)
+        self.assertIn("!a20a0d78", search_res)
+
+        # 3. Knowledge Graph entity query
+        kg_res = mcp_server_memory.memory_query_facts("!a20a0d78", direction="outgoing")
+        self.assertEqual(kg_res["entity"], "!a20a0d78")
+        self.assertGreaterEqual(len(kg_res["facts"]), 2)
+
+        # 4. Status reporting
+        stats = mcp_server_memory.memory_status()
+        self.assertEqual(stats["total_triples"], 4)
+        self.assertGreaterEqual(stats["total_entities"], 4)
+        self.assertGreater(stats["db_size_bytes"], 0)
+
+        # 5. End-to-end session rehydration using the real memory tools
+        self.responder.mcp_client.call_tool.side_effect = lambda name, args: getattr(mcp_server_memory, name)(**args)
+        rehydrated = self.responder._rehydrate_session_from_graph("!a20a0d78", "SolarSetup")
+        self.assertEqual(len(rehydrated), 2)
+        self.assertEqual(rehydrated[0], {"role": "user", "content": "My roof node is a RAK4631"})
+        self.assertEqual(rehydrated[1], {"role": "assistant", "content": "Got it, tracking your RAK4631 roof node."})
+
+        # 6. Delete hub pruning
+        del_res = mcp_server_memory.memory_delete_hub("Chat_!a20a0d78_CH0")
+        self.assertGreaterEqual(del_res["deleted"], 3)
 
 if __name__ == '__main__':
     unittest.main()

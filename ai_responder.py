@@ -428,10 +428,9 @@ class AIResponder:
         
         # 2. Semantic Indexing Stats
         semantic_status = "Disabled"
-        if self.mcp_client and self.mcp_client.has_server('mempalace'):
+        if self.mcp_client and self.mcp_client.has_server('memory'):
             try:
-                # Query mempalace-server for true status rather than relying on local cache
-                status_raw = self.mcp_client.call_tool("mempalace_status", {})
+                status_raw = self.mcp_client.call_tool("memory_status", {})
                 try:
                     status_dict = json.loads(status_raw) if isinstance(status_raw, str) else status_raw
 
@@ -439,27 +438,25 @@ class AIResponder:
                     entities = status_dict.get('kg_total_entities', status_dict.get('total_entities', '?'))
                     size_bytes = status_dict.get('kg_size_bytes', status_dict.get('db_size_bytes', 0))
 
-                    # Also check for nested kg_status block if present
                     kg_status = status_dict.get('kg_status', status_dict.get('semantic_db', {}))
                     if isinstance(kg_status, dict) and kg_status:
                         triples = kg_status.get('total_triples', triples)
                         entities = kg_status.get('total_entities', entities)
                         size_bytes = kg_status.get('size_bytes', size_bytes)
 
-                    size_str = f"{size_bytes / 1024:.1f}KB" if size_bytes else "Unknown Size"
+                    size_str = f"{size_bytes / 1024:.1f}KB" if size_bytes else "0.0KB"
 
-                    # If we couldn't find triples/entities, just show the cache size as fallback
                     if triples == '?' and entities == '?':
                         active_hubs = len(self._mcp_indexing_cache)
                         semantic_status = f"Active ({active_hubs} local hubs cached, {size_str})"
                     else:
                         semantic_status = f"Active ({entities} entities, {triples} facts, {size_str})"
                 except Exception as e:
-                    logger.debug(f"Could not parse mempalace status JSON: {e}")
+                    logger.debug(f"Could not parse memory status JSON: {e}")
                     active_hubs = len(self._mcp_indexing_cache)
                     semantic_status = f"Active (Connected, {active_hubs} local hubs cached)"
             except Exception as e:
-                logger.error(f"Failed to fetch mempalace status: {e}")
+                logger.error(f"Failed to fetch memory status: {e}")
                 semantic_status = "Active (Status Unavailable)"
 
         # 3. Provider Info
@@ -536,19 +533,19 @@ class AIResponder:
                 # Context tuning — three tiers:
                 #
                 # 1. Channel / quick query  → last 2 messages only (no session state needed)
-                # 2. Session, MemPalace ON  → short bootstrap window so the AI doesn't get the
-                #    full raw log AND MemPalace semantic recall simultaneously.
+                # 2. Session, Memory DB ON  → short bootstrap window so the AI doesn't get the
+                #    full raw log AND semantic recall simultaneously.
                 #    Frontier models get a larger window than local Ollama models.
-                # 3. Session, no MemPalace  → full window (30 messages) — disk history is the
+                # 3. Session, Memory DB OFF → full window (30 messages) — disk history is the
                 #    only long-term memory so we send as much as we safely can.
                 if not is_session:
                     limit = 2
-                elif self.mcp_client.has_server('mempalace'):
+                elif self.mcp_client and self.mcp_client.has_server('memory'):
                     # Provider-aware bootstrap cap
                     is_local = provider_name == 'ollama'
-                    limit = (config.MEMPALACE_BOOTSTRAP_LOCAL if is_local
-                             else config.MEMPALACE_BOOTSTRAP_ONLINE)
-                    logger.debug(f"MemPalace active → bootstrap history limit={limit} "
+                    limit = (config.MEMORY_BOOTSTRAP_LOCAL if is_local
+                             else config.MEMORY_BOOTSTRAP_ONLINE)
+                    logger.debug(f"Semantic Memory active → bootstrap history limit={limit} "
                                  f"({'local' if is_local else 'online'} provider)")
                 else:
                     limit = 30
@@ -572,8 +569,8 @@ class AIResponder:
     
     def _index_to_mcp(self, data_type, payload):
         """Dispatch indexing task to the background executor."""
-        # Only proceed if MemPalace is connected
-        if not self.mcp_client or not self.mcp_client.has_server('mempalace'):
+        # Only proceed if Semantic Memory MCP server is active
+        if not self.mcp_client or not self.mcp_client.has_server('memory'):
             return
         
         self._bg_executor.submit(self._index_task_wrapper, data_type, payload)
@@ -581,9 +578,7 @@ class AIResponder:
     def _index_task_wrapper(self, data_type, payload):
         """Internal wrapper for the background executor to handle Knowledge Graph logic."""
         # 1. Graceful Fallback check
-        if not self.mcp_client.has_server('mempalace'):
-            # Silently skip if the service is down; this is expected in some environments
-            # or during service restarts.
+        if not self.mcp_client.has_server('memory'):
             return
 
         try:
@@ -594,7 +589,7 @@ class AIResponder:
             elif data_type == 'delete_history':
                 self._bg_delete_semantic_history(payload)
         except Exception as e:
-            logger.warning(f"⚠️ Background indexing failed ({data_type}). MemPalace service may be unreachable: {e}")
+            logger.warning(f"⚠️ Background indexing failed ({data_type}): {e}")
 
     def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False, is_system=False):
         """Standardized naming logic for Semantic Hubs."""
@@ -623,9 +618,10 @@ class AIResponder:
             targets.append(topic)
         
         if targets:
-            logger.info(f"🗑️ Semantically applying deletion tombstone to hubs: {targets}")
+            logger.info(f"🗑️ Semantically pruning and applying deletion tombstone to hubs: {targets}")
             for target in targets:
-                self.mcp_client.call_tool("mempalace_kg_add", {
+                self.mcp_client.call_tool("memory_delete_hub", {"target": target})
+                self.mcp_client.call_tool("memory_add_fact", {
                     "subject": target,
                     "predicate": "has_status",
                     "object": "Archived_by_User_Wipe"
@@ -656,12 +652,12 @@ class AIResponder:
 
 
         # 2. Define the Hub
-        self.mcp_client.call_tool("mempalace_kg_add", {
+        self.mcp_client.call_tool("memory_add_fact", {
             "subject": hub_name,
             "predicate": "is_a",
             "object": hub_type
         })
-        self.mcp_client.call_tool("mempalace_kg_add", {
+        self.mcp_client.call_tool("memory_add_fact", {
             "subject": node_id,
             "predicate": "participated_in",
             "object": hub_name
@@ -669,7 +665,7 @@ class AIResponder:
         
         # 3. Relate Topic if in session
         if session_name:
-            self.mcp_client.call_tool("mempalace_kg_add", {
+            self.mcp_client.call_tool("memory_add_fact", {
                 "subject": hub_name,
                 "predicate": "discusses_topic",
                 "object": session_name
@@ -682,7 +678,7 @@ class AIResponder:
         else:
             observation = f"User: {prompt} | AI: {response}"
             
-        self.mcp_client.call_tool("mempalace_kg_add", {
+        self.mcp_client.call_tool("memory_add_fact", {
             "subject": hub_name,
             "predicate": "recorded_turn",
             "object": observation
@@ -714,7 +710,7 @@ class AIResponder:
         else:
             summary = str(data)
             
-        self.mcp_client.call_tool("mempalace_kg_add", {
+        self.mcp_client.call_tool("memory_add_fact", {
             "subject": node_id,
             "predicate": "is_a",
             "object": "MeshNode"
@@ -725,19 +721,19 @@ class AIResponder:
         if node_info:
             user = node_info.get('user', {})
             if user.get('longName'):
-                self.mcp_client.call_tool("mempalace_kg_add", {
+                self.mcp_client.call_tool("memory_add_fact", {
                     "subject": node_id,
                     "predicate": "has_name",
                     "object": user.get('longName')
                 })
             if user.get('shortName'):
-                self.mcp_client.call_tool("mempalace_kg_add", {
+                self.mcp_client.call_tool("memory_add_fact", {
                     "subject": node_id,
                     "predicate": "has_short_name",
                     "object": user.get('shortName')
                 })
         
-        self.mcp_client.call_tool("mempalace_kg_add", {
+        self.mcp_client.call_tool("memory_add_fact", {
             "subject": node_id,
             "predicate": "reported_telemetry",
             "object": f"[{ts}] Type {t_type}: {summary}"
@@ -1002,8 +998,8 @@ class AIResponder:
             listing = self.conversation_manager.list_conversations(from_node)
             
             # 2. Add Semantic clues if enabled
-            if self.mcp_client and self.mcp_client.has_server('mempalace'):
-                listing += "\n(MemPalace Active: Deep Archive enabled)"
+            if self.mcp_client and self.mcp_client.has_server('memory'):
+                listing += "\n(Semantic Memory Active: Deep Archive enabled)"
             
             self.send_response(listing, from_node, to_node, channel)
         
@@ -1048,26 +1044,27 @@ class AIResponder:
         return None
 
     def _load_and_respond(self, identifier, from_node, to_node, channel, is_dm):
-        """Helper to load a session (MemPalace primary, disk fallback) and notify user."""
+        """Helper to load a session (Semantic Graph or disk archive) and notify user."""
         history = None
-        conversation_name = identifier
+        conversation_name = self._resolve_conversation_name(from_node, identifier) or identifier
         success = False
         message = f"Conversation '{identifier}' not found."
         source = None
 
-        # 1. Try MemPalace first — lighter than reading the disk archive
-        if self.mcp_client and self.mcp_client.has_server('mempalace'):
-            rehydrated = self._rehydrate_session_from_graph(from_node, identifier)
+        # 1. Try Semantic Graph re-hydration first
+        if self.mcp_client and self.mcp_client.has_server('memory'):
+            rehydrated = self._rehydrate_session_from_graph(from_node, conversation_name)
             if rehydrated:
                 history = rehydrated
                 success = True
                 source = 'graph'
-                message = f"💧 Re-hydrated '{identifier}' from Semantic Graph ({len(rehydrated)//2} turns)."
+                message = f"💧 Re-hydrated '{conversation_name}' from Semantic Graph ({len(rehydrated)//2} turns)."
 
         # 2. Fallback to disk archive (verbatim, used when graph has no record)
         if not success:
-            success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, identifier)
+            success, message, history, loaded_name = self.conversation_manager.load_conversation(from_node, identifier)
             if success:
+                conversation_name = loaded_name
                 source = 'disk'
 
         if success and history:
@@ -1082,7 +1079,7 @@ class AIResponder:
             self.send_response(message, from_node, to_node, channel)
 
     def _rehydrate_session_from_graph(self, node_id, topic_name):
-        """Reconstruct a session's conversation history from MemPalace KG observations.
+        """Reconstruct a session's conversation history from Knowledge Graph observations.
 
         The graph stores per turn:
             hub_name  discusses_topic  session_name
@@ -1097,7 +1094,7 @@ class AIResponder:
         """
         try:
             # Step 1: hubs that link to this topic via discusses_topic
-            topic_result = self.mcp_client.call_tool("mempalace_kg_query", {
+            topic_result = self.mcp_client.call_tool("memory_query_facts", {
                 "entity": topic_name,
                 "direction": "incoming"
             })
@@ -1108,7 +1105,7 @@ class AIResponder:
                         topic_hubs.add(fact["subject"])
 
             # Step 2: hubs this node participated in
-            node_result = self.mcp_client.call_tool("mempalace_kg_query", {
+            node_result = self.mcp_client.call_tool("memory_query_facts", {
                 "entity": node_id,
                 "direction": "outgoing"
             })
@@ -1132,7 +1129,7 @@ class AIResponder:
             # Step 3: collect recorded_turn observations across all matching hubs
             all_turns = []
             for hub in candidate_hubs:
-                hub_result = self.mcp_client.call_tool("mempalace_kg_query", {
+                hub_result = self.mcp_client.call_tool("memory_query_facts", {
                     "entity": hub,
                     "direction": "outgoing"
                 })

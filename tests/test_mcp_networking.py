@@ -43,8 +43,8 @@ class TestMCPNetworking(unittest.TestCase):
     def test_sse_registration_state(self, mock_session_class, mock_sse_client):
         """Verify that the SSE connection sequence correctly updates server state."""
         client = UnifiedMCPClient(self.mock_config)
-        url = "http://mempalace:8000/sse"
-        name = "mempalace"
+        url = "http://external-mcp:8000/sse"
+        name = "external-sse"
         
         # Setup Mocks
         mock_sse_cm = AsyncMock()
