@@ -6,6 +6,16 @@ on:
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ "master", "main" ]
+  workflow_dispatch:      # Allow manual re-triggering to restore missing images
+    inputs:
+      version_override:
+        description: 'Force a specific version tag (e.g., 2.0.0)'
+        required: false
+        type: string
+      tag_as_latest:
+        description: 'Also tag this build as latest'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
