@@ -12,33 +12,95 @@ jobs:
       packages: write
       contents: read
     steps:
-      - name: Delete untagged images
-        uses: snok/container-retention-policy@v3.0.0
-        with:
-          image-names: ai-responder
-          cut-off: 14d
-          account: user
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag-selection: untagged
-
-      - name: Delete old feature branch images
-        uses: snok/container-retention-policy@v3.0.0
-        with:
-          image-names: ai-responder
-          cut-off: 14d
-          account: user
-          token: ${{ secrets.GITHUB_TOKEN }}
-          image-tags: fix-*,feat-*,pr-*
-          keep-n-most-recent: 3
-
-      - name: Delete old main branch images
-        uses: snok/container-retention-policy@v3.0.0
+      # Delete commit-SHA images first (generated on every push by type=sha,format=long)
+      # Guard !*.* and !latest prevents touching release or latest tags on the same digest
+      - name: Delete old commit SHA images
+        uses: snok/container-retention-policy@v3.1.0
         with:
           image-names: ai-responder
           cut-off: 30d
           account: user
           token: ${{ secrets.GITHUB_TOKEN }}
-          image-tags: main
+          image-tags: "sha-*,!*.*,!latest"
+
+      - name: Delete old PR images
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          image-names: ai-responder
+          cut-off: 14d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: "pr-*,sha-*,!*.*,!latest"
+          keep-n-most-recent: 3
+
+      - name: Delete old fix branch images
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          image-names: ai-responder
+          cut-off: 14d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: "fix-*,sha-*,!*.*,!latest"
+          keep-n-most-recent: 3
+
+      - name: Delete old feat branch images
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          image-names: ai-responder
+          cut-off: 14d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: "feat-*,sha-*,!*.*,!latest"
+          keep-n-most-recent: 3
+
+      - name: Delete old master branch images
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          image-names: ai-responder
+          cut-off: 90d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-tags: "master,main,sha-*,!*.*,!latest"
           keep-n-most-recent: 5
 
+      # After deleting old tagged images above, collect the platform manifest digests
+      # still referenced by any remaining tagged image, so we don't break multi-arch pulls.
+      - name: Collect platform manifest SHAs to protect
+        id: protected
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAGGED=$(gh api "user/packages/container/ai-responder/versions" \
+            --paginate \
+            --jq '.[] | select(.metadata.container.tags | length > 0) | .name' \
+            2>/dev/null || echo "")
 
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          TOKEN=$(curl -s -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "https://ghcr.io/token?scope=repository:$REPO:pull" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))")
+
+          SKIP=""
+          while IFS= read -r digest; do
+            [ -z "$digest" ] && continue
+            children=$(curl -sf \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/$REPO/manifests/$digest" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); [print(m['digest']) for m in d.get('manifests',[])]" \
+              2>/dev/null || true)
+            [ -n "$children" ] && SKIP+="${children}"$'\n'
+          done <<< "$TAGGED"
+
+          SKIP_CSV=$(echo "$SKIP" | grep -v '^$' | sort -u | paste -sd,)
+          echo "shas=$SKIP_CSV" >> $GITHUB_OUTPUT
+
+      # Now safe to delete untagged images — orphaned platform manifests from deleted
+      # tagged images above will be cleaned up; active ones are protected via skip-shas.
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@v3.1.0
+        with:
+          image-names: ai-responder
+          cut-off: 30d
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag-selection: untagged
+          skip-shas: ${{ steps.protected.outputs.shas }}
