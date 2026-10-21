@@ -10,7 +10,6 @@ storage using Python's standard sqlite3 library with FTS5 (BM25 full-text search
 """
 
 import datetime
-import json
 import logging
 import os
 import re
