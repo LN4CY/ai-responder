@@ -86,7 +86,15 @@ def request_node_telemetry(node_id_or_name: str, telemetry_type: str) -> str:
 
 @mcp.tool()
 def schedule_message(delay_seconds: float = None, context_note: str = "", recur_interval_seconds: int = None, max_duration_seconds: int = None, notify_targets: str = None, absolute_time: str = None) -> str:
-    """Schedule a reminder or recurring proactive task. Returns the task ID."""
+    """
+    Schedule a one-shot reminder or recurring proactive task. Returns the task ID.
+    - delay_seconds: Seconds until first execution (defaults to recur_interval_seconds if recurring).
+    - context_note: Instruction or message for when the timer fires.
+    - recur_interval_seconds: Repeat interval in seconds for recurring tasks.
+    - max_duration_seconds: Total duration in seconds for recurring tasks (optional).
+    - notify_targets: Comma-separated recipients: 'requester' (default), a node name/shortName (e.g. 'L4WT'), a node ID ('!1234abcd'), or a channel ('ch:0'). IMPORTANT: If the user asks to ping or message another node/channel on a schedule, set notify_targets to that node or channel!
+    - absolute_time: Optional 'HH:MM' or 'YYYY-MM-DD HH:MM' in UTC.
+    """
     if not responder_app:
         return "Error"
     ctx = _get_caller_context()
@@ -99,7 +107,10 @@ def schedule_message(delay_seconds: float = None, context_note: str = "", recur_
 
 @mcp.tool()
 def watch_condition(node_id_or_name: str, metric: str, operator: str, threshold: float, context_note: str, notify_targets: str = None, is_persistent: bool = False) -> str:
-    """Set an alert when a node's telemetry threshold is met."""
+    """
+    Set an alert when a node's telemetry threshold is met (metrics: battery_level, voltage, temperature, humidity, barometric_pressure, iaq, snr; operators: <, >, <=, >=, ==).
+    notify_targets can be 'requester' (default), a node name/ID, or 'ch:0'.
+    """
     if not responder_app:
         return "Error"
     ctx = _get_caller_context()
@@ -111,7 +122,10 @@ def watch_condition(node_id_or_name: str, metric: str, operator: str, threshold:
 
 @mcp.tool()
 def watch_node_online(node_id_or_name: str, context_note: str, notify_targets: str = None, is_persistent: bool = False) -> str:
-    """Alert when a specific node comes online or sends any packet."""
+    """
+    Alert when a specific node comes online or sends any packet.
+    notify_targets can be 'requester' (default), a node name/ID, or 'ch:0'.
+    """
     if not responder_app:
         return "Error"
     ctx = _get_caller_context()

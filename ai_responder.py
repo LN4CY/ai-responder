@@ -637,9 +637,13 @@ class AIResponder:
         
         if not node_id or not prompt or not response:
             return
+        if not isinstance(prompt, str) or not isinstance(response, str):
+            return
         
         # 1. Active Session vs Special-Purpose Hubs
         session_name = self.session_manager.get_session_name(node_id)
+        if not isinstance(session_name, str):
+            session_name = None
         
         hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=True, is_system=is_system)
         if is_system:
@@ -1645,15 +1649,27 @@ class AIResponder:
                 logger.error(f"Error parsing absolute time '{absolute_time}': {e}")
                 return f"Error parsing time: {e}"
 
+        if delay_seconds is None and recur_interval_seconds is not None:
+            delay_seconds = float(recur_interval_seconds)
+
         if delay_seconds is None:
-            return "Error: Either delay_seconds or absolute_time must be provided."
+            return "Error: Either delay_seconds, recur_interval_seconds, or absolute_time must be provided."
+
+        if recur_interval_seconds:
+            end_time = (now + max_duration_seconds) if max_duration_seconds else None
+            max_runs = int(round(max_duration_seconds / recur_interval_seconds)) if max_duration_seconds else None
+        else:
+            end_time = now + delay_seconds
+            max_runs = 1
 
         task_id = f"sched-{next(self._task_counter)}"
         task = {
             'id': task_id,
             'next_time': now + delay_seconds,
-            'end_time': now + (max_duration_seconds or delay_seconds),
+            'end_time': end_time,
             'interval': recur_interval_seconds,
+            'run_count': 0,
+            'max_runs': max_runs,
             'context_note': context_note,
             'from_node': from_node,
             'to_node': to_node,
@@ -1674,8 +1690,9 @@ class AIResponder:
             self._save_proactive_tasks()
 
         if recur_interval_seconds:
+            duration_desc = f"for the next {max_duration_seconds}s" if max_duration_seconds else "until cancelled"
             return (f"✅ [{task_id}] Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
-                    f"for the next {max_duration_seconds or delay_seconds}s about: {context_note}")
+                    f"{duration_desc} about: {context_note}")
         else:
             time_desc = f"at {absolute_time}" if absolute_time else f"in {int(delay_seconds)}s"
             return f"✅ [{task_id}] Reminder scheduled {time_desc} about: {context_note}"
@@ -1922,7 +1939,7 @@ class AIResponder:
         except Exception as e:
             logger.error(f"Failed to load proactive tasks: {e}")
 
-    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester', disable_tools=False):
+    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester', disable_tools=False, run_count=None, max_runs=None):
         """Fire a proactive system-triggered AI response to one or more targets.
 
         targets: comma-separated string of recipients:
@@ -1931,17 +1948,21 @@ class AIResponder:
             '!hexid'          - any specific node by hex ID
             'ch:N'            - broadcast on channel N (must be in allowed_channels)
         """
+        exec_info = ""
+        if run_count is not None:
+            exec_info = f" (Execution {run_count} of {max_runs})" if max_runs else f" (Execution #{run_count})"
+
         prompt = (
-            f"[SYSTEM WAKEUP] A proactive task has triggered.\n\n"
+            f"[SYSTEM WAKEUP] A proactive task has triggered{exec_info}.\n\n"
             f"COMMAND/CONTEXT: {context_note}\n\n"
             f"CRITICAL INSTRUCTIONS:\n"
             f"1. You MUST execute any instructions or checks contained in the COMMAND/CONTEXT above.\n"
-            f"2. SEMANTIC CONTINUITY: Check your Knowledge Graph (MemPalace) for previous '[SYSTEM ACTION]' observations related to this task. This allows you to track state, counts, or trends across recurring events.\n"
+            f"2. SEMANTIC CONTINUITY: Check your Knowledge Graph (memory_query_facts or memory_search on 'Hub_System_{from_node}') for previous 'System Task:' observations related to this task. This allows you to track state, counts, or trends across recurring events.\n"
             f"3. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
             f"4. Your natural text response will be delivered automatically to: {targets}.\n"
-            f"5. DO NOT use the 'send_message' tool to deliver the final report; your text response handles this."
+            f"5. Do NOT use 'send_message' to deliver the final report to {targets} (your text response handles this). Only use 'send_message' if COMMAND/CONTEXT explicitly instructs you to send a message to a DIFFERENT node or channel than '{targets}'."
         )
-        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
+        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}{exec_info}")
 
         target_list = [t.strip() for t in targets.split(',') if t.strip()]
         allowed_channels = self.config.get('allowed_channels', [])
@@ -2213,7 +2234,7 @@ class AIResponder:
             # to prevent session indicators or logic from leaking into broadcasts.
             is_session = is_dm and self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
-            current_history = self.history.get(history_key, [])
+            current_history = list(self.history.get(history_key, []))
             
             # 2. Capability Check & Tool Orchestration
             provider_name = self.config.get('current_provider', 'ollama')
@@ -2230,6 +2251,7 @@ class AIResponder:
                 logger.info("🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
                 if not is_system_trigger:
                     self.add_to_history(history_key, 'user', query, node_id=from_node)
+                    current_history = list(self.history.get(history_key, []))
                 else:
                     current_history.append({'role': 'user', 'content': query})
             else:
@@ -2279,6 +2301,7 @@ class AIResponder:
                     # Log to history (metadata included in prompt content for system triggers)
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                        current_history = list(self.history.get(history_key, []))
                     else:
                         msg = f"User ({from_node}): {query}" if combined_metadata else query
                         current_history.append({'role': 'user', 'content': msg})
@@ -2287,6 +2310,7 @@ class AIResponder:
                     final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                        current_history = list(self.history.get(history_key, []))
                     else:
                         current_history.append({'role': 'user', 'content': final_query})
 
@@ -2372,10 +2396,10 @@ class AIResponder:
                 if isinstance(from_id_raw, int):
                     from_id_check = f"!{from_id_raw:08x}"
                 else:
-                    from_id_check = from_id_raw
+                    from_id_check = str(from_id_raw).lower()
                 
                 with self._node_online_watchers_lock:
-                    triggered = [w for w in self.node_online_watchers if w['node_id'] == from_id_check]
+                    triggered = [w for w in self.node_online_watchers if str(w.get('node_id', '')).lower() == from_id_check]
                     for w in triggered:
                         if not w.get('is_persistent', False):
                             self.node_online_watchers.remove(w)
@@ -2592,24 +2616,38 @@ class AIResponder:
 
                 # 5. Scheduled task ticker
                 now = time.time()
+                tasks_changed = False
                 with self._scheduled_tasks_lock:
                     to_keep = []
                     for task in self.scheduled_tasks:
                         if now >= task['next_time']:
+                            tasks_changed = True
+                            task['run_count'] = task.get('run_count', 0) + 1
                             self._fire_system_trigger(
                                 task['context_note'],
                                 task['from_node'],
                                 task['to_node'],
-                                task['channel']
+                                task['channel'],
+                                targets=task.get('targets', 'requester'),
+                                run_count=task['run_count'],
+                                max_runs=task.get('max_runs')
                             )
                             # Reschedule if recurring and not expired
-                            if task['interval'] and now < task['end_time']:
-                                task['next_time'] = now + task['interval']
-                                to_keep.append(task)
+                            interval = task.get('interval')
+                            end_time = task.get('end_time')
+                            if interval:
+                                next_fire = task['next_time'] + interval
+                                if next_fire <= now:
+                                    next_fire = now + interval
+                                if end_time is None or next_fire <= (end_time + 2):
+                                    task['next_time'] = next_fire
+                                    to_keep.append(task)
                             # else: one-shot or expired, discard
                         else:
                             to_keep.append(task)
                     self.scheduled_tasks = to_keep
+                    if tasks_changed:
+                        self._save_proactive_tasks()
 
                 time.sleep(1)
                 

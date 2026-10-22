@@ -57,8 +57,9 @@ class GeminiProvider(BaseProvider):
                 role = 'model' if msg['role'] == 'assistant' else 'user'
                 contents.append({'role': role, 'parts': [{'text': msg['content']}]})
         
-        # Always append current prompt
-        contents.append({'role': 'user', 'parts': [{'text': prompt}]})
+        # Append current prompt only if history doesn't already end with this user turn
+        if not contents or contents[-1]['role'] != 'user' or prompt not in contents[-1]['parts'][0]['text']:
+            contents.append({'role': 'user', 'parts': [{'text': prompt}]})
         
         # Inject System Prompt
         if contents[0]['role'] == 'user':

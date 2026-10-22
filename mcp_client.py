@@ -330,6 +330,8 @@ class UnifiedMCPClient:
                     threading.current_thread().ai_context = caller_context
                 mcp_instance = target_server.get('mcp', internal_meshtastic_mcp)
                 result = await mcp_instance.call_tool(tool_name, arguments)
+                if isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], (list, tuple)):
+                    result = result[0]
                 if isinstance(result, (list, tuple)):
                     texts = [getattr(c, 'text', str(c)) for c in result]
                     joined = "\n".join(texts)
