@@ -60,6 +60,13 @@ class SafeTCPInterface(TCPInterface):
                                 routing = debug_decoded.packet.decoded
                                 rid = routing.request_id
                                 error = getattr(routing, 'error_reason', 0)
+                                if not error and hasattr(routing, 'payload') and routing.payload:
+                                    try:
+                                        routing_pb = mesh_pb2.Routing()
+                                        routing_pb.ParseFromString(routing.payload)
+                                        error = getattr(routing_pb, 'error_reason', 0)
+                                    except Exception:
+                                        pass
                                 
                                 # FIX: Use 'from' (getattr handles reserved keyword conflict if any)
                                 sender = getattr(debug_decoded.packet, 'from', 0)
@@ -84,12 +91,16 @@ class SafeTCPInterface(TCPInterface):
                     elif debug_decoded.HasField("mqttClientProxyMessage"):
                         logger.debug(f"Content Is: MQTT Proxy Message (topic: {debug_decoded.mqttClientProxyMessage.topic})")
                     elif debug_decoded.HasField("routing"):
-                        logger.debug(f"Content Is: Routing/ACK (error_reason: {debug_decoded.routing.error_reason}, request_id: {debug_decoded.routing.request_id})")
+                        error = getattr(debug_decoded.routing, 'error_reason', 0)
+                        logger.debug(f"Content Is: Routing/ACK (error_reason: {error}, request_id: {debug_decoded.routing.request_id})")
                         # FORCE emit the ACK event because standard lib seems to consume it silently
                         # This ensures our event-driven waiter gets notified
                         rid = debug_decoded.routing.request_id
-                        logger.debug(f"⚡ forcing manual ACK event for ID {rid}")
-                        pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+                        if error == 0:
+                            logger.debug(f"⚡ forcing manual ACK event for ID {rid}")
+                            pub.sendMessage("meshtastic.ack", packetId=rid, interface=self)
+                        else:
+                            logger.warning(f"⚠️ Ignored routing NAK for ID {rid} (error_reason={error})")
 
                 except Exception:
                     logger.debug("Failed to decode raw bytes for debug log")

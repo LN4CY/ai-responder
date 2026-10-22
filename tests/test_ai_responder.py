@@ -73,6 +73,8 @@ class TestAIResponder(unittest.TestCase):
         logging.getLogger('AI-Responder').setLevel(logging.CRITICAL)
 
     def tearDown(self):
+        if hasattr(self, 'responder') and hasattr(self.responder, '_bg_executor'):
+            self.responder._bg_executor.shutdown(wait=True)
         self.patcher_config.stop()
         self.patcher_history.stop()
         self.patcher_conv.stop()
@@ -81,9 +83,9 @@ class TestAIResponder(unittest.TestCase):
         if os.path.exists(self.mock_config_file):
             os.remove(self.mock_config_file)
         if os.path.exists(self.mock_history_dir):
-            shutil.rmtree(self.mock_history_dir)
+            shutil.rmtree(self.mock_history_dir, ignore_errors=True)
         if os.path.exists(self.mock_conversations_dir):
-            shutil.rmtree(self.mock_conversations_dir)
+            shutil.rmtree(self.mock_conversations_dir, ignore_errors=True)
 
     def test_request_node_telemetry_polling_success(self):
         """Test that request_node_telemetry succeeds when timestamp updates."""
@@ -534,8 +536,8 @@ class TestAIResponder(unittest.TestCase):
         # Mock metadata
         self.responder.meshtastic.get_node_metadata.return_value = "(Loc: 1, 2)"
         
-        # Mock get_ai_response to avoid actual provider calls
-        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+        # Mock provider response to avoid actual network calls
+        with patch('providers.ollama.OllamaProvider.get_response', return_value="OK"):
             # 1. First DM -> SHould inject
             self.responder._process_ai_query_thread("hi", from_node, to_node, channel, is_dm=True)
             history_key = "DM:!u1"
@@ -599,9 +601,11 @@ class TestSessionNotifications(unittest.TestCase):
                     self.responder.meshtastic.find_node_by_name.return_value = None
 
     def tearDown(self):
+        if hasattr(self, 'responder') and hasattr(self.responder, '_bg_executor'):
+            self.responder._bg_executor.shutdown(wait=True)
         self.config_patcher.stop()
         if os.path.exists(self.mock_config_dir):
-            shutil.rmtree(self.mock_config_dir)
+            shutil.rmtree(self.mock_config_dir, ignore_errors=True)
     
     def test_session_metadata_persistence(self):
         """Test that session manager stores and returns routing metadata."""
@@ -652,7 +656,8 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Session ended", mock_send.call_args[0][0])
 
-    def test_location_query_injects_metadata(self):
+    @patch('time.sleep', return_value=None)
+    def test_location_query_injects_metadata(self, _):
         """Test that location-related queries trigger metadata injection."""
         from_node = "!sender"
         to_node = "!bot"
@@ -666,15 +671,11 @@ class TestSessionNotifications(unittest.TestCase):
         with patch.object(self.responder.meshtastic, 'get_node_metadata') as mock_meta:
             mock_meta.return_value = "(Location: 40.7, -74.0)"
             
-            with patch.object(self.responder, 'get_ai_response') as mock_ai:
-                mock_ai.return_value = "You are at 40.7, -74.0"
-                
+            with patch('providers.ollama.OllamaProvider.get_response', return_value="You are at 40.7, -74.0"):
                 # run _process_ai_query_thread directly to avoid threading
                 self.responder._process_ai_query_thread("Where am I?", from_node, to_node, channel, is_dm=True)
                 
                 # Should have called get_node_metadata because of "Where am I?"
-                # It may be called twice: once for primary sender telemetry, and once for name resolution if "Where" or "am" matched
-                # (But we mocked find_node_by_name to return None, so it should be once)
                 mock_meta.assert_any_call(from_node)
                 
                 # Test Battery Query
@@ -735,7 +736,8 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Timed out", mock_send.call_args[0][0])
 
-    def test_bot_metadata_injection(self):
+    @patch('time.sleep', return_value=None)
+    def test_bot_metadata_injection(self, _):
         """Test that bot's own metadata includes name and is triggered by reference."""
         from_node = "!sender"
         to_node = "!bot"
@@ -762,7 +764,7 @@ class TestSessionNotifications(unittest.TestCase):
         # Mock find_node_by_name to return !bot when "MockBot" is used
         self.responder.meshtastic.find_node_by_name.side_effect = lambda name: "!bot" if name.lower() == "mockbot" else None
         
-        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+        with patch('providers.ollama.OllamaProvider.get_response', return_value="OK"):
              # Query referencing bot by name
              self.responder._process_ai_query_thread("How are you, MockBot?", from_node, to_node, 0, is_dm=True)
              

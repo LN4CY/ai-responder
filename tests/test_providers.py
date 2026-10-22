@@ -154,5 +154,89 @@ class TestProviders(unittest.TestCase):
         result = provider.get_response("hello", tools=tools, mcp_client=mock_mcp_client)
         self.assertEqual(result, "Anthropic done.")
 
+    @patch('providers.gemini.requests.Session.post')
+    def test_gemini_missing_parts_and_multipart_tools(self, mock_post):
+        """Test that Gemini handles missing 'parts' and multi-part thought + functionCall turns."""
+        provider = GeminiProvider(self.mock_config)
+        mock_mcp_client = MagicMock()
+        mock_mcp_client.call_tool.side_effect = [
+            MockCallToolResult(["SNR: 11.2dB"]),
+            MockCallToolResult(["__SILENT_ACK__"])
+        ]
+
+        # Turn 1: thought part + two functionCall parts in a single turn
+        resp1 = MagicMock()
+        resp1.status_code = 200
+        resp1.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"thought": True, "text": "Checking SNR and sending message..."},
+                        {"functionCall": {"name": "get_node_details", "args": {"node_id_or_name": "!a"}}},
+                        {"functionCall": {"name": "send_mesh_message", "args": {"target": "!a", "text": "SNR 11.2dB"}}}
+                    ]
+                }
+            }]
+        }
+
+        # Turn 2: Gemini finishes with an empty content object (no 'parts' key)
+        resp2 = MagicMock()
+        resp2.status_code = 200
+        resp2.json.return_value = {
+            "candidates": [{
+                "content": {"role": "model"},
+                "finishReason": "STOP"
+            }]
+        }
+        mock_post.side_effect = [resp1, resp2]
+
+        tools = [
+            {"name": "get_node_details", "description": "Get details", "inputSchema": {"type": "OBJECT", "properties": {}}},
+            {"name": "send_mesh_message", "description": "Send message", "inputSchema": {"type": "OBJECT", "properties": {}}}
+        ]
+
+        result = provider.get_response("ping snr", tools=tools, mcp_client=mock_mcp_client)
+        self.assertEqual(result, "✅ Done.")
+        self.assertEqual(mock_mcp_client.call_tool.call_count, 2)
+
+    @patch('providers.openai.requests.post')
+    def test_provider_history_prompt_deduplication(self, mock_post):
+        """Test that providers do not duplicate prompt when history already ends with it, and append it when not."""
+        provider = OpenAIProvider(self.mock_config)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        mock_post.return_value = mock_response
+
+        # 1. History already ends with the prompt
+        history_with_prompt = [{"role": "user", "content": "[!u1] hello"}]
+        provider.get_response("hello", history=history_with_prompt)
+        sent_msgs_1 = mock_post.call_args[1]["json"]["messages"]
+        user_msgs_1 = [m for m in sent_msgs_1 if m.get("role") == "user"]
+        self.assertEqual(len(user_msgs_1), 1)
+
+        # 2. History does NOT end with the prompt
+        history_prior = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"}
+        ]
+        provider.get_response("second", history=history_prior)
+        sent_msgs_2 = mock_post.call_args[1]["json"]["messages"]
+        user_msgs_2 = [m for m in sent_msgs_2 if m.get("role") == "user"]
+        self.assertEqual(len(user_msgs_2), 2)
+        self.assertEqual(user_msgs_2[-1]["content"], "second")
+
+    def test_session_check_timeout_inactive_returns_4_tuple(self):
+        """Test that SessionManager.check_timeout always returns a 4-tuple even if user is not active."""
+        from conversation.session import SessionManager
+        sm = SessionManager(MagicMock(), session_timeout=60)
+        timed_out, msg, ch, to_node = sm.check_timeout("!nonexistent")
+        self.assertFalse(timed_out)
+        self.assertIsNone(msg)
+        self.assertEqual(ch, 0)
+        self.assertIsNone(to_node)
+
 if __name__ == '__main__':
     unittest.main()
+

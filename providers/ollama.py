@@ -46,6 +46,10 @@ class OllamaProvider(BaseProvider):
         if history:
             # Limit context based on configuration
             messages.extend(history[-OLLAMA_MAX_MESSAGES:])
+            if len(messages) <= 1 or messages[-1].get('role') != 'user' or (
+                prompt not in messages[-1].get('content', '') and messages[-1].get('content', '') not in prompt
+            ):
+                messages.append({'role': 'user', 'content': prompt})
         else:
             messages.append({'role': 'user', 'content': prompt})
         
@@ -119,10 +123,19 @@ class OllamaProvider(BaseProvider):
                 for tool_call in tool_calls:
                     function_name = tool_call['function']['name']
                     arguments = tool_call['function']['arguments']
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments)
                     
                     if mcp_client:
                         try:
-                            result = mcp_client.call_tool(function_name, arguments)
+                            raw_result = mcp_client.call_tool(function_name, arguments)
+                            if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                            else:
+                                result = raw_result
+                            action_tools_executed += 1
+                            if result == "__SILENT_ACK__":
+                                silent_ack_tools += 1
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             
                             messages.append({

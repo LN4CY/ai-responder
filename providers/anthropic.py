@@ -43,6 +43,12 @@ class AnthropicProvider(BaseProvider):
         
         if history:
             messages.extend(history)
+            if not messages or messages[-1].get('role') != 'user' or (
+                isinstance(messages[-1].get('content'), str)
+                and prompt not in messages[-1].get('content', '')
+                and messages[-1].get('content', '') not in prompt
+            ):
+                messages.append({'role': 'user', 'content': prompt})
         else:
             messages.append({'role': 'user', 'content': prompt})
         
@@ -129,6 +135,9 @@ class AnthropicProvider(BaseProvider):
                             else:
                                 result = raw_result
                                 
+                            action_tools_executed += 1
+                            if result == "__SILENT_ACK__":
+                                silent_ack_tools += 1
                             logger.info(f"✅ Tool {function_name} result: {str(result)[:100]}")
                             
                             # (Action tools / Silent ACK logic removed for MCP flexibility)

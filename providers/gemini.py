@@ -58,7 +58,9 @@ class GeminiProvider(BaseProvider):
                 contents.append({'role': role, 'parts': [{'text': msg['content']}]})
         
         # Append current prompt only if history doesn't already end with this user turn
-        if not contents or contents[-1]['role'] != 'user' or prompt not in contents[-1]['parts'][0]['text']:
+        if not contents or contents[-1]['role'] != 'user' or (
+            prompt not in contents[-1]['parts'][0]['text'] and contents[-1]['parts'][0]['text'] not in prompt
+        ):
             contents.append({'role': 'user', 'parts': [{'text': prompt}]})
         
         # Inject System Prompt
@@ -116,6 +118,7 @@ class GeminiProvider(BaseProvider):
             if function_declarations:
                 gemini_tools.append({"function_declarations": function_declarations})
 
+        base_contents = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in contents]
         payload = {"contents": contents}
         if gemini_tools:
             payload["tools"] = gemini_tools
@@ -129,6 +132,11 @@ class GeminiProvider(BaseProvider):
         
         for attempt in range(max_retries + 1):
             try:
+                # Reset contents to clean base snapshot on each outer attempt
+                payload["contents"] = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in base_contents]
+                action_tools_executed = 0
+                silent_ack_tools = 0
+
                 # Dynamic Switching: If forced, REPLACE tools with only Google Search/Maps
                 current_tools = gemini_tools
                 if force_grounding_turn:
@@ -166,62 +174,81 @@ class GeminiProvider(BaseProvider):
                         if not candidates:
                             return "⚠️ No response generated"
                         
-                        part = candidates[0]['content']['parts'][0]
+                        candidate_content = candidates[0].get('content', {})
+                        parts = candidate_content.get('parts', [])
+                        if not parts:
+                            finish_reason = candidates[0].get('finishReason', 'UNKNOWN')
+                            logger.warning(f"⚠️ Gemini candidate has no parts (finishReason={finish_reason})")
+                            if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                                return "__SILENT_ACK__"
+                            if action_tools_executed > 0:
+                                return "✅ Done."
+                            return "⚠️ No response generated"
                         
-                        # A. Handle Function Call
-                        if "functionCall" in part:
-                            f_call = part["functionCall"]
-                            f_name = f_call["name"]
-                            f_args = f_call.get("args", {})
-                            
+                        function_call_parts = [p for p in parts if "functionCall" in p]
+                        text_parts = [p["text"] for p in parts if "text" in p and not p.get("thought")]
+                        
+                        # A. Handle Function Call(s)
+                        if function_call_parts:
                             # DYNAMIC SWITCH INTERCEPTION
-                            if f_name == "google_search_stub":
-                                logger.info(f"🕵️ Intercepted Search Stub call: query='{f_args.get('query')}'")
+                            stub_call = next((p["functionCall"] for p in function_call_parts if p["functionCall"].get("name") == "google_search_stub"), None)
+                            if stub_call:
+                                logger.info(f"🕵️ Intercepted Search Stub call: query='{stub_call.get('args', {}).get('query')}'")
                                 force_grounding_turn = True
-                                # Add the AI's call to history? No, we retry the whole turn.
-                                # Breaking inner loop triggers outer loop retry?
-                                # We need to ensure logic below handles this.
-                                break 
-
-                            logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                                break
                             
-                            if mcp_client:
-                                try:
-                                    raw_result = mcp_client.call_tool(f_name, f_args)
-                                    # Normalize MCP CallToolResult/TextContent objects to a plain string
-                                    if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
-                                        result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
-                                    else:
-                                        result = str(raw_result)
-                                        
-                                    logger.info(f"✅ Tool result: {result[:100]}...")
-                                except Exception as e:
-                                    logger.error(f"❌ Error executing tool {f_name}: {e}")
-                                    result = f"Error: {str(e)}"
-                            else:
-                                logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
-                                result = "Error: MCP Client unavailable."
-                            
-                            # Add function call and response to contents
-                            payload["contents"].append({
-                                "role": "model",
-                                "parts": [part]
-                            })
-                            payload["contents"].append({
-                                "role": "function",
-                                "parts": [{
+                            function_response_parts = []
+                            for fc_part in function_call_parts:
+                                f_call = fc_part["functionCall"]
+                                f_name = f_call["name"]
+                                f_args = f_call.get("args", {})
+                                logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                                
+                                if mcp_client:
+                                    try:
+                                        raw_result = mcp_client.call_tool(f_name, f_args)
+                                        # Normalize MCP CallToolResult/TextContent objects to a plain string
+                                        if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                            result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                                        else:
+                                            result = str(raw_result)
+                                            
+                                        action_tools_executed += 1
+                                        if result == "__SILENT_ACK__":
+                                            silent_ack_tools += 1
+                                        logger.info(f"✅ Tool result: {result[:100]}...")
+                                    except Exception as e:
+                                        logger.error(f"❌ Error executing tool {f_name}: {e}")
+                                        result = f"Error: {str(e)}"
+                                else:
+                                    logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
+                                    result = "Error: MCP Client unavailable."
+                                
+                                function_response_parts.append({
                                     "functionResponse": {
                                         "name": f_name,
                                         "response": {"name": f_name, "content": result}
                                     }
-                                }]
+                                })
+                            
+                            # Add function call(s) and response(s) to contents
+                            payload["contents"].append({
+                                "role": "model",
+                                "parts": function_call_parts
+                            })
+                            payload["contents"].append({
+                                "role": "function",
+                                "parts": function_response_parts
                             })
                             continue # Next turn in loop
                         
                         # B. Handle Text Response
-                        if "text" in part:
-                            text = part["text"].strip()
-                            
+                        if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                            logger.info("🔇 All Gemini action tools handled proactively. Suppressing final text.")
+                            return "__SILENT_ACK__"
+
+                        if text_parts:
+                            text = "\n".join(text_parts).strip()
                             
                             # Check for grounding feedback
                             grounding = candidates[0].get('groundingMetadata', {})

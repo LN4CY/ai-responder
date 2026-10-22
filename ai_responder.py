@@ -103,6 +103,8 @@ class AIResponder:
         # In-memory history cache
         # Structure: {user_id: [{'role': 'user'/'assistant', 'content': '...'}]}
         self.history = {}
+        self._history_lock = threading.RLock()
+        self._proactive_persistence_lock = threading.RLock()
         
         # Worker tracking
         self._active_workers = {} # {thread_id: {start_time, from_node, to_node, channel}}
@@ -280,17 +282,18 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        history_path = self._get_history_path(user_id)
-        if os.path.exists(history_path):
-            try:
-                with open(history_path, 'r') as f:
-                    self.history[user_id] = json.load(f)
-                logger.info(f"Loaded history for {user_id}: {len(self.history[user_id])} messages")
-            except Exception as e:
-                logger.error(f"Failed to load history for {user_id}: {e}")
+        with self._history_lock:
+            history_path = self._get_history_path(user_id)
+            if os.path.exists(history_path):
+                try:
+                    with open(history_path, 'r') as f:
+                        self.history[user_id] = json.load(f)
+                    logger.info(f"Loaded history for {user_id}: {len(self.history[user_id])} messages")
+                except Exception as e:
+                    logger.error(f"Failed to load history for {user_id}: {e}")
+                    self.history[user_id] = []
+            else:
                 self.history[user_id] = []
-        else:
-            self.history[user_id] = []
     
     def save_history(self, user_id):
         """
@@ -301,33 +304,34 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        if user_id not in self.history:
-            return
-        
-        history_path = self._get_history_path(user_id)
-        try:
-            # Enforce message count limit
-            if len(self.history[user_id]) > config.HISTORY_MAX_MESSAGES:
-                logger.warning(f"History for {user_id} exceeded {config.HISTORY_MAX_MESSAGES} messages, trimming...")
-                self.history[user_id] = self.history[user_id][-config.HISTORY_MAX_MESSAGES:]
+        with self._history_lock:
+            if user_id not in self.history:
+                return
             
-            # Save to file
-            with open(history_path, 'w') as f:
-                json.dump(self.history[user_id], f)
-            
-            # Check file size and trim if needed
-            file_size = os.path.getsize(history_path)
-            if file_size > config.HISTORY_MAX_BYTES:
-                logger.warning(f"History file for {user_id} is {file_size} bytes, trimming...")
-                # Remove oldest 20% of messages
-                trim_count = len(self.history[user_id]) // 5
-                self.history[user_id] = self.history[user_id][trim_count:]
+            history_path = self._get_history_path(user_id)
+            try:
+                # Enforce message count limit
+                if len(self.history[user_id]) > config.HISTORY_MAX_MESSAGES:
+                    logger.warning(f"History for {user_id} exceeded {config.HISTORY_MAX_MESSAGES} messages, trimming...")
+                    self.history[user_id] = self.history[user_id][-config.HISTORY_MAX_MESSAGES:]
+                
+                # Save to file
                 with open(history_path, 'w') as f:
                     json.dump(self.history[user_id], f)
-                logger.info(f"Trimmed {trim_count} messages from history")
                 
-        except Exception as e:
-            logger.error(f"Failed to save history for {user_id}: {e}")
+                # Check file size and trim if needed
+                file_size = os.path.getsize(history_path)
+                if file_size > config.HISTORY_MAX_BYTES:
+                    logger.warning(f"History file for {user_id} is {file_size} bytes, trimming...")
+                    # Remove oldest 20% of messages
+                    trim_count = len(self.history[user_id]) // 5
+                    self.history[user_id] = self.history[user_id][trim_count:]
+                    with open(history_path, 'w') as f:
+                        json.dump(self.history[user_id], f)
+                    logger.info(f"Trimmed {trim_count} messages from history")
+                    
+            except Exception as e:
+                logger.error(f"Failed to save history for {user_id}: {e}")
     
     def clear_history(self, user_id):
         """
@@ -336,9 +340,10 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        self.history[user_id] = []
-        self.save_history(user_id)
-        logger.info(f"Cleared history for {user_id}")
+        with self._history_lock:
+            self.history[user_id] = []
+            self.save_history(user_id)
+            logger.info(f"Cleared history for {user_id}")
     
     def _format_dual_metadata(self, local_metadata, remote_metadata):
         """
@@ -378,19 +383,20 @@ class AIResponder:
             node_id: Optional Node ID for labeling 'user' messages
             metadata: Optional metadata string (e.g., location/battery)
         """
-        if history_key not in self.history:
-            self.load_history(history_key)
-        
-        formatted_content = content
-        if role == 'user' and node_id:
-            # Tag with Node ID
-            label = f"[{node_id}]"
-            if metadata:
-                label += f" {metadata}"
-            formatted_content = f"{label}: {content}"
+        with self._history_lock:
+            if history_key not in self.history:
+                self.load_history(history_key)
             
-        self.history[history_key].append({'role': role, 'content': formatted_content})
-        self.save_history(history_key)
+            formatted_content = content
+            if role == 'user' and node_id:
+                # Tag with Node ID
+                label = f"[{node_id}]"
+                if metadata:
+                    label += f" {metadata}"
+                formatted_content = f"{label}: {content}"
+                
+            self.history[history_key].append({'role': role, 'content': formatted_content})
+            self.save_history(history_key)
     
     # ==================== Memory Status ====================
     
@@ -614,6 +620,8 @@ class AIResponder:
             # 1. Target the persistent conversation hubs
             targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=True)) # Use DM hub as default user hub
             targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=False)) # Use Channel hub
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_system=True)) # Use System hub
+            targets.append(f"Chat_{node_id}_CH{channel}") # Use Session hub
         elif topic:
             targets.append(topic)
         
@@ -633,6 +641,7 @@ class AIResponder:
         channel = payload.get('channel', 0)
         prompt = payload.get('prompt')
         response = payload.get('response')
+        is_dm = payload.get('is_dm', True)
         is_system = payload.get('is_system', False)
         
         if not node_id or not prompt or not response:
@@ -641,11 +650,11 @@ class AIResponder:
             return
         
         # 1. Active Session vs Special-Purpose Hubs
-        session_name = self.session_manager.get_session_name(node_id)
+        session_name = self.session_manager.get_session_name(node_id) if is_dm else None
         if not isinstance(session_name, str):
             session_name = None
         
-        hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=True, is_system=is_system)
+        hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=is_dm, is_system=is_system)
         if is_system:
             hub_type = "SystemHub"
         elif not session_name:
@@ -785,6 +794,19 @@ class AIResponder:
         # Send via Meshtastic handler
         self.meshtastic.send_message(text, destination, channel, session_indicator)
     
+    def _is_dm(self, to_node):
+        """Determine if a message destination represents a Direct Message to this bot."""
+        if not to_node or str(to_node).lower() in ('^all', '!ffffffff', 'unknown', '4294967295'):
+            return False
+        try:
+            my_node_info = self.meshtastic.get_node_info()
+            my_id = my_node_info.get('user', {}).get('id', '') if isinstance(my_node_info, dict) else ''
+            if isinstance(my_id, str) and my_id.startswith('!'):
+                return str(to_node).lower() == my_id.lower()
+        except Exception:
+            pass
+        return True
+
     # ==================== Command Processing ====================
     
     def process_command(self, text, from_node, to_node, channel):
@@ -814,7 +836,7 @@ class AIResponder:
         cmd = parts[1].lower() if len(parts) > 1 else ''
         args = parts[2] if len(parts) > 2 else ''
         
-        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        is_dm = self._is_dm(to_node)
         is_admin = self.is_admin(from_node)
         
         # ===== Help Command =====
@@ -869,7 +891,7 @@ class AIResponder:
                 self.clear_history(channel_key)
                 if args:
                     # Treat args as a fresh query after reset
-                    self._handle_ai_query(args, from_node, to_node, channel, "Thinking (New Conversation)... 🤖")
+                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖")
                 else:
                     self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
@@ -982,7 +1004,7 @@ class AIResponder:
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
         """Handle conversation management commands with Semantic Memory integration."""
-        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        is_dm = self._is_dm(to_node)
         
         if not args:
             # Load last conversation
@@ -1072,7 +1094,8 @@ class AIResponder:
                 source = 'disk'
 
         if success and history:
-            self.history[conversation_name] = history
+            with self._history_lock:
+                self.history[conversation_name] = history
             self._refresh_metadata_nodes.add(from_node)
             if is_dm:
                 self.session_manager.start_session(from_node, conversation_name, channel, to_node)
@@ -1160,10 +1183,13 @@ class AIResponder:
                     history.append({"role": "user",      "content": user_part[len("User: "):]})
                     history.append({"role": "assistant", "content": ai_part})
                 elif obs.startswith("System Task: ") and " | Result: " in obs:
-                    # System-triggered turns — include as background context only
-                    history.append({"role": "user",      "content": f"[Context] {obs}"})
+                    # System-triggered turns — preserve strict user/assistant role alternation
+                    sys_part, res_part = obs.split(" | Result: ", 1)
+                    history.append({"role": "user",      "content": f"[Context] {sys_part}"})
+                    history.append({"role": "assistant", "content": res_part})
                 else:
-                    history.append({"role": "user", "content": obs})
+                    history.append({"role": "user",      "content": obs})
+                    history.append({"role": "assistant", "content": "[Noted]"})
 
             if not history:
                 return None
@@ -1454,9 +1480,7 @@ class AIResponder:
         """
         # Determine if this is a DM interaction if not provided
         if is_dm is None:
-            my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
-            is_dm = (to_node == my_id)
+            is_dm = self._is_dm(to_node)
         
         # Send initial acknowledgment
         if initial_msg:
@@ -1555,6 +1579,8 @@ class AIResponder:
             'to_node': to_node,
             'channel': channel,
             'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
+            'metric_key': metric_key,
+            'polling': True,
             'registered_at': time.time()
         }
         logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
@@ -1608,7 +1634,8 @@ class AIResponder:
         if node_id not in self.pending_telemetry_requests:
             logger.info(f"🔇 Telemetry for {node_id} was handled by proactive callback — suppressing AI reply.")
             return "__SILENT_ACK__"
-            
+        
+        self.pending_telemetry_requests[node_id]['polling'] = False
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
 
@@ -1895,19 +1922,22 @@ class AIResponder:
         return f"❌ Task [{task_id}] not found or does not belong to you."
 
     def _save_proactive_tasks(self):
-        """Save all proactive tasks to a JSON file."""
-        try:
-            tasks_data = {
-                'scheduled_tasks': self.scheduled_tasks,
-                'condition_watchers': self.condition_watchers,
-                'node_online_watchers': self.node_online_watchers
-            }
-            file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(tasks_data, f, indent=2)
-            logger.debug(f"💾 Saved proactive tasks to {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save proactive tasks: {e}")
+        """Save all proactive tasks to a JSON file atomically."""
+        with self._proactive_persistence_lock:
+            try:
+                tasks_data = {
+                    'scheduled_tasks': list(self.scheduled_tasks),
+                    'condition_watchers': list(self.condition_watchers),
+                    'node_online_watchers': list(self.node_online_watchers)
+                }
+                file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
+                tmp_path = f"{file_path}.tmp"
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    json.dump(tasks_data, f, indent=2)
+                os.replace(tmp_path, file_path)
+                logger.debug(f"💾 Saved proactive tasks to {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to save proactive tasks: {e}")
 
     def _load_proactive_tasks(self):
         """Load proactive tasks from disk and restore ID counter."""
@@ -2029,9 +2059,10 @@ class AIResponder:
             # --- 1. Deferred telemetry callbacks ---
             if from_id in self.pending_telemetry_requests:
                 req = self.pending_telemetry_requests[from_id] # Peak, don't pop yet (poll might consume it)
-                event_str = f"Requested {req.get('context_note', 'telemetry')} arrived."
-                self._add_to_collector(from_id, event_str, req)
-                logger.info(f"⏳ Telemetry for {from_id} buffered in collector.")
+                if not req.get('polling', False):
+                    event_str = f"Requested {req.get('context_note', 'telemetry')} arrived."
+                    self._add_to_collector(from_id, event_str, req)
+                    logger.info(f"⏳ Telemetry for {from_id} buffered in collector.")
 
             # --- 2. Condition watchers ---
             decoded = packet.get('decoded', {})
@@ -2311,6 +2342,8 @@ class AIResponder:
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
                         current_history = list(self.history.get(history_key, []))
+                        if final_query != query and current_history:
+                            current_history[-1] = {'role': 'user', 'content': final_query}
                     else:
                         current_history.append({'role': 'user', 'content': final_query})
 
@@ -2338,8 +2371,13 @@ class AIResponder:
                 except Exception as e:
                     logger.debug(f"Could not extract primary location for grounding: {e}")
 
-            # 5. Get AI response
-            response = provider.get_response(final_query, current_history[-30:], 
+            # 5. Get AI response (apply provider-aware bootstrap history cap when Semantic Memory is active)
+            if self.mcp_client and isinstance(getattr(self.mcp_client, 'has_server', None), object) and self.mcp_client.has_server('memory') is True:
+                is_local = str(provider_name).lower() in ('ollama', 'local')
+                history_limit = config.MEMORY_BOOTSTRAP_LOCAL if is_local else config.MEMORY_BOOTSTRAP_ONLINE
+            else:
+                history_limit = 30
+            response = provider.get_response(final_query, current_history[-history_limit:], 
                                           context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
                                           location=location, tools=tools, mcp_client=self.mcp_client)
             
@@ -2357,7 +2395,9 @@ class AIResponder:
                 if is_dm:
                     session_name = self.session_manager.get_session_name(from_node)
                     if session_name:
-                        self.conversation_manager.save_conversation(from_node, session_name, current_history)
+                        with self._history_lock:
+                            saved_history = list(self.history.get(history_key, []))
+                        self.conversation_manager.save_conversation(from_node, session_name, saved_history)
                         self.session_manager.update_activity(from_node)
             
             # 9. Background Semantic Indexing (Enabled for both users and system triggers)
@@ -2366,6 +2406,7 @@ class AIResponder:
                 'channel': channel,
                 'prompt': query,
                 'response': response,
+                'is_dm': is_dm,
                 'is_system': is_system_trigger
             })
             
@@ -2430,10 +2471,7 @@ class AIResponder:
             logger.info(f"📨 Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
             
             # Determine DM status
-            my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
-            # In MeshPacket, 'toId' is our ID for DMs. STRICT check.
-            is_dm = (to_node == my_id)
+            is_dm = self._is_dm(to_node)
 
             # Check if user is in an active session (DM only)
             if is_dm and self.session_manager.is_active(from_node):
@@ -2537,8 +2575,8 @@ class AIResponder:
 
                 # 3. Update Heartbeat / Health Check
                 # Also check message queue heartbeat (should tick every 500ms when idle)
-                queue_heartbeat = getattr(self.meshtastic, 'queue', None)
-                if queue_heartbeat and (current_time - queue_heartbeat.last_heartbeat > 300):
+                queue_heartbeat = getattr(self.meshtastic, '_message_queue', None)
+                if queue_heartbeat and hasattr(queue_heartbeat, 'last_heartbeat') and (current_time - queue_heartbeat.last_heartbeat > 300):
                     health_ok = False
                     reasons.append("Message queue thread stalled (>300s)")
                 
