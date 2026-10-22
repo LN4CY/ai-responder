@@ -81,7 +81,7 @@ class AnthropicProvider(BaseProvider):
             for turn in range(5):
                 payload = {
                     'model': model,
-                    'max_tokens': 150,
+                    'max_tokens': 1024,
                     'system': system_prompt,
                     'messages': messages
                 }

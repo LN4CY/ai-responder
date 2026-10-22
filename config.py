@@ -38,16 +38,16 @@ MEMPALACE_BOOTSTRAP_LOCAL = MEMORY_BOOTSTRAP_LOCAL
 MEMPALACE_BOOTSTRAP_ONLINE = MEMORY_BOOTSTRAP_ONLINE
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')          # fast model (simple queries)
-GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-2.5-pro')  # reasoning model (complex)
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.8-flash')          # fast model (simple queries)
+GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-3.1-pro-preview')  # reasoning model (complex)
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
 GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')               # fast model (simple queries)
 OPENAI_REASONING_MODEL = os.getenv('OPENAI_REASONING_MODEL', 'o4-mini')         # reasoning model (complex)
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')       # fast model (simple queries)
-ANTHROPIC_THINKING_MODEL = os.getenv('ANTHROPIC_THINKING_MODEL', 'claude-sonnet-4-6')  # thinking model (complex)
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-haiku-5-5')       # fast model (simple queries)
+ANTHROPIC_THINKING_MODEL = os.getenv('ANTHROPIC_THINKING_MODEL', 'claude-sonnet-5-5')  # thinking model (complex)
 OLLAMA_THINKING_MODEL = os.getenv('OLLAMA_THINKING_MODEL', '')         # empty = same as OLLAMA_MODEL
 
 # History and Storage Configuration

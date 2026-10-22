@@ -232,12 +232,14 @@ class GeminiProvider(BaseProvider):
                                 })
                             
                             # Add function call(s) and response(s) to contents
+                            # Preserve original parts (including thoughtSignature and thoughts) required by Gemini 3+
                             payload["contents"].append({
                                 "role": "model",
-                                "parts": function_call_parts
+                                "parts": parts
                             })
+                            # Use "user" role for tool responses (universal across Gemini 2.5, 3.x, and 4)
                             payload["contents"].append({
-                                "role": "function",
+                                "role": "user",
                                 "parts": function_response_parts
                             })
                             continue # Next turn in loop
