@@ -18,6 +18,7 @@ COPY conversation/ ./conversation/
 COPY meshtastic_handler/ ./meshtastic_handler/
 COPY mcp_client.py .
 COPY mcp_server_meshtastic.py .
+COPY mcp_server_memory.py .
 COPY ai_responder.py .
 
 
