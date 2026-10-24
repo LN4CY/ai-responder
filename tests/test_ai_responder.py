@@ -920,6 +920,129 @@ class TestAIProviders(unittest.TestCase):
                     self.assertEqual(list(second_call_payload['tools'][0].keys())[0], 'google_search')
 
     @patch('providers.gemini.requests.Session')
+    def test_gemini_surgical_fallback_generic_400(self, mock_session_cls):
+        """Test that Gemini provider falls back when receiving generic Gemini 3 400 INVALID_ARGUMENT."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # 1. First call fails with generic Gemini 3 400 (Request contains an invalid argument.)
+        mock_error = MagicMock()
+        mock_error.status_code = 400
+        mock_error.json.return_value = {"error": {"code": 400, "message": "Request contains an invalid argument.", "status": "INVALID_ARGUMENT"}}
+        
+        # 2. Second call (automatic retry) succeeds with google_search alone
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        mock_success.json.return_value = {
+            "candidates": [{
+                "content": {"parts": [{"text": "Found it via search"}]},
+                "groundingMetadata": {"webSearchQueries": ["search query"]}
+            }]
+        }
+        
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_error, mock_success]
+        mock_session_cls.return_value = mock_session
+        
+        with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
+            with patch.object(config, 'GEMINI_MAPS_GROUNDING', True):
+                with patch.object(config, 'GEMINI_SEARCH_GROUNDING', True):
+                    response = provider.get_response("find nearest pharmacy")
+                    
+                    self.assertEqual(mock_session.post.call_count, 2)
+                    self.assertTrue(response.startswith("🌐"))
+                    self.assertIn("Found it via search", response)
+                    
+                    # Verify google_maps was removed and google_search retained
+                    second_call_payload = mock_session.post.call_args_list[1][1]['json']
+                    self.assertEqual(len(second_call_payload['tools']), 1)
+                    self.assertEqual(list(second_call_payload['tools'][0].keys())[0], 'google_search')
+
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_dynamic_grounding_preserves_history(self, mock_session_cls):
+        """Test that dynamic promotion from google_search_stub preserves multi-turn tool history."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+        
+        # Turn 1: Model calls get_location_address
+        mock_resp_turn1 = MagicMock()
+        mock_resp_turn1.status_code = 200
+        mock_resp_turn1.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "get_location_address", "args": {"lat": 35.9, "lon": -78.4}}}]
+                }
+            }]
+        }
+        
+        # Turn 2: Model calls google_search_stub
+        mock_resp_turn2 = MagicMock()
+        mock_resp_turn2.status_code = 200
+        mock_resp_turn2.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "google_search_stub", "args": {"query": "pharmacy in Rolesville"}}}]
+                }
+            }]
+        }
+        
+        # Turn 3: Gemini executes native search grounding and returns text
+        mock_resp_turn3 = MagicMock()
+        mock_resp_turn3.status_code = 200
+        mock_resp_turn3.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "Nearest pharmacy is CVS at 402 S Main St"}]
+                },
+                "groundingMetadata": {"webSearchQueries": ["pharmacy in Rolesville"]}
+            }]
+        }
+        
+        mock_session = MagicMock()
+        mock_session.post.side_effect = [mock_resp_turn1, mock_resp_turn2, mock_resp_turn3]
+        mock_session_cls.return_value = mock_session
+        
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool.return_value = "Address: 535 Granite View Dr, Rolesville NC 27571"
+        
+        custom_tools = [{
+            "name": "get_location_address",
+            "description": "Lookup address",
+            "inputSchema": {"type": "object", "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}}}
+        }]
+        
+        with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
+            with patch.object(config, 'GEMINI_SEARCH_GROUNDING', True):
+                with patch.object(config, 'GEMINI_MAPS_GROUNDING', True):
+                    response = provider.get_response(
+                        "What is the nearest pharmacy?",
+                        tools=custom_tools,
+                        mcp_client=mock_mcp
+                    )
+                    
+                    self.assertEqual(mock_session.post.call_count, 3)
+                    self.assertTrue(response.startswith("🌐"))
+                    self.assertIn("Nearest pharmacy is CVS", response)
+                    
+                    # Verify Turn 3 payload preserved Turn 1 tool result and switched tools to google_search alone
+                    turn3_payload = mock_session.post.call_args_list[2][1]['json']
+                    turn3_contents = turn3_payload['contents']
+                    
+                    # Verify address lookup result is in history
+                    turn1_response = next(
+                        (p for c in turn3_contents if c.get("role") == "user" for p in c.get("parts", []) if "functionResponse" in p and p["functionResponse"]["name"] == "get_location_address"),
+                        None
+                    )
+                    self.assertIsNotNone(turn1_response, "Turn 1 address lookup result was wiped from contents!")
+                    self.assertIn("Granite View Dr", turn1_response["functionResponse"]["response"]["content"])
+                    
+                    # Verify Turn 3 tools are strictly google_search (no maps!)
+                    self.assertEqual(turn3_payload['tools'], [{"google_search": {}}])
+
+    @patch('providers.gemini.requests.Session')
     @patch('time.sleep', return_value=None)
     def test_gemini_retry_logic(self, mock_sleep, mock_session_cls):
         """Test that Gemini provider retries on 503 errors."""

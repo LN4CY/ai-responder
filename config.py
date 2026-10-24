@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
