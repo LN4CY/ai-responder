@@ -33,7 +33,7 @@ class GeminiProvider(BaseProvider):
         session = requests.Session()
         session.headers.update({'Connection': 'close'})
         try:
-            return session.post(url, json=payload, timeout=(10, 30))
+            return session.post(url, json=payload, timeout=(10, 45))
         finally:
             session.close()
 
@@ -121,42 +121,34 @@ class GeminiProvider(BaseProvider):
         base_contents = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in contents]
         payload = {"contents": contents}
         if gemini_tools:
-            payload["tools"] = gemini_tools
+            payload["tools"] = list(gemini_tools)
 
         # 2. Execute Request with Retries and Fallback
         max_retries = 3
         retry_delay = 2
         
-        # State: Force native grounding for this turn?
-        force_grounding_turn = False
-        
         for attempt in range(max_retries + 1):
             try:
-                # Reset contents to clean base snapshot on each outer attempt
+                # Reset contents and tools to clean base snapshot on each outer attempt
                 payload["contents"] = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in base_contents]
+                if gemini_tools:
+                    payload["tools"] = list(gemini_tools)
+                else:
+                    payload.pop("tools", None)
                 action_tools_executed = 0
                 silent_ack_tools = 0
-
-                # Dynamic Switching: If forced, REPLACE tools with only Google Search/Maps
-                current_tools = gemini_tools
-                if force_grounding_turn:
-                    logger.info("🌍 Dynamic Switch: Promoting to Native Google Grounding for this turn.")
-                    current_tools = [{"google_search": {}}]
-                    if self.config.get('gemini_maps_grounding', config.GEMINI_MAPS_GROUNDING):
-                        current_tools.append({"google_maps": {}})
-                    payload["tools"] = current_tools
                 
-                if attempt > 0 and not force_grounding_turn:
+                if attempt > 0:
                     logger.info(f"🔄 Retrying Gemini request (attempt {attempt}/{max_retries})...")
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
-                
-                logger.info(f"Calling Gemini model: {model} (Tools: {len(current_tools)})")
                 
                 # Turn loop for function calling
                 max_turns = 5
                 
                 for turn in range(max_turns):
+                    active_tools = payload.get("tools", [])
+                    logger.info(f"Calling Gemini model: {model} (Tools: {len(active_tools)})")
                     response = self._make_request(url, payload)
                     
                     # Check for transient errors or rate limits to retry (outer loop)
@@ -190,39 +182,39 @@ class GeminiProvider(BaseProvider):
                         
                         # A. Handle Function Call(s)
                         if function_call_parts:
-                            # DYNAMIC SWITCH INTERCEPTION
-                            stub_call = next((p["functionCall"] for p in function_call_parts if p["functionCall"].get("name") == "google_search_stub"), None)
-                            if stub_call:
-                                logger.info(f"🕵️ Intercepted Search Stub call: query='{stub_call.get('args', {}).get('query')}'")
-                                force_grounding_turn = True
-                                break
-                            
+                            promoting_to_search = False
                             function_response_parts = []
                             for fc_part in function_call_parts:
                                 f_call = fc_part["functionCall"]
                                 f_name = f_call["name"]
                                 f_args = f_call.get("args", {})
-                                logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
                                 
-                                if mcp_client:
-                                    try:
-                                        raw_result = mcp_client.call_tool(f_name, f_args)
-                                        # Normalize MCP CallToolResult/TextContent objects to a plain string
-                                        if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
-                                            result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
-                                        else:
-                                            result = str(raw_result)
-                                            
-                                        action_tools_executed += 1
-                                        if result == "__SILENT_ACK__":
-                                            silent_ack_tools += 1
-                                        logger.info(f"✅ Tool result: {result[:100]}...")
-                                    except Exception as e:
-                                        logger.error(f"❌ Error executing tool {f_name}: {e}")
-                                        result = f"Error: {str(e)}"
+                                if f_name == "google_search_stub":
+                                    query = f_args.get("query", "")
+                                    logger.info(f"🕵️ Intercepted Search Stub call: query='{query}'")
+                                    promoting_to_search = True
+                                    result = f"Search query '{query}' received. Retrieving live results via Google Search..."
                                 else:
-                                    logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
-                                    result = "Error: MCP Client unavailable."
+                                    logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                                    if mcp_client:
+                                        try:
+                                            raw_result = mcp_client.call_tool(f_name, f_args)
+                                            # Normalize MCP CallToolResult/TextContent objects to a plain string
+                                            if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                                result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                                            else:
+                                                result = str(raw_result)
+                                                
+                                            action_tools_executed += 1
+                                            if result == "__SILENT_ACK__":
+                                                silent_ack_tools += 1
+                                            logger.info(f"✅ Tool result: {result[:100]}...")
+                                        except Exception as e:
+                                            logger.error(f"❌ Error executing tool {f_name}: {e}")
+                                            result = f"Error: {str(e)}"
+                                    else:
+                                        logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
+                                        result = "Error: MCP Client unavailable."
                                 
                                 function_response_parts.append({
                                     "functionResponse": {
@@ -242,6 +234,12 @@ class GeminiProvider(BaseProvider):
                                 "role": "user",
                                 "parts": function_response_parts
                             })
+                            
+                            # Dynamic Switching: promote subsequent turn to native Google Search grounding
+                            if promoting_to_search:
+                                logger.info("🌍 Dynamic Switch: Promoting to Native Google Grounding for subsequent turn.")
+                                payload["tools"] = [{"google_search": {}}]
+                            
                             continue # Next turn in loop
                         
                         # B. Handle Text Response
@@ -263,25 +261,32 @@ class GeminiProvider(BaseProvider):
                         return "⚠️ Unexpected response part from Gemini"
                     
                     # Handle Errors (Surgical Fallback or Terminal)
-                    elif response.status_code == 400 and gemini_tools:
-                        # ... grounding fallback logic ...
+                    elif response.status_code == 400 and (payload.get("tools") or gemini_tools):
                         error_data = response.json()
                         error_msg = error_data.get('error', {}).get('message', '').lower()
                         logger.warning(f"⚠️ Tool configuration issue with model '{model}': {error_msg}")
                         logger.debug(f"FULL ERROR: {response.text}")
                         
-                        # Strip problematic tools and retry (internal retry)
-                        if "google_maps" in error_msg:
-                            gemini_tools = [t for t in gemini_tools if "google_maps" not in t]
+                        active_tools = payload.get("tools", gemini_tools)
+                        has_maps = any("google_maps" in t for t in active_tools)
+                        has_search = any("google_search" in t for t in active_tools)
+                        
+                        # Strip problematic tools and retry (internal retry turn)
+                        if "google_maps" in error_msg or (has_maps and has_search):
+                            logger.info("🔧 Stripping mutually-exclusive google_maps tool from payload.")
+                            gemini_tools = [t for t in active_tools if "google_maps" not in t]
+                        elif has_maps and not has_search:
+                            logger.info("🔧 Stripping unsupported google_maps tool from payload.")
+                            gemini_tools = [t for t in active_tools if "google_maps" not in t]
                         else:
-                            # If it's not Maps, maybe it's function_declarations or Search
-                            # For safety, let's just strip all tools if it keeps failing
+                            # If it's not Maps, strip all tools as last resort
+                            logger.info("🔧 Stripping all tools from payload due to 400 error.")
                             gemini_tools = []
                         
                         if not gemini_tools:
                             payload.pop("tools", None)
                         else:
-                            payload["tools"] = gemini_tools
+                            payload["tools"] = list(gemini_tools)
                         
                         continue # Internal retry turn
                     
