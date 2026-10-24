@@ -155,7 +155,7 @@ class SessionManager:
             bool: True if session was timed out
         """
         if user_id not in self.active_sessions:
-            return False
+            return False, None, 0, None
         
         session_data = self.active_sessions[user_id]
         elapsed_time = time.time() - session_data['last_activity']

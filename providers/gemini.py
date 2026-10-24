@@ -10,6 +10,7 @@ import time
 from .base import BaseProvider
 import config
 from config import load_system_prompt
+from .routing import classify_complexity
 
 
 
@@ -42,7 +43,7 @@ class GeminiProvider(BaseProvider):
         """Gemini Flash/Pro models support function calling."""
         return True
 
-    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
         """Get response from Gemini with grounding tools, custom tools, and optional fallback."""
         api_key = self.config.get('gemini_api_key', config.GEMINI_API_KEY)
         if not api_key:
@@ -56,8 +57,11 @@ class GeminiProvider(BaseProvider):
                 role = 'model' if msg['role'] == 'assistant' else 'user'
                 contents.append({'role': role, 'parts': [{'text': msg['content']}]})
         
-        # Always append current prompt
-        contents.append({'role': 'user', 'parts': [{'text': prompt}]})
+        # Append current prompt only if history doesn't already end with this user turn
+        if not contents or contents[-1]['role'] != 'user' or (
+            prompt not in contents[-1]['parts'][0]['text'] and contents[-1]['parts'][0]['text'] not in prompt
+        ):
+            contents.append({'role': 'user', 'parts': [{'text': prompt}]})
         
         # Inject System Prompt
         if contents[0]['role'] == 'user':
@@ -65,7 +69,11 @@ class GeminiProvider(BaseProvider):
         else:
             contents.insert(0, {'role': 'user', 'parts': [{'text': system_prompt}]})
         
-        model = self.config.get('gemini_model', config.GEMINI_MODEL)
+        complexity = classify_complexity(prompt, history)
+        fast_model = self.config.get('gemini_model', config.GEMINI_MODEL)
+        thinking_model = self.config.get('gemini_thinking_model', config.GEMINI_THINKING_MODEL)
+        model = thinking_model if complexity == 'complex' else fast_model
+        logger.info(f"[routing] complexity={complexity} → {model}")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         
         # 1. Prepare Tools Payload
@@ -86,13 +94,18 @@ class GeminiProvider(BaseProvider):
         else:
              logger.info("🔧 Custom tools active - disabling incompatible Google Search grounding.")
             
-        # Add custom Meshtastic tools if provided
-        custom_tool_map = {}
         if tools:
             function_declarations = []
-            for t_name, t_info in tools.items():
-                function_declarations.append(t_info['declaration'])
-                custom_tool_map[t_name] = t_info['handler']
+            for mcp_tool in tools:
+                # Sanitize: Gemini rejects '$schema' in the parameters block
+                params = mcp_tool.get('inputSchema', {"type": "OBJECT", "properties": {}}).copy()
+                params.pop('$schema', None)
+                
+                function_declarations.append({
+                    "name": mcp_tool['name'],
+                    "description": mcp_tool.get('description', ''),
+                    "parameters": params
+                })
             
             # Dynamic Grounding: Inject a "stub" search tool to let the AI request search.
             if has_custom_tools and self.config.get('gemini_search_grounding', config.GEMINI_SEARCH_GROUNDING):
@@ -105,6 +118,7 @@ class GeminiProvider(BaseProvider):
             if function_declarations:
                 gemini_tools.append({"function_declarations": function_declarations})
 
+        base_contents = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in contents]
         payload = {"contents": contents}
         if gemini_tools:
             payload["tools"] = gemini_tools
@@ -118,6 +132,11 @@ class GeminiProvider(BaseProvider):
         
         for attempt in range(max_retries + 1):
             try:
+                # Reset contents to clean base snapshot on each outer attempt
+                payload["contents"] = [{'role': c['role'], 'parts': [dict(p) for p in c['parts']]} for c in base_contents]
+                action_tools_executed = 0
+                silent_ack_tools = 0
+
                 # Dynamic Switching: If forced, REPLACE tools with only Google Search/Maps
                 current_tools = gemini_tools
                 if force_grounding_turn:
@@ -136,18 +155,16 @@ class GeminiProvider(BaseProvider):
                 
                 # Turn loop for function calling
                 max_turns = 5
-                action_tools_executed = 0
-                silent_ack_tools = 0
-                # Tools that represent a side effect or request (vs simple lookups)
-                action_tools = {"request_node_telemetry", "watch_condition", "watch_node_online", 
-                                "rm_proactive_task", "send_message"}
                 
                 for turn in range(max_turns):
                     response = self._make_request(url, payload)
                     
-                    # Check for transient errors to retry (outer loop)
-                    if response.status_code in [500, 502, 503, 504] and attempt < max_retries:
-                        logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
+                    # Check for transient errors or rate limits to retry (outer loop)
+                    if response.status_code in [429, 500, 502, 503, 504] and attempt < max_retries:
+                        if response.status_code == 429:
+                            logger.warning("⚠️ Gemini rate-limit (429). Retrying...")
+                        else:
+                            logger.warning(f"⚠️ Gemini service error ({response.status_code}). Retrying...")
                         break # break turn loop, fall back to attempt retry
                     
                     # Process Success
@@ -157,80 +174,88 @@ class GeminiProvider(BaseProvider):
                         if not candidates:
                             return "⚠️ No response generated"
                         
-                        part = candidates[0]['content']['parts'][0]
+                        candidate_content = candidates[0].get('content', {})
+                        parts = candidate_content.get('parts', [])
+                        if not parts:
+                            finish_reason = candidates[0].get('finishReason', 'UNKNOWN')
+                            logger.warning(f"⚠️ Gemini candidate has no parts (finishReason={finish_reason})")
+                            if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                                return "__SILENT_ACK__"
+                            if action_tools_executed > 0:
+                                return "✅ Done."
+                            return "⚠️ No response generated"
                         
-                        # A. Handle Function Call
-                        if "functionCall" in part:
-                            f_call = part["functionCall"]
-                            f_name = f_call["name"]
-                            f_args = f_call.get("args", {})
-                            
+                        function_call_parts = [p for p in parts if "functionCall" in p]
+                        text_parts = [p["text"] for p in parts if "text" in p and not p.get("thought")]
+                        
+                        # A. Handle Function Call(s)
+                        if function_call_parts:
                             # DYNAMIC SWITCH INTERCEPTION
-                            if f_name == "google_search_stub":
-                                logger.info(f"🕵️ Intercepted Search Stub call: query='{f_args.get('query')}'")
+                            stub_call = next((p["functionCall"] for p in function_call_parts if p["functionCall"].get("name") == "google_search_stub"), None)
+                            if stub_call:
+                                logger.info(f"🕵️ Intercepted Search Stub call: query='{stub_call.get('args', {}).get('query')}'")
                                 force_grounding_turn = True
-                                # Add the AI's call to history? No, we retry the whole turn.
-                                # Breaking inner loop triggers outer loop retry?
-                                # We need to ensure logic below handles this.
-                                break 
-
-                            logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                                break
                             
-                            if f_name in custom_tool_map:
-                                try:
-                                    result = custom_tool_map[f_name](**f_args)
-                                    logger.info(f"✅ Tool result: {str(result)[:100]}...")
-                                    
-                                    if f_name in action_tools:
+                            function_response_parts = []
+                            for fc_part in function_call_parts:
+                                f_call = fc_part["functionCall"]
+                                f_name = f_call["name"]
+                                f_args = f_call.get("args", {})
+                                logger.info(f"🤖 AI requested tool: {f_name}({f_args})")
+                                
+                                if mcp_client:
+                                    try:
+                                        raw_result = mcp_client.call_tool(f_name, f_args)
+                                        # Normalize MCP CallToolResult/TextContent objects to a plain string
+                                        if hasattr(raw_result, 'content') and isinstance(raw_result.content, list):
+                                            result = "\n".join([getattr(c, 'text', str(c)) for c in raw_result.content])
+                                        else:
+                                            result = str(raw_result)
+                                            
                                         action_tools_executed += 1
                                         if result == "__SILENT_ACK__":
                                             silent_ack_tools += 1
-                                    
-                                    # Silent-ACK: proactive callback already sent the response; tell the
-                                    # AI not to summarize but still continue the tool loop (it may have
-                                    # more tool calls to execute, e.g. watch_condition after telemetry).
-                                    if result == "__SILENT_ACK__":
-                                        result = ("[Telemetry was sent to the user automatically. "
-                                                  "Do NOT summarize or repeat the telemetry. "
-                                                  "Proceed with any remaining tasks such as registering a watcher.")
-                                except Exception as e:
-                                    logger.error(f"❌ Error executing tool {f_name}: {e}")
-                                    result = f"Error: {str(e)}"
-                            else:
-                                logger.warning(f"⚠️ AI requested unknown tool: {f_name}")
-                                result = "Error: Tool not found"
-                            
-                            # Add function call and response to contents
-                            payload["contents"].append({
-                                "role": "model",
-                                "parts": [part]
-                            })
-                            payload["contents"].append({
-                                "role": "function",
-                                "parts": [{
+                                        logger.info(f"✅ Tool result: {result[:100]}...")
+                                    except Exception as e:
+                                        logger.error(f"❌ Error executing tool {f_name}: {e}")
+                                        result = f"Error: {str(e)}"
+                                else:
+                                    logger.warning(f"⚠️ MCP Client missing. Cannot execute: {f_name}")
+                                    result = "Error: MCP Client unavailable."
+                                
+                                function_response_parts.append({
                                     "functionResponse": {
                                         "name": f_name,
                                         "response": {"name": f_name, "content": result}
                                     }
-                                }]
+                                })
+                            
+                            # Add function call(s) and response(s) to contents
+                            # Preserve original parts (including thoughtSignature and thoughts) required by Gemini 3+
+                            payload["contents"].append({
+                                "role": "model",
+                                "parts": parts
+                            })
+                            # Use "user" role for tool responses (universal across Gemini 2.5, 3.x, and 4)
+                            payload["contents"].append({
+                                "role": "user",
+                                "parts": function_response_parts
                             })
                             continue # Next turn in loop
                         
                         # B. Handle Text Response
-                        if "text" in part:
-                            text = part["text"].strip()
-                            
-                            # If ALL action tools in this session were handled proactively, the AI
-                            # should stay silent. We ignore info tools (like get_node_details)
-                            # since they don't justify a conversational follow-up on their own.
-                            if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
-                                logger.info("🔇 All action tools handled proactively. Suppressing AI final text.")
-                                return "__SILENT_ACK__"
+                        if action_tools_executed > 0 and silent_ack_tools == action_tools_executed:
+                            logger.info("🔇 All Gemini action tools handled proactively. Suppressing final text.")
+                            return "__SILENT_ACK__"
+
+                        if text_parts:
+                            text = "\n".join(text_parts).strip()
                             
                             # Check for grounding feedback
                             grounding = candidates[0].get('groundingMetadata', {})
                             if grounding and (grounding.get('webSearchQueries') or grounding.get('groundingChunks')):
-                                logger.info(f"Gemini used search grounding")
+                                logger.info("Gemini used search grounding")
                                 text = f"🌐 {text}"
                             
                             return text
@@ -260,9 +285,15 @@ class GeminiProvider(BaseProvider):
                         
                         continue # Internal retry turn
                     
+                    elif response.status_code == 429:
+                        # Terminal error for this attempt (if out of retries, it breaks here quietly, but we should log)
+                        logger.warning(f"⚠️ Gemini rate limit or quota exceeded (429). Response: {response.text[:200]}")
+                        break
+                        
                     else:
                         # Terminal error for this attempt
-                        break 
+                        logger.error(f"🛑 Gemini request failed with status: {response.status_code}, body: {response.text}")
+                        return f"❌ Terminal API Error ({response.status_code}): {response.text[:100]}"
                 
                 
             except requests.exceptions.Timeout as e:
@@ -278,4 +309,4 @@ class GeminiProvider(BaseProvider):
                     logger.error(f"Gemini request final failure: {e}")
                     return f"❌ Unexpected error: {str(e)[:100]}"
         
-        return "❌ Failed to get response after multiple attempts."
+        return "❌ Failed to get response after multiple attempts (Quota/Rate Limit reached?)."

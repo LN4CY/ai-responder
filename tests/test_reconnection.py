@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 import sys
 import os
-import time
 from pubsub import pub
 
 # Add parent directory to path

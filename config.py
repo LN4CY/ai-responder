@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "1.5.0"
+VERSION = "2.1.0"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -28,19 +28,37 @@ OLLAMA_PORT = os.getenv('OLLAMA_PORT', '11434')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
 OLLAMA_MAX_MESSAGES = int(os.getenv('OLLAMA_MAX_MESSAGES', '30'))
 
+# When Semantic Memory is active, limit history injection to a short bootstrap window
+# so the AI doesn't get the full raw log AND semantic recall simultaneously.
+# Frontier models (Gemini, OpenAI, Anthropic) can tolerate a larger bootstrap;
+# Ollama's effective limit is already capped by OLLAMA_MAX_MESSAGES inside the provider.
+MEMORY_BOOTSTRAP_LOCAL  = int(os.getenv('MEMORY_BOOTSTRAP_LOCAL',  os.getenv('MEMPALACE_BOOTSTRAP_LOCAL', '6')))    # Ollama / local
+MEMORY_BOOTSTRAP_ONLINE = int(os.getenv('MEMORY_BOOTSTRAP_ONLINE', os.getenv('MEMPALACE_BOOTSTRAP_ONLINE', '20')))  # Gemini / OpenAI / Anthropic
+MEMPALACE_BOOTSTRAP_LOCAL = MEMORY_BOOTSTRAP_LOCAL
+MEMPALACE_BOOTSTRAP_ONLINE = MEMORY_BOOTSTRAP_ONLINE
+
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.8-flash')          # fast model (simple queries)
+GEMINI_THINKING_MODEL = os.getenv('GEMINI_THINKING_MODEL', 'gemini-3.1-pro-preview')  # reasoning model (complex)
 GEMINI_SEARCH_GROUNDING = os.getenv('GEMINI_SEARCH_GROUNDING', 'false').lower() == 'true'
 GEMINI_MAPS_GROUNDING = os.getenv('GEMINI_MAPS_GROUNDING', 'false').lower() == 'true'
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')               # fast model (simple queries)
+OPENAI_REASONING_MODEL = os.getenv('OPENAI_REASONING_MODEL', 'o4-mini')         # reasoning model (complex)
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
-ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-haiku-5-5')       # fast model (simple queries)
+ANTHROPIC_THINKING_MODEL = os.getenv('ANTHROPIC_THINKING_MODEL', 'claude-sonnet-5-5')  # thinking model (complex)
+OLLAMA_THINKING_MODEL = os.getenv('OLLAMA_THINKING_MODEL', '')         # empty = same as OLLAMA_MODEL
 
 # History and Storage Configuration
 HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
 HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '100'))
 HISTORY_MAX_BYTES = int(os.getenv('HISTORY_MAX_BYTES', '2097152'))  # 2MB
+
+# MCP & Semantic Memory Configuration
+MCP_SERVERS_FILE = os.getenv('MCP_SERVERS_FILE', '/app/data/mcp_servers.json')
+MEMORY_ENABLED = os.getenv('MEMORY_ENABLED', 'true').lower() == 'true'
+MEMORY_DB_PATH = os.getenv('MEMORY_DB_PATH', '/app/data/memory.db')
 
 # Conversation Configuration
 CONVERSATIONS_DIR = os.getenv('CONVERSATIONS_DIR', '/app/data/conversations')
@@ -66,8 +84,9 @@ TIME AWARENESS:
 - Your internal clock runs on **UTC**: {current_time}
 
 PERSONA:
-- Keep responses concise (under 200 chars) for mesh efficiency.
-- You receive [Node ID] and minimal environment metadata with user messages."""
+- You receive [Node ID] and minimal environment metadata with user messages.
+- SEMANTIC MEMORY: Use memory_search(query) to recall past facts. Use memory_add_fact(subject, predicate, object) to store new facts about users, nodes, or events. Store proactively when you learn something worth remembering.
+"""
 
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
@@ -88,27 +107,35 @@ TOOL USAGE PROTOCOL:
     - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
     - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
 
-2. INTERNAL REASONING (Calculations & Logic):
+2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
+   - You have persistent long-term memory via built-in memory tools. Use them proactively.
+   - "memory_search(query)": Recall past facts, user preferences, or prior conversations using full-text search. Call this FIRST when a user asks about something you may have seen before.
+   - "memory_query_facts(entity)": Look up a specific person, node ID, or topic and all its known relationships in the Knowledge Graph.
+   - "memory_add_fact(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, callsigns, node roles, hardware, locations, relationships, events).
+   - Store proactively: if a user tells you their name, callsign, location, preferences, or hardware setup — store it immediately with memory_add_fact.
+   - Recall proactively: before answering questions about past events or users, search memory first.
+
+3. INTERNAL REASONING (Calculations & Logic):
    - You MUST use your own internal capabilities for math, analysis, and logic.
    - DO NOT look for tools to calculate distance, convert units, or format data.
    - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
 
-3. LOCATION RESOLUTION:
+4. LOCATION RESOLUTION:
    - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
    - MAP LINKS: If the user asks for directions or to see a location, generate a clickable Google Maps URL. You MUST NOT use spaces in the URL. Either URL-encode the addresses (using '+' or '%20') or use pure coordinates. Example: `https://www.google.com/maps/dir/[start_lat],[start_lon]/[end_lat],[end_lon]`
 
-4. GOOGLE SEARCH & MAPS (New/External Info & Places):
+5. GOOGLE SEARCH & MAPS (New/External Info & Places):
    - "google_search_stub(query)": Use this to search the web for real-time info (weather, news), OR to find nearby places/businesses (e.g., "closest pharmacy to [Address]").
    - If you only have coordinates, use `get_location_address` FIRST to get a readable address, then use `google_search_stub` with that address to find nearby places.
    - DO NOT use search for general knowledge (history, science, definitions). Use your internal model for that.
 
-5. PROACTIVE AGENT TOOLS (Schedule, Monitor & Manage):
+6. PROACTIVE AGENT TOOLS (Schedule, Monitor & Manage):
    - Use these when a user asks you to notify them later, watch for something, or manage existing tasks.
    - These tools only work from Direct Messages (DMs). Reject politely if user is in a channel.
    - "schedule_message(delay_seconds=None, context_note, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None)":
      * Use for relative: "Remind me in 5 minutes" -> delay_seconds=300.
      * When users specify a local absolute time (e.g. 10:00 PM EST), prefer converting it to a relative `delay_seconds` from your UTC `{current_time}` rather than using `absolute_time`, as the core system runs in UTC.
-     * notify_targets: comma-separated list of who receives the alert. Options: "requester" (default), "!nodeid", "ch:0" (channel, if enabled).
+     * notify_targets: comma-separated list of who receives the alert. Options: "requester" (default), a node name/shortName (e.g. "L4WT"), "!nodeid", or "ch:0" (channel, if enabled). If the user asks to ping/message another node or channel on a schedule, you MUST set notify_targets to that node or channel!
      * Returns a task ID like [sched-1]. Always confirm it with the user.
    - "watch_condition(node_id_or_name, metric, operator, threshold, context_note, notify_targets=None)":
      * Use for: "Alert me when L4B1 battery < 10%", "Tell me if SNR drops below -10".
@@ -131,13 +158,13 @@ LOGIC FLOW:
 - User asks about Real-time/New Info OR Explicitly asks to Search -> Call Google Search -> Respond.
 - User asks for Math/Distance -> Use Internal Reasoning.
 - User asks to be notified/reminded LATER -> Call schedule_message or watch_condition or watch_node_online immediately, then confirm with task ID.
-- User asks for DYNAMIC pings (e.g. "Ping my SNR every 15s") -> You CAN do this! 
-  1. Call `schedule_message` with recursion.
-  2. Set `context_note` as an instruction for your future self (e.g. 'Fetch SNR for !1234abcd and reply with it. Also, schedule the next update in 15 seconds.').
-  3. RECURSIVE RULE: When scheduling for your future self, ALWAYS include an instruction in the `context_note` to schedule the NEXT iteration. This ensures the loop remains autonomous.
-  4. Your future self will wake up, see the history, execute the tools you requested, and re-schedule the next turn.
+- User asks for DYNAMIC pings (e.g. "Ping my SNR every 15s" or "Ping L4WT every 10m") -> You CAN do this! 
+  1. Call `schedule_message` with `recur_interval_seconds` to natively handle the loop (and set `notify_targets="L4WT"` if messaging another node).
+  2. Set `context_note` as an instruction for your future self (e.g. 'Fetch SNR for !1234abcd and reply with it. Include the current count.').
+  3. The system natively handles repeating the task every interval until `max_duration_seconds` is reached. DO NOT instruct your future self to manually schedule the next iteration!
+  4. Your future self will wake up, see the history, execute the tools you requested, and respond to the target.
   5. NEVER tell the user you cannot include live data in a reminder—you can, in the future turn.
-  6. EXAMPLE: `schedule_message(delay_seconds=15, context_note="Fetch SNR for !1234abcd and reply with it. Include current count. Then schedule this task again for 15s later.")`
+  6. EXAMPLE: `schedule_message(delay_seconds=15, context_note="Fetch SNR for !1234abcd and reply with it. Include current count.", recur_interval_seconds=15, max_duration_seconds=600)`
 - User asks to send a message to another node/channel NOW -> Call send_message tool.
 
 DIRECT ACTION POLICY:
@@ -191,7 +218,7 @@ def load_system_prompt(provider, context_id="Unknown"):
     logger.info(f"Using default system prompt for {provider}")
     try:
         return default.format(context_id=context_id, current_time=current_time)
-    except:
+    except Exception:
         return default
 
 
@@ -219,7 +246,8 @@ class Config:
             'allowed_channels': [0],
             'admin_nodes': [],
             'current_provider': 'ollama',
-            'meshtastic_awareness': True
+            'meshtastic_awareness': True,
+            'mcp_servers': {}
         }
     
     def save(self):

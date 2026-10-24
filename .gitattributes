@@ -1,0 +1,14 @@
+# Enforce LF line endings for all text files
+* text=auto eol=lf
+
+# Explicitly handle common file types
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+
+# Denote all files that are truly binary and should not be modified
+*.pdf binary
+*.png binary
+*.jpg binary

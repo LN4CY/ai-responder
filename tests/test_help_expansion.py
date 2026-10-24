@@ -29,6 +29,16 @@ class TestHelpAndNewTopic(unittest.TestCase):
         self.responder.session_manager.start_session.return_value = (True, "Started", "session1")
         self.responder.session_manager.end_session.return_value = (True, "Ended", 0, None)
 
+    def tearDown(self):
+        import shutil
+        if hasattr(self, 'responder') and hasattr(self.responder, '_bg_executor'):
+            self.responder._bg_executor.shutdown(wait=True)
+        for path in [self.mock_history_dir, self.mock_conv_dir]:
+            if os.path.exists(path):
+                shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(self.mock_config_file):
+            os.remove(self.mock_config_file)
+
     def test_help_multi_message_dm_admin(self):
         # Test DM + Admin
         self.responder._handle_help_command("from", "to", 0, is_dm=True, is_admin=True)
@@ -84,7 +94,17 @@ class TestHelpAndNewTopic(unittest.TestCase):
         # Should clear the correct channel key
         self.responder.clear_history.assert_called_with("Channel:0:from")
         # Should send confirmation
-        self.responder.send_response.assert_called_with("✨ History cleared. Starting fresh.", "from", "^all", 0, is_admin_cmd=False)
+        self.responder.send_response.assert_called_with("✨ Channel 0 window reset. (History archived in Graph)", "from", "^all", 0, is_admin_cmd=False)
+
+    def test_new_topic_logic_channel_with_query(self):
+        # !ai -n <query> in Channel should reset channel window and pass is_dm=False to _handle_ai_query
+        with patch.object(self.responder, '_handle_ai_query') as mock_query:
+            self.responder.process_command("!ai -n what is the weather?", "from", "^all", 2)
+            self.responder.clear_history.assert_called_with("Channel:2:from")
+            mock_query.assert_called_once_with(
+                "what is the weather?", "from", "^all", 2,
+                is_dm=False, initial_msg="Thinking (New Conversation)... 🤖"
+            )
 
 if __name__ == '__main__':
     unittest.main()

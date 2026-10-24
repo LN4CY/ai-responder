@@ -24,7 +24,7 @@ import itertools
 import requests
 import pathlib
 import datetime
-from pubsub import pub
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -32,14 +32,15 @@ from pubsub import pub
 import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
-    HISTORY_DIR, HISTORY_MAX_BYTES, HISTORY_MAX_MESSAGES,
     ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER,
-    HEALTH_CHECK_ACTIVITY_TIMEOUT, HEALTH_CHECK_PROBE_INTERVAL
+    HEALTH_CHECK_ACTIVITY_TIMEOUT
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
 from conversation.session import SessionManager
 from meshtastic_handler import MeshtasticHandler
+from mcp_client import UnifiedMCPClient
+from mcp_server_meshtastic import init_meshtastic_mcp
 
 # Logging setup
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -53,8 +54,12 @@ logger = logging.getLogger('AI-Responder')
 # Set logging level for handler based on global log_level
 logging.getLogger('meshtastic_handler').setLevel(getattr(logging, log_level, logging.INFO))
 
+# Suppress noisy httpx INFO logs ("HTTP Request: POST ...") — only errors are useful
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
-__version__ = "2.0.0"
+
+__version__ = "2.1.0"
 
 class AIResponder:
     """
@@ -82,6 +87,10 @@ class AIResponder:
         self.conversation_manager = ConversationManager()
         self.session_manager = SessionManager(self.conversation_manager)
         
+        # Initialize MCP Architecture
+        init_meshtastic_mcp(self)
+        self.mcp_client = UnifiedMCPClient(self.config)
+        
         # Track nodes that need a metadata refresh in their next message
         self._refresh_metadata_nodes = set()
         
@@ -94,6 +103,8 @@ class AIResponder:
         # In-memory history cache
         # Structure: {user_id: [{'role': 'user'/'assistant', 'content': '...'}]}
         self.history = {}
+        self._history_lock = threading.RLock()
+        self._proactive_persistence_lock = threading.RLock()
         
         # Worker tracking
         self._active_workers = {} # {thread_id: {start_time, from_node, to_node, channel}}
@@ -127,7 +138,10 @@ class AIResponder:
         self._proactive_event_collector = {} # {node_id_lower: {'timer': Timer, 'events': [str], 'targets': str, 'from_node': str, 'to_node': str, 'channel': int}}
         self._collector_lock = threading.Lock()
         
-        # Ensure history directory exists
+        # --- Background Memory Indexing ---
+        self._bg_executor = ThreadPoolExecutor(max_workers=3)
+        self._mcp_indexing_cache = {} # {node_id: {type: last_index_time}}
+        
         # Ensure history directory exists
         if not os.path.exists(self.history_dir):
             os.makedirs(self.history_dir)
@@ -268,17 +282,18 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        history_path = self._get_history_path(user_id)
-        if os.path.exists(history_path):
-            try:
-                with open(history_path, 'r') as f:
-                    self.history[user_id] = json.load(f)
-                logger.info(f"Loaded history for {user_id}: {len(self.history[user_id])} messages")
-            except Exception as e:
-                logger.error(f"Failed to load history for {user_id}: {e}")
+        with self._history_lock:
+            history_path = self._get_history_path(user_id)
+            if os.path.exists(history_path):
+                try:
+                    with open(history_path, 'r') as f:
+                        self.history[user_id] = json.load(f)
+                    logger.info(f"Loaded history for {user_id}: {len(self.history[user_id])} messages")
+                except Exception as e:
+                    logger.error(f"Failed to load history for {user_id}: {e}")
+                    self.history[user_id] = []
+            else:
                 self.history[user_id] = []
-        else:
-            self.history[user_id] = []
     
     def save_history(self, user_id):
         """
@@ -289,33 +304,34 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        if user_id not in self.history:
-            return
-        
-        history_path = self._get_history_path(user_id)
-        try:
-            # Enforce message count limit
-            if len(self.history[user_id]) > config.HISTORY_MAX_MESSAGES:
-                logger.warning(f"History for {user_id} exceeded {config.HISTORY_MAX_MESSAGES} messages, trimming...")
-                self.history[user_id] = self.history[user_id][-config.HISTORY_MAX_MESSAGES:]
+        with self._history_lock:
+            if user_id not in self.history:
+                return
             
-            # Save to file
-            with open(history_path, 'w') as f:
-                json.dump(self.history[user_id], f)
-            
-            # Check file size and trim if needed
-            file_size = os.path.getsize(history_path)
-            if file_size > config.HISTORY_MAX_BYTES:
-                logger.warning(f"History file for {user_id} is {file_size} bytes, trimming...")
-                # Remove oldest 20% of messages
-                trim_count = len(self.history[user_id]) // 5
-                self.history[user_id] = self.history[user_id][trim_count:]
+            history_path = self._get_history_path(user_id)
+            try:
+                # Enforce message count limit
+                if len(self.history[user_id]) > config.HISTORY_MAX_MESSAGES:
+                    logger.warning(f"History for {user_id} exceeded {config.HISTORY_MAX_MESSAGES} messages, trimming...")
+                    self.history[user_id] = self.history[user_id][-config.HISTORY_MAX_MESSAGES:]
+                
+                # Save to file
                 with open(history_path, 'w') as f:
                     json.dump(self.history[user_id], f)
-                logger.info(f"Trimmed {trim_count} messages from history")
                 
-        except Exception as e:
-            logger.error(f"Failed to save history for {user_id}: {e}")
+                # Check file size and trim if needed
+                file_size = os.path.getsize(history_path)
+                if file_size > config.HISTORY_MAX_BYTES:
+                    logger.warning(f"History file for {user_id} is {file_size} bytes, trimming...")
+                    # Remove oldest 20% of messages
+                    trim_count = len(self.history[user_id]) // 5
+                    self.history[user_id] = self.history[user_id][trim_count:]
+                    with open(history_path, 'w') as f:
+                        json.dump(self.history[user_id], f)
+                    logger.info(f"Trimmed {trim_count} messages from history")
+                    
+            except Exception as e:
+                logger.error(f"Failed to save history for {user_id}: {e}")
     
     def clear_history(self, user_id):
         """
@@ -324,9 +340,10 @@ class AIResponder:
         Args:
             user_id: Unique identifier for the user
         """
-        self.history[user_id] = []
-        self.save_history(user_id)
-        logger.info(f"Cleared history for {user_id}")
+        with self._history_lock:
+            self.history[user_id] = []
+            self.save_history(user_id)
+            logger.info(f"Cleared history for {user_id}")
     
     def _format_dual_metadata(self, local_metadata, remote_metadata):
         """
@@ -349,7 +366,8 @@ class AIResponder:
                 my_info = self.meshtastic.get_node_info()
                 if my_info:
                     name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
-            except: pass
+            except Exception:
+                pass
             parts.append(f"[{name}: {local_metadata}]")
         
         return " ".join(parts) if parts else None
@@ -365,41 +383,41 @@ class AIResponder:
             node_id: Optional Node ID for labeling 'user' messages
             metadata: Optional metadata string (e.g., location/battery)
         """
-        if history_key not in self.history:
-            self.load_history(history_key)
-        
-        formatted_content = content
-        if role == 'user' and node_id:
-            # Tag with Node ID
-            label = f"[{node_id}]"
-            if metadata:
-                label += f" {metadata}"
-            formatted_content = f"{label}: {content}"
+        with self._history_lock:
+            if history_key not in self.history:
+                self.load_history(history_key)
             
-        self.history[history_key].append({'role': role, 'content': formatted_content})
-        self.save_history(history_key)
+            formatted_content = content
+            if role == 'user' and node_id:
+                # Tag with Node ID
+                label = f"[{node_id}]"
+                if metadata:
+                    label += f" {metadata}"
+                formatted_content = f"{label}: {content}"
+                
+            self.history[history_key].append({'role': role, 'content': formatted_content})
+            self.save_history(history_key)
     
     # ==================== Memory Status ====================
     
-    def get_memory_status(self, user_id):
+    def get_memory_status(self, user_id, channel=0, is_dm=True):
         """
         Get memory and conversation status for a user.
         
         Args:
             user_id: Unique identifier for the user
+            channel: Current radio channel
+            is_dm: Whether in DM context
             
         Returns:
             str: Formatted status message
         """
         # Resolve the active history key to match what AI queries use
-        history_key = self._get_history_key(user_id, channel=0, is_dm=True)
+        history_key = self._get_history_key(user_id, channel, is_dm)
         
-        # Load history if not in memory
-        if history_key not in self.history:
-            self.load_history(history_key)
-        
-        # Get history stats
-        message_count = len(self.history[history_key])
+        # 1. Disk/Session Stats
+        active_buffer = self.history.get(history_key, [])
+        message_count = len(active_buffer)
         history_path = self._get_history_path(history_key)
         
         if os.path.exists(history_path):
@@ -410,22 +428,55 @@ class AIResponder:
             size_kb = 0
             max_kb = config.HISTORY_MAX_BYTES / 1024
         
-        # Get conversation slot usage
         metadata = self.conversation_manager._load_metadata(user_id)
         user_conversations = [name for name in metadata if not name.startswith('channel_')]
         slot_usage = len(user_conversations)
         
-        # Get current provider
+        # 2. Semantic Indexing Stats
+        semantic_status = "Disabled"
+        if self.mcp_client and self.mcp_client.has_server('memory'):
+            try:
+                status_raw = self.mcp_client.call_tool("memory_status", {})
+                try:
+                    status_dict = json.loads(status_raw) if isinstance(status_raw, str) else status_raw
+
+                    triples = status_dict.get('kg_total_triples', status_dict.get('total_triples', '?'))
+                    entities = status_dict.get('kg_total_entities', status_dict.get('total_entities', '?'))
+                    size_bytes = status_dict.get('kg_size_bytes', status_dict.get('db_size_bytes', 0))
+
+                    kg_status = status_dict.get('kg_status', status_dict.get('semantic_db', {}))
+                    if isinstance(kg_status, dict) and kg_status:
+                        triples = kg_status.get('total_triples', triples)
+                        entities = kg_status.get('total_entities', entities)
+                        size_bytes = kg_status.get('size_bytes', size_bytes)
+
+                    size_str = f"{size_bytes / 1024:.1f}KB" if size_bytes else "0.0KB"
+
+                    if triples == '?' and entities == '?':
+                        active_hubs = len(self._mcp_indexing_cache)
+                        semantic_status = f"Active ({active_hubs} local hubs cached, {size_str})"
+                    else:
+                        semantic_status = f"Active ({entities} entities, {triples} facts, {size_str})"
+                except Exception as e:
+                    logger.debug(f"Could not parse memory status JSON: {e}")
+                    active_hubs = len(self._mcp_indexing_cache)
+                    semantic_status = f"Active (Connected, {active_hubs} local hubs cached)"
+            except Exception as e:
+                logger.error(f"Failed to fetch memory status: {e}")
+                semantic_status = "Active (Status Unavailable)"
+
+        # 3. Provider Info
         provider = self.config.get('current_provider', 'ollama')
         
         # Format status message
         from config import MAX_CONVERSATIONS
         status = (
             f"💾 Memory Status\n"
-            f"Messages: {message_count}/{config.HISTORY_MAX_MESSAGES}\n"
-            f"Size: {size_kb:.1f}KB/{max_kb:.0f}KB\n"
-            f"Slots: {slot_usage}/{MAX_CONVERSATIONS}\n"
-            f"Provider: {provider.upper()}"
+            f"Local History: {message_count}/{config.HISTORY_MAX_MESSAGES} msgs\n"
+            f"Disk Usage: {size_kb:.1f}KB/{max_kb:.0f}KB\n"
+            f"Conv Slots: {slot_usage}/{MAX_CONVERSATIONS}\n"
+            f"Semantic DB: {semantic_status}\n"
+            f"AI Provider: {provider.upper()}"
         )
         
         return status
@@ -467,7 +518,6 @@ class AIResponder:
             history_key: Key for history context
             is_session: Whether this is an active continuous session
             location: Optional location dict {'latitude': float, 'longitude': float}
-            tools: Optional dict of tools for function calling
             
         Returns:
             str: AI response or error message
@@ -478,17 +528,40 @@ class AIResponder:
             # Get provider instance
             provider = get_provider(provider_name, self.config)
             
+            # Fetch dynamic tools from MCP client
+            tools = None
+            if provider.supports_tools:
+                tools = self.mcp_client.get_all_tools()
+            
             # Get history for context
             history = None
             if history_key and history_key in self.history:
-                # Context Tuning:
-                # - Sessions get full context (e.g., 30 messages)
-                # - Channel/Quick queries get minimal context (e.g., 2 messages)
-                limit = 30 if is_session else 2
+                # Context tuning — three tiers:
+                #
+                # 1. Channel / quick query  → last 2 messages only (no session state needed)
+                # 2. Session, Memory DB ON  → short bootstrap window so the AI doesn't get the
+                #    full raw log AND semantic recall simultaneously.
+                #    Frontier models get a larger window than local Ollama models.
+                # 3. Session, Memory DB OFF → full window (30 messages) — disk history is the
+                #    only long-term memory so we send as much as we safely can.
+                if not is_session:
+                    limit = 2
+                elif self.mcp_client and self.mcp_client.has_server('memory'):
+                    # Provider-aware bootstrap cap
+                    is_local = provider_name == 'ollama'
+                    limit = (config.MEMORY_BOOTSTRAP_LOCAL if is_local
+                             else config.MEMORY_BOOTSTRAP_ONLINE)
+                    logger.debug(f"Semantic Memory active → bootstrap history limit={limit} "
+                                 f"({'local' if is_local else 'online'} provider)")
+                else:
+                    limit = 30
                 history = self.history[history_key][-limit:]
             
             # Get response
-            response = provider.get_response(prompt, history, context_id=history_key, location=location, tools=tools)
+            response = provider.get_response(
+                prompt, history, context_id=history_key, location=location, 
+                tools=tools, mcp_client=self.mcp_client
+            )
             return response
             
         except ValueError as e:
@@ -498,6 +571,188 @@ class AIResponder:
             logger.error(f"Unexpected error getting AI response: {e}")
             return f"Error: {str(e)}"
     
+    # ==================== Background Semantic Indexing ====================
+    
+    def _index_to_mcp(self, data_type, payload):
+        """Dispatch indexing task to the background executor."""
+        # Only proceed if Semantic Memory MCP server is active
+        if not self.mcp_client or not self.mcp_client.has_server('memory'):
+            return
+        
+        self._bg_executor.submit(self._index_task_wrapper, data_type, payload)
+
+    def _index_task_wrapper(self, data_type, payload):
+        """Internal wrapper for the background executor to handle Knowledge Graph logic."""
+        # 1. Graceful Fallback check
+        if not self.mcp_client.has_server('memory'):
+            return
+
+        try:
+            if data_type == 'conversation':
+                self._bg_index_conversation(payload)
+            elif data_type == 'telemetry':
+                self._bg_index_telemetry(payload)
+            elif data_type == 'delete_history':
+                self._bg_delete_semantic_history(payload)
+        except Exception as e:
+            logger.warning(f"⚠️ Background indexing failed ({data_type}): {e}")
+
+    def _get_semantic_hub_name(self, node_id, channel=0, is_dm=False, is_system=False):
+        """Standardized naming logic for Semantic Hubs."""
+        if is_system:
+            return f"Hub_System_{node_id}"
+        if is_dm:
+            return f"Hub_Chat_{node_id}"
+        else:
+            return f"Hub_CH{channel}"
+
+    def _bg_delete_semantic_history(self, payload):
+        """Perform a Nuclear Wipe of semantic memory for a context."""
+        node_id = payload.get('node_id')
+        topic = payload.get('topic')
+        channel = payload.get('channel', 0)
+        
+        if not node_id:
+            return
+        
+        targets = []
+        if topic == 'all':
+            # 1. Target the persistent conversation hubs
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=True)) # Use DM hub as default user hub
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_dm=False)) # Use Channel hub
+            targets.append(self._get_semantic_hub_name(node_id, channel, is_system=True)) # Use System hub
+            targets.append(f"Chat_{node_id}_CH{channel}") # Use Session hub
+        elif topic:
+            targets.append(topic)
+        
+        if targets:
+            logger.info(f"🗑️ Semantically pruning and applying deletion tombstone to hubs: {targets}")
+            for target in targets:
+                self.mcp_client.call_tool("memory_delete_hub", {"target": target})
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": target,
+                    "predicate": "has_status",
+                    "object": "Archived_by_User_Wipe"
+                })
+
+    def _bg_index_conversation(self, payload):
+        """Index a conversation turn into the Knowledge Graph."""
+        node_id = payload.get('node_id')
+        channel = payload.get('channel', 0)
+        prompt = payload.get('prompt')
+        response = payload.get('response')
+        is_dm = payload.get('is_dm', True)
+        is_system = payload.get('is_system', False)
+        
+        if not node_id or not prompt or not response:
+            return
+        if not isinstance(prompt, str) or not isinstance(response, str):
+            return
+        
+        # 1. Active Session vs Special-Purpose Hubs
+        session_name = self.session_manager.get_session_name(node_id) if is_dm else None
+        if not isinstance(session_name, str):
+            session_name = None
+        
+        hub_name = self._get_semantic_hub_name(node_id, channel, is_dm=is_dm, is_system=is_system)
+        if is_system:
+            hub_type = "SystemHub"
+        elif not session_name:
+            hub_type = "ChatHub"
+        else:
+            hub_name = f"Chat_{node_id}_CH{channel}"
+            hub_type = "SessionHub"
+
+
+        # 2. Define the Hub
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": hub_name,
+            "predicate": "is_a",
+            "object": hub_type
+        })
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": node_id,
+            "predicate": "participated_in",
+            "object": hub_name
+        })
+        
+        # 3. Relate Topic if in session
+        if session_name:
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": hub_name,
+                "predicate": "discusses_topic",
+                "object": session_name
+            })
+            
+        # 4. Add Activity Observation
+        if is_system:
+            trigger_context = prompt.split("COMMAND/CONTEXT:")[1].split("CRITICAL INSTRUCTIONS:")[0].strip() if "COMMAND/CONTEXT:" in prompt else prompt
+            observation = f"System Task: {trigger_context} | Result: {response}"
+        else:
+            observation = f"User: {prompt} | AI: {response}"
+            
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": hub_name,
+            "predicate": "recorded_turn",
+            "object": observation
+        })
+        
+        logger.info(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
+
+    def _bg_index_telemetry(self, payload):
+        """Index telemetry status into the Node's hub."""
+        node_id = payload.get('node_id')
+        t_type = payload.get('type')
+        data = payload.get('data')
+        
+        if not node_id or not data:
+            return
+        
+        # Throttle: Only index telemetry every 15 minutes per node to avoid bloat
+        now = time.time()
+        cache_key = f"{node_id}_{t_type}"
+        last_time = self._mcp_indexing_cache.get(cache_key, 0)
+        if now - last_time < 900: # 15 minutes
+            return
+            
+        self._mcp_indexing_cache[cache_key] = now
+        
+        ts = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        if isinstance(data, dict):
+            summary = ", ".join([f"{k}: {v}" for k, v in data.items() if v is not None])
+        else:
+            summary = str(data)
+            
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": node_id,
+            "predicate": "is_a",
+            "object": "MeshNode"
+        })
+        
+        # Build the semantic graph mapping of the node's name
+        node_info = self.meshtastic._get_node_by_id(node_id)
+        if node_info:
+            user = node_info.get('user', {})
+            if user.get('longName'):
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "has_name",
+                    "object": user.get('longName')
+                })
+            if user.get('shortName'):
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "has_short_name",
+                    "object": user.get('shortName')
+                })
+        
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": node_id,
+            "predicate": "reported_telemetry",
+            "object": f"[{ts}] Type {t_type}: {summary}"
+        })
+        logger.info(f"🧠 Semantically indexed telemetry for {node_id}")
+
     # ==================== Message Sending ====================
     
     def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=False):
@@ -539,6 +794,19 @@ class AIResponder:
         # Send via Meshtastic handler
         self.meshtastic.send_message(text, destination, channel, session_indicator)
     
+    def _is_dm(self, to_node):
+        """Determine if a message destination represents a Direct Message to this bot."""
+        if not to_node or str(to_node).lower() in ('^all', '!ffffffff', 'unknown', '4294967295'):
+            return False
+        try:
+            my_node_info = self.meshtastic.get_node_info()
+            my_id = my_node_info.get('user', {}).get('id', '') if isinstance(my_node_info, dict) else ''
+            if isinstance(my_id, str) and my_id.startswith('!'):
+                return str(to_node).lower() == my_id.lower()
+        except Exception:
+            pass
+        return True
+
     # ==================== Command Processing ====================
     
     def process_command(self, text, from_node, to_node, channel):
@@ -557,7 +825,7 @@ class AIResponder:
         # Track node for telemetry logging of active users
         try:
             self.meshtastic.track_node(from_node)
-        except:
+        except Exception:
             pass
             
         # Extract command and arguments
@@ -568,7 +836,7 @@ class AIResponder:
         cmd = parts[1].lower() if len(parts) > 1 else ''
         args = parts[2] if len(parts) > 2 else ''
         
-        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        is_dm = self._is_dm(to_node)
         is_admin = self.is_admin(from_node)
         
         # ===== Help Command =====
@@ -577,35 +845,55 @@ class AIResponder:
             return
         
         # ===== Memory Status =====
-        if cmd == '-m':
-            status = self.get_memory_status(from_node)
+        elif cmd == '-m':
+            status = self.get_memory_status(from_node, channel, is_dm)
             self.send_response(status, from_node, to_node, channel, is_admin_cmd=False)
             return
         
         # ===== Session Commands (DM only) =====
         if cmd == '-n':
+            # Check for explicit wipe command: !ai -n rm all
+            if args.lower() == 'rm all':
+                # 1. Clear local in-memory history buffer
+                key = f"DM:{from_node}" if is_dm else f"Channel:{channel}:{from_node}"
+                self.clear_history(key)
+                
+                # 2. Disk & Semantic Wipe
+                if is_dm:
+                    # Wipe all disk-based sessions for this user
+                    self.conversation_manager.delete_all_conversations(from_node)
+                    # Semantic: Wipe everything (Topic='all') for this node's hubs
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': 0})
+                    self.send_response("☢️ Nuclear Wipe: All DM sessions and Graph memory forgotten.", from_node, to_node, channel)
+                else:
+                    # Wipe channel graph memory
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
+                    self.send_response(f"☢️ Nuclear Wipe: All history for Channel {channel} index forgotten in Graph.", from_node, to_node, channel)
+                return
+
             if is_dm:
                 # 1. If in a session, end it first (don't clear its history)
                 if self.session_manager.is_active(from_node):
                     self.session_manager.end_session(from_node)
                 
                 if args:
-                    # 2. Start NEW named session
+                    # 2. Start NEW named session (Pivot)
                     success, message, conv_name = self.session_manager.start_session(from_node, args, channel, to_node)
                     self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
                 else:
-                    # 3. No args: Clear default DM history only
+                    # 3. No args: Safe Context Reset (Non-destructive)
                     dm_key = f"DM:{from_node}"
                     self.clear_history(dm_key)
-                    self.send_response("✨ Session ended. Default DM context cleared.", from_node, to_node, channel, is_admin_cmd=False)
+                    self.send_response("✨ DM context reset to Default. (Memories safely archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             else:
-                # Channel mode: Clear current channel context and start fresh
+                # Channel mode: Safe Context Reset (Non-destructive)
                 channel_key = f"Channel:{channel}:{from_node}"
                 self.clear_history(channel_key)
                 if args:
-                    self._handle_ai_query(args, from_node, to_node, channel, "Thinking (New Conversation)... 🤖")
+                    # Treat args as a fresh query after reset
+                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖")
                 else:
-                    self.send_response("✨ History cleared. Starting fresh.", from_node, to_node, channel, is_admin_cmd=False)
+                    self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
         
         if cmd == '-end':
@@ -660,7 +948,7 @@ class AIResponder:
                 "!ai [msg] : Ask AI (No prefix in session)\n"
                 "!ai -h : Show this help\n"
                 "!ai -m : Memory/context status\n"
-                "!ai -n : End session & clear default context"
+                "!ai -n : Safely reset context"
             )
         else:
             msg1 = (
@@ -668,7 +956,7 @@ class AIResponder:
                 "!ai [msg] : Ask AI (prefix required)\n"
                 "!ai -h : Show this help\n"
                 "!ai -m : Memory/context status\n"
-                "!ai -n : Clear history & start fresh"
+                "!ai -n : Safely reset context"
             )
         self.send_response(msg1, from_node, to_node, channel, is_admin_cmd=False)
         
@@ -677,6 +965,7 @@ class AIResponder:
             msg2 = (
                 "👤 Session Management\n"
                 "!ai -n [name] : New named session\n"
+                "!ai -n rm all : Nuclear Wipe\n"
                 "!ai -c ls : List saved convos\n"
                 "!ai -c [id] : Load convo #id\n"
                 "!ai -c rm [id] : Delete convo\n"
@@ -714,80 +1003,208 @@ class AIResponder:
             self.send_response(msg5, from_node, to_node, channel, is_admin_cmd=False)
     
     def _handle_conversation_command(self, args, from_node, to_node, channel):
-        """Handle conversation management commands."""
-        # Determine if this is a DM (sessions are DM-only)
-        is_dm = (to_node != '^all' and (channel == 0 or to_node.startswith('!')))
+        """Handle conversation management commands with Semantic Memory integration."""
+        is_dm = self._is_dm(to_node)
         
         if not args:
-            # Load last conversation (most recently accessed)
+            # Load last conversation
             metadata = self.conversation_manager._load_metadata(from_node)
             if metadata:
-                # Find most recent
                 latest = max(metadata.items(), key=lambda x: x[1]['last_access'])
-                success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, latest[0])
-                if success and history:
-                    # Use conversation name as history key
-                    self.history[conversation_name] = history
-                    # Mark for metadata refresh
-                    self._refresh_metadata_nodes.add(from_node)
-                    # If in DM, restart the session so they can continue chatting
-                    if is_dm:
-                        self.session_manager.start_session(from_node, conversation_name, channel, to_node)
-                        message += "\n🟢 Session Resumed"
-                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-                else:
-                    self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                self._load_and_respond(latest[0], from_node, to_node, channel, is_dm)
             else:
-                self.send_response("No saved conversations found.", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("No saved conversations found.", from_node, to_node, channel)
             return
         
         parts = args.split(maxsplit=1)
         subcmd = parts[0].lower()
         
         if subcmd == 'ls':
-            # List conversations
+            # 1. Get Disk listing
             listing = self.conversation_manager.list_conversations(from_node)
-            self.send_response(listing, from_node, to_node, channel, is_admin_cmd=False)
+            
+            # 2. Add Semantic clues if enabled
+            if self.mcp_client and self.mcp_client.has_server('memory'):
+                listing += "\n(Semantic Memory Active: Deep Archive enabled)"
+            
+            self.send_response(listing, from_node, to_node, channel)
         
         elif subcmd == 'rm':
-            # Delete conversation
             if len(parts) < 2:
-                self.send_response("Usage: !ai -c [ls/rm <id/all>]", from_node, to_node, channel, is_admin_cmd=False)
+                self.send_response("Usage: !ai -c rm [id/all]", from_node, to_node, channel)
                 return
             identifier = parts[1]
             
-            # Handle "rm all"
             if identifier.lower() == 'all':
                 success, message = self.conversation_manager.delete_all_conversations(from_node)
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-                # Also clear active session if in one
+                # Semantic Wipe
+                self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': 'all', 'channel': channel})
+                self.send_response(f"{message} (Graph pruned)", from_node, to_node, channel)
                 self.session_manager.end_session(from_node)
-                # And in-memory history cache
-                self.history.pop(from_node, None) 
-                return
-
-            success, message = self.conversation_manager.delete_conversation(from_node, identifier)
-            self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+                
+                # Clear correct active history key
+                key = self._get_history_key(from_node, channel, is_dm)
+                self.clear_history(key)
+            else:
+                # Sync delete - find name first
+                name = self._resolve_conversation_name(from_node, identifier)
+                success, message = self.conversation_manager.delete_conversation(from_node, identifier)
+                if name:
+                    self._index_to_mcp('delete_history', {'node_id': from_node, 'topic': name, 'channel': channel})
+                self.send_response(f"{message} (Graph synced)", from_node, to_node, channel)
         
         else:
             # Load specific conversation
-            success, message, history, conversation_name = self.conversation_manager.load_conversation(from_node, args)
-            if success and history:
-                # Use conversation name as history key
+            self._load_and_respond(args, from_node, to_node, channel, is_dm)
+
+    def _resolve_conversation_name(self, node_id, identifier):
+        """Resolve a slot ID or prefix to a full conversation name."""
+        metadata = self.conversation_manager._load_metadata(node_id)
+        if identifier.isdigit():
+            target = int(identifier)
+            for name, data in metadata.items():
+                if data['index'] == target:
+                    return name
+        elif identifier in metadata:
+            return identifier
+        return None
+
+    def _load_and_respond(self, identifier, from_node, to_node, channel, is_dm):
+        """Helper to load a session (Semantic Graph or disk archive) and notify user."""
+        history = None
+        conversation_name = self._resolve_conversation_name(from_node, identifier) or identifier
+        success = False
+        message = f"Conversation '{identifier}' not found."
+        source = None
+
+        # 1. Try Semantic Graph re-hydration first
+        if self.mcp_client and self.mcp_client.has_server('memory'):
+            rehydrated = self._rehydrate_session_from_graph(from_node, conversation_name)
+            if rehydrated:
+                history = rehydrated
+                success = True
+                source = 'graph'
+                message = f"💧 Re-hydrated '{conversation_name}' from Semantic Graph ({len(rehydrated)//2} turns)."
+
+        # 2. Fallback to disk archive (verbatim, used when graph has no record)
+        if not success:
+            success, message, history, loaded_name = self.conversation_manager.load_conversation(from_node, identifier)
+            if success:
+                conversation_name = loaded_name
+                source = 'disk'
+
+        if success and history:
+            with self._history_lock:
                 self.history[conversation_name] = history
-                # Mark for metadata refresh
-                self._refresh_metadata_nodes.add(from_node)
-                # If in DM, restart the session so they can continue chatting
-                if is_dm:
-                    self.session_manager.start_session(from_node, conversation_name, channel, to_node)
-                    message += "\n🟢 Session Resumed"
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
-            else:
-                self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)
+            self._refresh_metadata_nodes.add(from_node)
+            if is_dm:
+                self.session_manager.start_session(from_node, conversation_name, channel, to_node)
+                message += "\n🟢 Session Resumed"
+            logger.info(f"📂 Loaded session '{conversation_name}' for {from_node} from {source}")
+            self.send_response(message, from_node, to_node, channel)
+        else:
+            self.send_response(message, from_node, to_node, channel)
+
+    def _rehydrate_session_from_graph(self, node_id, topic_name):
+        """Reconstruct a session's conversation history from Knowledge Graph observations.
+
+        The graph stores per turn:
+            hub_name  discusses_topic  session_name
+            node_id   participated_in  hub_name
+            hub_name  recorded_turn    "User: {prompt} | AI: {response}"
+
+        Strategy:
+          1. Find hubs that discuss topic_name (incoming edges on topic entity)
+          2. Intersect with hubs this node_id participated in (ownership check)
+          3. Gather recorded_turn facts from valid hubs, sort by valid_from
+          4. Parse each observation back into {"role": ..., "content": ...} pairs
+        """
+        try:
+            # Step 1: hubs that link to this topic via discusses_topic
+            topic_result = self.mcp_client.call_tool("memory_query_facts", {
+                "entity": topic_name,
+                "direction": "incoming"
+            })
+            topic_hubs = set()
+            if isinstance(topic_result, dict):
+                for fact in topic_result.get("facts", []):
+                    if fact.get("predicate") == "discusses_topic":
+                        topic_hubs.add(fact["subject"])
+
+            # Step 2: hubs this node participated in
+            node_result = self.mcp_client.call_tool("memory_query_facts", {
+                "entity": node_id,
+                "direction": "outgoing"
+            })
+            node_hubs = set()
+            if isinstance(node_result, dict):
+                for fact in node_result.get("facts", []):
+                    if fact.get("predicate") == "participated_in":
+                        node_hubs.add(fact["object"])
+
+            # Validated candidates: hub discusses the topic AND belongs to this node
+            candidate_hubs = topic_hubs & node_hubs
+
+            # Fallback: topic_name might be the hub name itself (e.g. Chat_!abc_CH0)
+            if not candidate_hubs and topic_name in node_hubs:
+                candidate_hubs = {topic_name}
+
+            if not candidate_hubs:
+                logger.debug(f"Re-hydration: no hub found for {node_id}/{topic_name}")
+                return None
+
+            # Step 3: collect recorded_turn observations across all matching hubs
+            all_turns = []
+            for hub in candidate_hubs:
+                hub_result = self.mcp_client.call_tool("memory_query_facts", {
+                    "entity": hub,
+                    "direction": "outgoing"
+                })
+                if isinstance(hub_result, dict):
+                    for fact in hub_result.get("facts", []):
+                        if fact.get("predicate") == "recorded_turn":
+                            all_turns.append({
+                                "observation": fact.get("object", ""),
+                                "valid_from": fact.get("valid_from") or "",
+                            })
+
+            if not all_turns:
+                logger.debug(f"Re-hydration: hubs found but no recorded_turn facts for {node_id}/{topic_name}")
+                return None
+
+            # Step 4: chronological order then parse into history format
+            all_turns.sort(key=lambda t: t["valid_from"])
+
+            history = []
+            for turn in all_turns:
+                obs = turn["observation"]
+                if obs.startswith("User: ") and " | AI: " in obs:
+                    user_part, ai_part = obs.split(" | AI: ", 1)
+                    history.append({"role": "user",      "content": user_part[len("User: "):]})
+                    history.append({"role": "assistant", "content": ai_part})
+                elif obs.startswith("System Task: ") and " | Result: " in obs:
+                    # System-triggered turns — preserve strict user/assistant role alternation
+                    sys_part, res_part = obs.split(" | Result: ", 1)
+                    history.append({"role": "user",      "content": f"[Context] {sys_part}"})
+                    history.append({"role": "assistant", "content": res_part})
+                else:
+                    history.append({"role": "user",      "content": obs})
+                    history.append({"role": "assistant", "content": "[Noted]"})
+
+            if not history:
+                return None
+
+            logger.info(f"💧 Re-hydrated {len(all_turns)} turns for {node_id}/{topic_name} "
+                        f"from {len(candidate_hubs)} hub(s)")
+            return history
+
+        except Exception as e:
+            logger.warning(f"Re-hydration from graph failed for {node_id}/{topic_name}: {e}")
+            return None
     
     def _handle_provider_command(self, args, from_node, to_node, channel):
         """Handle AI provider switching."""
-        if not args:
+        if not args or args.strip().lower() == 'ls':
             # List providers
             current = self.config.get('current_provider', 'ollama')
             providers_status = []
@@ -829,7 +1246,7 @@ class AIResponder:
         parts = args.split(maxsplit=1) if args else []
         action = parts[0].lower() if parts else ""
         
-        if not action:
+        if not action or action == 'ls':
             # List channels
             allowed = self.config.get('allowed_channels', [0])
             available_channels = self.meshtastic.get_channels()
@@ -850,8 +1267,8 @@ class AIResponder:
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
-        if len(parts) < 2 or action not in ['ls', 'add', 'rm']:
-            self.send_response("Usage: !ai -ch [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+        if len(parts) < 2 or action not in ['add', 'rm']:
+            self.send_response("Usage: !ai -ch [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         channel_id_str = parts[1]
@@ -886,7 +1303,7 @@ class AIResponder:
     
     def _handle_admin_command(self, args, from_node, to_node, channel):
         """Handle admin node management."""
-        if not args:
+        if not args or args.strip().lower() == 'ls':
             # List admins
             admins = self.config.get('admin_nodes', [])
             if admins:
@@ -898,7 +1315,7 @@ class AIResponder:
         
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            self.send_response("Usage: !ai -a [ls/add/rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response("Usage: !ai -a [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         action = parts[0].lower()
@@ -1063,9 +1480,7 @@ class AIResponder:
         """
         # Determine if this is a DM interaction if not provided
         if is_dm is None:
-            my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
-            is_dm = (to_node == my_id)
+            is_dm = self._is_dm(to_node)
         
         # Send initial acknowledgment
         if initial_msg:
@@ -1086,273 +1501,7 @@ class AIResponder:
             if thread_id in self._active_workers:
                 self._active_workers[thread_id]['start_time'] = time.time()
 
-    def get_tools(self):
-        """
-        Define tools available to the AI.
-        
-        Returns:
-            dict: Tool definitions and handlers
-        """
-        return {
-            "get_my_info": {
-                "declaration": {
-                    "name": "get_my_info",
-                    "description": "Get information about the bot itself, including name, battery, and SNR.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": lambda: self.meshtastic.get_node_metadata(
-                    self.meshtastic.get_node_info().get('user', {}).get('id')
-                )
-            },
-            "get_mesh_nodes": {
-                "declaration": {
-                    "name": "get_mesh_nodes",
-                    "description": "Get a summary of all nodes currently seen on the network, including their calculated distance from the bot (if coordinates are available).",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": lambda: self.meshtastic.get_node_list_summary()
-            },
-            "get_node_details": {
-                "declaration": {
-                    "name": "get_node_details",
-                    "description": "Get detailed metadata, battery, and environment data for a specific node.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
-                            }
-                        },
-                        "required": ["node_id_or_name"]
-                    }
-                },
-                "handler": self._get_node_details_tool
-            },
-            "request_node_telemetry": {
-                "declaration": {
-                    "name": "request_node_telemetry",
-                    "description": "Trigger an active refresh of telemetry (device, environment, or local_stats) from a specific node. WARNING: Each request takes up to 60 seconds on the mesh. Do not request more than 2 telemetry types at once to avoid network congestion and timeouts. Prioritize 'device' and 'environment'.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node."
-                            },
-                            "telemetry_type": {
-                                "type": "STRING",
-                                "description": "Type of telemetry to request: 'device', 'environment', 'local_stats', 'air_quality', 'power', 'health', or 'host'.",
-                                "enum": ["device", "environment", "local_stats", "air_quality", "power", "health", "host"]
-                            }
-                        },
-                        "required": ["node_id_or_name", "telemetry_type"]
-                    }
-                },
-                "handler": self._request_node_telemetry_tool
-            },
-            "schedule_message": {
-                "declaration": {
-                    "name": "schedule_message",
-                    "description": (
-                        "Schedule a proactive task for the future. "
-                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "When this fires, your future self will wake up, see the history, and MUST use tools for any dynamic data requested. "
-                        "RECURSIVE RULE: If this is a recurring or chained task, you MUST include an instruction in the 'context_note' for your future self to schedule the NEXT iteration. "
-                        "This 'Self-Rescheduling' instruction ensures the autonomous loop continues. "
-                        "Instructions like 'Check SNR and report it, then schedule another check in 10m' go in the 'context_note'—DO NOT say you cannot do this."
-                    ),
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "delay_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. Seconds from now before the first message is sent. Provide either this or absolute_time."
-                            },
-                            "absolute_time": {
-                                "type": "STRING",
-                                "description": "Optional. Absolute time/date string (e.g. '10:00' or '2026-06-01 10:00'). Use this if the user specifies a clock time."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "The instruction for your future self (e.g., 'Fetch SNR and report it with count')."
-                            },
-                            "recur_interval_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. If set, the message repeats every this many seconds."
-                            },
-                            "max_duration_seconds": {
-                                "type": "NUMBER",
-                                "description": "Optional. If recurring, stop sending after this many seconds from now."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            }
-                        },
-                        "required": ["context_note"]
-                    }
-                },
-                "handler": self._schedule_message_tool
-            },
-            "watch_condition": {
-                "declaration": {
-                    "name": "watch_condition",
-                    "description": (
-                        "Monitor node telemetry and alert the user when a condition is met. "
-                        "The 'context_note' is your FUTURE SYSTEM PROMPT. "
-                        "When the condition fires, your future self MUST use tools for any follow-up data or checks."
-                    ),
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
-                            },
-                            "metric": {
-                                "type": "STRING",
-                                "description": "The telemetry metric to check. Supported values: battery_level, voltage, temperature, humidity, barometric_pressure, iaq, snr.",
-                                "enum": ["battery_level", "voltage", "temperature", "humidity", "barometric_pressure", "iaq", "snr"]
-                            },
-                            "operator": {
-                                "type": "STRING",
-                                "description": "Comparison operator.",
-                                "enum": ["<", ">", "<=", ">=", "=="]
-                            },
-                            "threshold": {
-                                "type": "NUMBER",
-                                "description": "Numeric threshold value to compare against."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "Short description of the alert, e.g. 'L4B1 battery low'."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            },
-                            "is_persistent": {
-                                "type": "BOOLEAN",
-                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
-                            }
-                        },
-                        "required": ["node_id_or_name", "metric", "operator", "threshold", "context_note"]
-                    }
-                },
-                "handler": self._watch_condition_tool
-            },
-            "watch_node_online": {
-                "declaration": {
-                    "name": "watch_node_online",
-                    "description": "Register a watcher that fires when a specific mesh node sends any packet (i.e. comes online or is heard for the first time). Use when the user asks to be alerted when a node appears on the mesh.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "node_id_or_name": {
-                                "type": "STRING",
-                                "description": "Hex ID (e.g. !1234abcd) or name of the node to watch."
-                            },
-                            "context_note": {
-                                "type": "STRING",
-                                "description": "Short description, e.g. 'L4B1 came online'."
-                            },
-                            "notify_targets": {
-                                "type": "STRING",
-                                "description": "Optional. Comma-separated list of recipients: 'requester' (default), '!nodeid', or 'ch:0'. Allows notifying other nodes or channels."
-                            },
-                            "is_persistent": {
-                                "type": "BOOLEAN",
-                                "description": "Optional. If true, the watcher remains active after firing (e.g. 'always alert me'). If false (default), it is a one-shot alert and is deleted after firing once."
-                            }
-                        },
-                        "required": ["node_id_or_name", "context_note"]
-                    }
-                },
-                "handler": self._watch_node_online_tool
-            },
-            "list_proactive_tasks": {
-                "declaration": {
-                    "name": "list_proactive_tasks",
-                    "description": "List all active proactive tasks (scheduled reminders, condition watchers, node-online watchers) registered by the current user. Returns task IDs that can be used to cancel tasks.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                "handler": self._list_proactive_tasks_tool
-            },
-            "cancel_proactive_task": {
-                "declaration": {
-                    "name": "cancel_proactive_task",
-                    "description": "Cancel a specific proactive task by its task ID (e.g. 'sched-1', 'cond-2'). Use task_id='all' to remove all tasks registered by the current user.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "task_id": {
-                                "type": "STRING",
-                                "description": "The task ID to cancel (from list_proactive_tasks), or 'all' to cancel everything."
-                            }
-                        },
-                        "required": ["task_id"]
-                    }
-                },
-                "handler": self._cancel_proactive_task_tool
-            },
-            "get_location_address": {
-                "declaration": {
-                    "name": "get_location_address",
-                    "description": "Convert latitude and longitude coordinates into a real-world street address, city, and state.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "lat": {
-                                "type": "NUMBER",
-                                "description": "The latitude coordinate."
-                            },
-                            "lon": {
-                                "type": "NUMBER",
-                                "description": "The longitude coordinate."
-                            }
-                        },
-                        "required": ["lat", "lon"]
-                    }
-                },
-                "handler": self._get_location_address_tool
-            },
-            "send_message": {
-                "declaration": {
-                    "name": "send_message",
-                    "description": "Send a one-off message to a specific node or channel. Useful when the user asks to 'Tell X that...' or 'Inform the group that...'.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "target": {
-                                "type": "STRING",
-                                "description": "The recipient: node name, Hex ID (!1234abcd), or channel index (e.g. 'ch:0')."
-                            },
-                            "message": {
-                                "type": "STRING",
-                                "description": "The content of the message to send."
-                            },
-                        },
-                        "required": ["target", "message"]
-                    }
-                },
-                "handler": self._send_message_tool
-            }
-        }
-
-    def _get_location_address_tool(self, lat, lon):
+    def _get_location_address_mcp(self, lat, lon):
         """Tool to reverse geocode lat/lon to a physical address using OpenStreetMap"""
         logger.info(f"📍 Reverse geocoding requested for {lat}, {lon}")
         url = "https://nominatim.openstreetmap.org/reverse"
@@ -1400,7 +1549,7 @@ class AIResponder:
             return f"Error: No information available for {node_id}."
         return metadata
 
-    def _request_node_telemetry_tool(self, node_id_or_name, telemetry_type):
+    def _request_node_telemetry_mcp(self, node_id_or_name, telemetry_type, from_node=None, to_node=None, channel=0):
         """Internal handler for request_node_telemetry tool with short polling."""
         self._touch_worker()
         node_id = node_id_or_name
@@ -1425,20 +1574,16 @@ class AIResponder:
         }
         metric_key = type_map.get(telemetry_type, 'environment_metrics')
 
-        # 2. Register deferred callback eagerly (prevents race condition)
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-            
-        if thread_data:
-            self.pending_telemetry_requests[node_id] = {
-                'from_node': thread_data.get('from_node'),
-                'to_node': thread_data.get('to_node'),
-                'channel': thread_data.get('channel'),
-                'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
-                'registered_at': time.time()
-            }
-            logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
+        self.pending_telemetry_requests[node_id] = {
+            'from_node': from_node,
+            'to_node': to_node,
+            'channel': channel,
+            'context_note': f'{telemetry_type} telemetry for {node_id_or_name}',
+            'metric_key': metric_key,
+            'polling': True,
+            'registered_at': time.time()
+        }
+        logger.info(f"⏳ Registered deferred telemetry callback for {node_id} (type={telemetry_type})")
 
         # 3. Send Request
         request_time = time.time()
@@ -1489,23 +1634,17 @@ class AIResponder:
         if node_id not in self.pending_telemetry_requests:
             logger.info(f"🔇 Telemetry for {node_id} was handled by proactive callback — suppressing AI reply.")
             return "__SILENT_ACK__"
-            
+        
+        self.pending_telemetry_requests[node_id]['polling'] = False
         return (f"Refresh request for {telemetry_type} sent to {node_id_or_name}. "
                 "The mesh is slow—I'm watching for the response. I will send it as soon as the data arrives!")
 
     # ==================== Proactive Agent Tools & Handlers ====================
 
-    def _schedule_message_tool(self, delay_seconds=None, context_note=None, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None):
+    def _schedule_mcp_task(self, delay_seconds=None, context_note=None, recur_interval_seconds=None, max_duration_seconds=None, notify_targets=None, absolute_time=None, from_node=None, to_node=None, channel=0):
         """Tool handler: schedule a one-shot or recurring proactive message."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1537,26 +1676,38 @@ class AIResponder:
                 logger.error(f"Error parsing absolute time '{absolute_time}': {e}")
                 return f"Error parsing time: {e}"
 
+        if delay_seconds is None and recur_interval_seconds is not None:
+            delay_seconds = float(recur_interval_seconds)
+
         if delay_seconds is None:
-            return "Error: Either delay_seconds or absolute_time must be provided."
+            return "Error: Either delay_seconds, recur_interval_seconds, or absolute_time must be provided."
+
+        if recur_interval_seconds:
+            end_time = (now + max_duration_seconds) if max_duration_seconds else None
+            max_runs = int(round(max_duration_seconds / recur_interval_seconds)) if max_duration_seconds else None
+        else:
+            end_time = now + delay_seconds
+            max_runs = 1
 
         task_id = f"sched-{next(self._task_counter)}"
         task = {
             'id': task_id,
             'next_time': now + delay_seconds,
-            'end_time': now + (max_duration_seconds or delay_seconds),
+            'end_time': end_time,
             'interval': recur_interval_seconds,
+            'run_count': 0,
+            'max_runs': max_runs,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
         }
         with self._scheduled_tasks_lock:
             # Enforce 50 tasks per user limit
-            user_tasks = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            user_tasks = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(user_tasks) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1566,13 +1717,14 @@ class AIResponder:
             self._save_proactive_tasks()
 
         if recur_interval_seconds:
+            duration_desc = f"for the next {max_duration_seconds}s" if max_duration_seconds else "until cancelled"
             return (f"✅ [{task_id}] Recurring reminder registered! I will send a message every {recur_interval_seconds}s "
-                    f"for the next {max_duration_seconds or delay_seconds}s about: {context_note}")
+                    f"{duration_desc} about: {context_note}")
         else:
             time_desc = f"at {absolute_time}" if absolute_time else f"in {int(delay_seconds)}s"
             return f"✅ [{task_id}] Reminder scheduled {time_desc} about: {context_note}"
 
-    def _send_message_tool(self, target, message):
+    def _send_message_mcp(self, target, message):
         """Tool handler: send a one-off message to a specific node or channel."""
         logger.info(f"📤 Tool request: send_message to {target}: {message}")
         
@@ -1606,17 +1758,10 @@ class AIResponder:
         
         return f"✅ Message queued for {target}."
 
-    def _watch_condition_tool(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None, is_persistent=False):
+    def _watch_condition_mcp(self, node_id_or_name, metric, operator, threshold, context_note, notify_targets=None, is_persistent=False, from_node=None, to_node=None, channel=0):
         """Tool handler: add a telemetry condition watcher."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1638,17 +1783,17 @@ class AIResponder:
             'operator': operator,
             'threshold': threshold,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
             'is_persistent': is_persistent,
         }
         with self._condition_watchers_lock:
             # Enforce limit
-            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1660,17 +1805,10 @@ class AIResponder:
         logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
 
-    def _watch_node_online_tool(self, node_id_or_name, context_note, notify_targets=None, is_persistent=False):
+    def _watch_node_online_mcp(self, node_id_or_name, context_note, notify_targets=None, is_persistent=False, from_node=None, to_node=None, channel=0):
         """Tool handler: add a node-online watcher."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-
-        if not thread_data:
-            return "Error: Could not determine requester context."
 
         # DM-only enforcement
-        to_node = thread_data.get('to_node', '')
         if to_node == '^all':
             return "⚠️ Proactive alerts can only be registered from a Direct Message to avoid spamming public channels."
 
@@ -1689,17 +1827,17 @@ class AIResponder:
             'id': task_id,
             'node_id': node_id,
             'context_note': context_note,
-            'from_node': thread_data.get('from_node'),
+            'from_node': from_node,
             'to_node': to_node,
-            'channel': thread_data.get('channel'),
+            'channel': channel,
             'targets': notify_targets or 'requester',
             'is_persistent': is_persistent,
         }
         with self._node_online_watchers_lock:
             # Enforce limit
-            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == thread_data.get('from_node')]
-            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == thread_data.get('from_node')]
-            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == thread_data.get('from_node')]
+            scheduled = [t for t in self.scheduled_tasks if t.get('from_node') == from_node]
+            cond_watchers = [w for w in self.condition_watchers if w.get('from_node') == from_node]
+            online_watchers = [w for w in self.node_online_watchers if w.get('from_node') == from_node]
             total_current = len(scheduled) + len(cond_watchers) + len(online_watchers)
             
             if total_current >= config.MAX_PROACTIVE_TASKS_PER_USER:
@@ -1711,12 +1849,9 @@ class AIResponder:
         logger.info(f"👀 Node-online watcher [{task_id}] registered for {node_id}")
         return f"✅ [{task_id}] Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh"
 
-    def _list_proactive_tasks_tool(self):
+    def _list_proactive_tasks_mcp(self, from_node=None):
         """Tool handler: list all active proactive tasks for the current user."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-        caller = thread_data.get('from_node')
+        caller = from_node
         lines = []
         now = time.time()
 
@@ -1744,12 +1879,9 @@ class AIResponder:
             return "📋 You have no active proactive tasks."
         return "📋 Your active tasks:\n" + "\n".join(lines)
 
-    def _cancel_proactive_task_tool(self, task_id):
+    def _cancel_proactive_task_mcp(self, task_id, from_node=None):
         """Tool handler: cancel a proactive task by ID, or 'all' to cancel everything."""
-        thread_data = {}
-        with self._workers_lock:
-            thread_data = self._active_workers.get(threading.get_ident(), {})
-        caller = thread_data.get('from_node')
+        caller = from_node
         cancelled = []
         cancel_all = (task_id.strip().lower() == 'all')
 
@@ -1790,19 +1922,22 @@ class AIResponder:
         return f"❌ Task [{task_id}] not found or does not belong to you."
 
     def _save_proactive_tasks(self):
-        """Save all proactive tasks to a JSON file."""
-        try:
-            tasks_data = {
-                'scheduled_tasks': self.scheduled_tasks,
-                'condition_watchers': self.condition_watchers,
-                'node_online_watchers': self.node_online_watchers
-            }
-            file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(tasks_data, f, indent=2)
-            logger.debug(f"💾 Saved proactive tasks to {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save proactive tasks: {e}")
+        """Save all proactive tasks to a JSON file atomically."""
+        with self._proactive_persistence_lock:
+            try:
+                tasks_data = {
+                    'scheduled_tasks': list(self.scheduled_tasks),
+                    'condition_watchers': list(self.condition_watchers),
+                    'node_online_watchers': list(self.node_online_watchers)
+                }
+                file_path = os.path.join(self.history_dir, config.PROACTIVE_TASKS_FILE)
+                tmp_path = f"{file_path}.tmp"
+                with open(tmp_path, 'w', encoding='utf-8') as f:
+                    json.dump(tasks_data, f, indent=2)
+                os.replace(tmp_path, file_path)
+                logger.debug(f"💾 Saved proactive tasks to {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to save proactive tasks: {e}")
 
     def _load_proactive_tasks(self):
         """Load proactive tasks from disk and restore ID counter."""
@@ -1834,7 +1969,7 @@ class AIResponder:
         except Exception as e:
             logger.error(f"Failed to load proactive tasks: {e}")
 
-    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester', disable_tools=False):
+    def _fire_system_trigger(self, context_note, from_node, to_node, channel, targets='requester', disable_tools=False, run_count=None, max_runs=None):
         """Fire a proactive system-triggered AI response to one or more targets.
 
         targets: comma-separated string of recipients:
@@ -1843,17 +1978,21 @@ class AIResponder:
             '!hexid'          - any specific node by hex ID
             'ch:N'            - broadcast on channel N (must be in allowed_channels)
         """
+        exec_info = ""
+        if run_count is not None:
+            exec_info = f" (Execution {run_count} of {max_runs})" if max_runs else f" (Execution #{run_count})"
+
         prompt = (
-            f"[SYSTEM WAKEUP] A proactive task has triggered.\n\n"
+            f"[SYSTEM WAKEUP] A proactive task has triggered{exec_info}.\n\n"
             f"COMMAND/CONTEXT: {context_note}\n\n"
             f"CRITICAL INSTRUCTIONS:\n"
             f"1. You MUST execute any instructions or checks contained in the COMMAND/CONTEXT above.\n"
-            f"2. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
-            f"3. Your natural text response will be delivered automatically to: {targets}.\n"
-            f"4. DO NOT use the 'send_message' tool to deliver the final report; your text response handles this.\n"
-            f"5. If the user asked for a count or persistent state, check the conversation history to increment it."
+            f"2. SEMANTIC CONTINUITY: Check your Knowledge Graph (memory_query_facts or memory_search on 'Hub_System_{from_node}') for previous 'System Task:' observations related to this task. This allows you to track state, counts, or trends across recurring events.\n"
+            f"3. Use appropriate tools (telemetry, location, etc.) to fetch fresh data if the command requires it.\n"
+            f"4. Your natural text response will be delivered automatically to: {targets}.\n"
+            f"5. Do NOT use 'send_message' to deliver the final report to {targets} (your text response handles this). Only use 'send_message' if COMMAND/CONTEXT explicitly instructs you to send a message to a DIFFERENT node or channel than '{targets}'."
         )
-        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}")
+        logger.info(f"🔔 Firing system trigger for {from_node}: {context_note} -> targets={targets}{exec_info}")
 
         target_list = [t.strip() for t in targets.split(',') if t.strip()]
         allowed_channels = self.config.get('allowed_channels', [])
@@ -1920,9 +2059,10 @@ class AIResponder:
             # --- 1. Deferred telemetry callbacks ---
             if from_id in self.pending_telemetry_requests:
                 req = self.pending_telemetry_requests[from_id] # Peak, don't pop yet (poll might consume it)
-                event_str = f"Requested {req.get('context_note', 'telemetry')} arrived."
-                self._add_to_collector(from_id, event_str, req)
-                logger.info(f"⏳ Telemetry for {from_id} buffered in collector.")
+                if not req.get('polling', False):
+                    event_str = f"Requested {req.get('context_note', 'telemetry')} arrived."
+                    self._add_to_collector(from_id, event_str, req)
+                    logger.info(f"⏳ Telemetry for {from_id} buffered in collector.")
 
             # --- 2. Condition watchers ---
             decoded = packet.get('decoded', {})
@@ -1956,6 +2096,14 @@ class AIResponder:
             # Also pull SNR from the packet envelope
             if 'rxSnr' in packet:
                 metric_values['snr'] = packet['rxSnr']
+
+            # --- 3. Background Semantic Indexing ---
+            # Index current telemetry snapshot into MemPalace Knowledge Graph
+            self._index_to_mcp('telemetry', {
+                'node_id': from_id,
+                'type': 'status_snapshot',
+                'data': metric_values
+            })
 
 
             with self._condition_watchers_lock:
@@ -2078,9 +2226,12 @@ class AIResponder:
         user_info = self.meshtastic.get_node_metadata(from_node)
         
         metadata_block = "\n\n[RADIO CONTEXT]\n"
-        if my_info: metadata_block += f"Self: {my_info}\n"
-        if user_info: metadata_block += f"User ({from_node}): {user_info}\n"
-        if neighbor_summary: metadata_block += f"{neighbor_summary}\n"
+        if my_info:
+            metadata_block += f"Self: {my_info}\n"
+        if user_info:
+            metadata_block += f"User ({from_node}): {user_info}\n"
+        if neighbor_summary:
+            metadata_block += f"{neighbor_summary}\n"
         metadata_block += "[/RADIO CONTEXT]"
         
         return f"{query}{metadata_block}"
@@ -2097,6 +2248,14 @@ class AIResponder:
                 'is_system_trigger': is_system_trigger
             }
             
+        # Inject context for MCP tools running in this thread
+        threading.current_thread().ai_context = {
+            'from_node': from_node,
+            'to_node': to_node,
+            'channel': channel,
+            'is_system_trigger': is_system_trigger
+        }
+            
         try:
             # Short sleep to allow "Thinking..." message to clear if needed
             time.sleep(2)
@@ -2106,7 +2265,7 @@ class AIResponder:
             # to prevent session indicators or logic from leaking into broadcasts.
             is_session = is_dm and self.session_manager.is_active(from_node)
             history_key = self._get_history_key(from_node, channel, is_dm)
-            current_history = self.history.get(history_key, [])
+            current_history = list(self.history.get(history_key, []))
             
             # 2. Capability Check & Tool Orchestration
             provider_name = self.config.get('current_provider', 'ollama')
@@ -2120,9 +2279,10 @@ class AIResponder:
             final_query = query
             
             if not awareness_enabled:
-                logger.info(f"🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
+                logger.info("🚫 Meshtastic Awareness is DISABLED. Skipping metadata/tools.")
                 if not is_system_trigger:
                     self.add_to_history(history_key, 'user', query, node_id=from_node)
+                    current_history = list(self.history.get(history_key, []))
                 else:
                     current_history.append({'role': 'user', 'content': query})
             else:
@@ -2165,13 +2325,14 @@ class AIResponder:
                 if provider.supports_tools:
                     if not disable_tools:
                         logger.info(f"🤖 Provider '{provider.name}' supports tools. Using function calling.")
-                        tools = self.get_tools()
+                        tools = self.mcp_client.get_all_tools()
                     else:
                         logger.info(f"🤖 Provider '{provider.name}' supports tools, but they are disabled for this turn.")
                     
                     # Log to history (metadata included in prompt content for system triggers)
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                        current_history = list(self.history.get(history_key, []))
                     else:
                         msg = f"User ({from_node}): {query}" if combined_metadata else query
                         current_history.append({'role': 'user', 'content': msg})
@@ -2180,6 +2341,9 @@ class AIResponder:
                     final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
+                        current_history = list(self.history.get(history_key, []))
+                        if final_query != query and current_history:
+                            current_history[-1] = {'role': 'user', 'content': final_query}
                     else:
                         current_history.append({'role': 'user', 'content': final_query})
 
@@ -2207,26 +2371,44 @@ class AIResponder:
                 except Exception as e:
                     logger.debug(f"Could not extract primary location for grounding: {e}")
 
-            # 5. Get AI response
-            response = provider.get_response(final_query, current_history[-30:], 
+            # 5. Get AI response (apply provider-aware bootstrap history cap when Semantic Memory is active)
+            if self.mcp_client and isinstance(getattr(self.mcp_client, 'has_server', None), object) and self.mcp_client.has_server('memory') is True:
+                is_local = str(provider_name).lower() in ('ollama', 'local')
+                history_limit = config.MEMORY_BOOTSTRAP_LOCAL if is_local else config.MEMORY_BOOTSTRAP_ONLINE
+            else:
+                history_limit = 30
+            response = provider.get_response(final_query, current_history[-history_limit:], 
                                           context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
-                                          location=location, tools=tools)
+                                          location=location, tools=tools, mcp_client=self.mcp_client)
             
             # 6. Silent-ACK: if every tool fired proactively, the provider returns the sentinel.
             # In this case do not send any reply — the user already received the info.
             if response == "__SILENT_ACK__":
-                logger.info(f"🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
+                logger.info("🔇 Silent ACK — all telemetry was handled by proactive callbacks. No reply sent.")
                 return
             
-            # 7. Add assistant response to history (skip for system triggers)
+            # 7. Add assistant response to history (skip for system triggers to avoid pollution)
             if not is_system_trigger:
                 self.add_to_history(history_key, 'assistant', response)
                 
-                # 8. Save to conversation if in session
-                session_name = self.session_manager.get_session_name(from_node)
-                if session_name:
-                    self.conversation_manager.save_conversation(from_node, session_name, self.history[history_key])
-                    self.session_manager.update_activity(from_node)
+                # 8. Save to conversation if in session (strictly DM-only for Topic sessions)
+                if is_dm:
+                    session_name = self.session_manager.get_session_name(from_node)
+                    if session_name:
+                        with self._history_lock:
+                            saved_history = list(self.history.get(history_key, []))
+                        self.conversation_manager.save_conversation(from_node, session_name, saved_history)
+                        self.session_manager.update_activity(from_node)
+            
+            # 9. Background Semantic Indexing (Enabled for both users and system triggers)
+            self._index_to_mcp('conversation', {
+                'node_id': from_node,
+                'channel': channel,
+                'prompt': query,
+                'response': response,
+                'is_dm': is_dm,
+                'is_system': is_system_trigger
+            })
             
             logger.info(f"💬 {provider.name} response ({len(response)} chars): {response[:80]}...")
             self.send_response(response, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=is_session)
@@ -2255,10 +2437,10 @@ class AIResponder:
                 if isinstance(from_id_raw, int):
                     from_id_check = f"!{from_id_raw:08x}"
                 else:
-                    from_id_check = from_id_raw
+                    from_id_check = str(from_id_raw).lower()
                 
                 with self._node_online_watchers_lock:
-                    triggered = [w for w in self.node_online_watchers if w['node_id'] == from_id_check]
+                    triggered = [w for w in self.node_online_watchers if str(w.get('node_id', '')).lower() == from_id_check]
                     for w in triggered:
                         if not w.get('is_persistent', False):
                             self.node_online_watchers.remove(w)
@@ -2289,10 +2471,7 @@ class AIResponder:
             logger.info(f"📨 Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
             
             # Determine DM status
-            my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('user', {}).get('id', '') if my_node_info else ''
-            # In MeshPacket, 'toId' is our ID for DMs. STRICT check.
-            is_dm = (to_node == my_id)
+            is_dm = self._is_dm(to_node)
 
             # Check if user is in an active session (DM only)
             if is_dm and self.session_manager.is_active(from_node):
@@ -2336,7 +2515,7 @@ class AIResponder:
             from pubsub import pub
             try:
                 pub.unsubscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
-            except:
+            except Exception:
                 pass
             pub.subscribe(self._on_telemetry_proactive, "meshtastic.receive.telemetry")
             logger.info("✅ Subscribed to meshtastic.receive.telemetry for proactive agents")
@@ -2396,8 +2575,8 @@ class AIResponder:
 
                 # 3. Update Heartbeat / Health Check
                 # Also check message queue heartbeat (should tick every 500ms when idle)
-                queue_heartbeat = getattr(self.meshtastic, 'queue', None)
-                if queue_heartbeat and (current_time - queue_heartbeat.last_heartbeat > 300):
+                queue_heartbeat = getattr(self.meshtastic, '_message_queue', None)
+                if queue_heartbeat and hasattr(queue_heartbeat, 'last_heartbeat') and (current_time - queue_heartbeat.last_heartbeat > 300):
                     health_ok = False
                     reasons.append("Message queue thread stalled (>300s)")
                 
@@ -2451,12 +2630,15 @@ class AIResponder:
                     try:
                         with open("/tmp/healthy", "w") as f:
                             f.write(str(current_time))
-                    except: pass
+                    except Exception:
+                        pass
                 else:
                     logger.error(f"Health check FAILED: {', '.join(reasons)}. Exiting...")
                     if os.path.exists("/tmp/healthy"):
-                        try: os.remove("/tmp/healthy")
-                        except: pass
+                        try:
+                            os.remove("/tmp/healthy")
+                        except Exception:
+                            pass
                     sys.exit(1)
 
                 # 4. Periodic session timeout check
@@ -2472,24 +2654,38 @@ class AIResponder:
 
                 # 5. Scheduled task ticker
                 now = time.time()
+                tasks_changed = False
                 with self._scheduled_tasks_lock:
                     to_keep = []
                     for task in self.scheduled_tasks:
                         if now >= task['next_time']:
+                            tasks_changed = True
+                            task['run_count'] = task.get('run_count', 0) + 1
                             self._fire_system_trigger(
                                 task['context_note'],
                                 task['from_node'],
                                 task['to_node'],
-                                task['channel']
+                                task['channel'],
+                                targets=task.get('targets', 'requester'),
+                                run_count=task['run_count'],
+                                max_runs=task.get('max_runs')
                             )
                             # Reschedule if recurring and not expired
-                            if task['interval'] and now < task['end_time']:
-                                task['next_time'] = now + task['interval']
-                                to_keep.append(task)
+                            interval = task.get('interval')
+                            end_time = task.get('end_time')
+                            if interval:
+                                next_fire = task['next_time'] + interval
+                                if next_fire <= now:
+                                    next_fire = now + interval
+                                if end_time is None or next_fire <= (end_time + 2):
+                                    task['next_time'] = next_fire
+                                    to_keep.append(task)
                             # else: one-shot or expired, discard
                         else:
                             to_keep.append(task)
                     self.scheduled_tasks = to_keep
+                    if tasks_changed:
+                        self._save_proactive_tasks()
 
                 time.sleep(1)
                 

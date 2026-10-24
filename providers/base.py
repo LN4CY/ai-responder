@@ -24,7 +24,7 @@ class BaseProvider(ABC):
         pass
 
     @abstractmethod
-    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None):
+    def get_response(self, prompt, history=None, context_id=None, location=None, tools=None, mcp_client=None):
         """
         Get AI response for the given prompt.
         
@@ -34,6 +34,7 @@ class BaseProvider(ABC):
             context_id: Unique identifier for the conversation context
             location: Optional location metadata
             tools: Optional list of tool definitions for function calling
+            mcp_client: The unified MCP client wrapper.
         
         Returns:
             str: AI response text or error message

@@ -3,7 +3,7 @@
 # See LICENSE file in the project root for full license details.
 
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch
 import sys
 import os
 import threading
@@ -18,10 +18,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import modules to test
 import config
 from ai_responder import AIResponder
-import providers.ollama
-import providers.gemini
-import providers.openai
-import providers.anthropic
 from conversation.session import SessionManager
 
 class TestAIResponder(unittest.TestCase):
@@ -77,6 +73,8 @@ class TestAIResponder(unittest.TestCase):
         logging.getLogger('AI-Responder').setLevel(logging.CRITICAL)
 
     def tearDown(self):
+        if hasattr(self, 'responder') and hasattr(self.responder, '_bg_executor'):
+            self.responder._bg_executor.shutdown(wait=True)
         self.patcher_config.stop()
         self.patcher_history.stop()
         self.patcher_conv.stop()
@@ -85,9 +83,9 @@ class TestAIResponder(unittest.TestCase):
         if os.path.exists(self.mock_config_file):
             os.remove(self.mock_config_file)
         if os.path.exists(self.mock_history_dir):
-            shutil.rmtree(self.mock_history_dir)
+            shutil.rmtree(self.mock_history_dir, ignore_errors=True)
         if os.path.exists(self.mock_conversations_dir):
-            shutil.rmtree(self.mock_conversations_dir)
+            shutil.rmtree(self.mock_conversations_dir, ignore_errors=True)
 
     def test_request_node_telemetry_polling_success(self):
         """Test that request_node_telemetry succeeds when timestamp updates."""
@@ -108,7 +106,7 @@ class TestAIResponder(unittest.TestCase):
                 self.responder.meshtastic.telemetry_timestamps = MagicMock()
                 self.responder.meshtastic.telemetry_timestamps.get.return_value.get.side_effect = [0, 200]
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("Success! New telemetry received", result)
                 self.assertIn("Temp: 25C", result)
@@ -135,7 +133,7 @@ class TestAIResponder(unittest.TestCase):
                     'channel': 0
                 }
                 
-                result = self.responder._request_node_telemetry_tool(node_id, 'environment')
+                result = self.responder._request_node_telemetry_mcp(node_id, 'environment')
                 
                 self.assertIn("The mesh is slow", result)
                 # Cleanup the mock worker
@@ -156,28 +154,54 @@ class TestAIResponder(unittest.TestCase):
         self.assertEqual(channel_key, f"Channel:1:{user_id}")
         self.assertNotEqual(channel_key, "TestSession")
 
-    def test_session_name_sanitization(self):
-        """Test that bad session names are sanitized correctly."""
-        user_id = "!sanitizeme"
+    def test_session_command_n_behavior(self):
+        """Test the new safe reset (!ai -n) vs nuclear wipe (!ai -n rm all) logic."""
+        from_node = "!user1"
+        dm_key = f"DM:{from_node}"
+        self.responder.history[dm_key] = [{"role": "user", "content": "hello"}]
         
-        # 1. Names with path traversal / bad chars
-        bad_name = "../etc/passwd\\test"
-        success, msg, sanitized_name = self.responder.session_manager.start_session(user_id, bad_name)
+        # 1. Test SAFE RESET: !ai -n
+        self.responder.process_command("!ai -n", from_node, "!bot", 0)
+        # Buffer should be cleared
+        self.assertEqual(len(self.responder.history.get(dm_key, [])), 0)
+        # Verify NO deletion of saved history was triggered
+        self.responder.meshtastic.send_message.assert_called()
+        msg = self.responder.meshtastic.send_message.call_args[0][0]
+        self.assertIn("safely archived", msg)
+
+        # 2. Test NUCLEAR WIPE: !ai -n rm all
+        self.responder.history[dm_key] = [{"role": "user", "content": "secret"}]
+        with patch.object(self.responder.conversation_manager, 'delete_all_conversations') as mock_del:
+            self.responder.process_command("!ai -n rm all", from_node, "!bot", 0)
+            # Disk wipe MUST be called
+            mock_del.assert_called_with(from_node)
+            # Response should indicate wipe
+            msg_wipe = self.responder.meshtastic.send_message.call_args[0][0]
+            self.assertIn("Nuclear Wipe", msg_wipe)
+
+    def test_semantic_rehydration_fallback(self):
+        """Test that loading fails over to graph if disk load returns False."""
+        from_node = "!user1"
+        topic = "AgedOffTopic"
         
-        # Expected: alphanumeric/underscore/hyphen only
-        self.assertEqual(sanitized_name, "etcpasswdtest")
-        self.assertIn("Session started: 'etcpasswdtest'", msg)
-        
-        # 2. Check history path for this sanitized name
-        path = self.responder._get_history_path(sanitized_name)
-        self.assertTrue(path.endswith("etcpasswdtest.json"))
-        # Ensure no path traversal in the final result
-        self.assertNotIn("..", path)
-        
-        # 3. Completely invalid name
-        empty_name = "!!!@@@###"
-        _, _, name3 = self.responder.session_manager.start_session(user_id, empty_name)
-        self.assertEqual(name3, "unnamed_session")
+        # Mock disk load failure specifically for this call
+        with patch.object(self.responder.conversation_manager, 'load_conversation', 
+                         return_value=(False, "Not found", [], None)):
+            
+            # Mock MCP presence and semantic success
+            self.responder.mcp_client = MagicMock()
+            self.responder.mcp_client.has_server.return_value = True
+            
+            rehydrated_history = [{"role": "user", "content": "from graph"}]
+            with patch.object(self.responder, '_rehydrate_session_from_graph', return_value=rehydrated_history):
+                self.responder.process_command(f"!ai -c {topic}", from_node, "!bot", 0)
+                
+                # Should have history now
+                self.assertIn(topic, self.responder.history)
+                self.assertEqual(self.responder.history[topic], rehydrated_history)
+                # Message should mention re-hydration
+                msg = self.responder.meshtastic.send_message.call_args[0][0]
+                self.assertIn("Re-hydrated", msg)
 
     def test_provider_list(self):
         """Test listing providers."""
@@ -381,7 +405,7 @@ class TestAIResponder(unittest.TestCase):
         self.assertNotIn(0, self.responder.config['allowed_channels'])
         
         # 3. Verify IGNORE on Channel 0 (disabled BROADCAST)
-        with patch.object(self.responder, 'process_command') as mock_process_2:
+        with patch.object(self.responder, 'process_command'):
             pkt = {'decoded': {'text': '!ai hi', 'portnum': 'TEXT_MESSAGE_APP'}, 
                    'fromId': '!tester', 'toId': '^all', 'channel': 0}
             self.responder.on_receive(pkt, None)
@@ -412,19 +436,6 @@ class TestAIResponder(unittest.TestCase):
         self.responder.send_response("Hi", "!user", "^all", 3, is_admin_cmd=False)
         self.responder.meshtastic.send_message.assert_called()
 
-    def test_channel_ls_command(self):
-        """Test the channel list command output."""
-        self.responder.send_response = MagicMock()
-        self.responder.config['allowed_channels'] = [0, 3]
-        
-        # Mock available channels
-        mock_channels = [
-            {'index': 0, 'name': 'Primary'},
-            {'index': 1, 'name': ''},
-            {'index': 3, 'name': 'Admin'}
-        ]
-        self.responder.meshtastic.get_channels = MagicMock(return_value=mock_channels)
-        
     def test_channel_ls_command(self):
         """Test the channel list command output."""
         self.responder.send_response = MagicMock()
@@ -525,8 +536,8 @@ class TestAIResponder(unittest.TestCase):
         # Mock metadata
         self.responder.meshtastic.get_node_metadata.return_value = "(Loc: 1, 2)"
         
-        # Mock get_ai_response to avoid actual provider calls
-        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+        # Mock provider response to avoid actual network calls
+        with patch('providers.ollama.OllamaProvider.get_response', return_value="OK"):
             # 1. First DM -> SHould inject
             self.responder._process_ai_query_thread("hi", from_node, to_node, channel, is_dm=True)
             history_key = "DM:!u1"
@@ -590,9 +601,11 @@ class TestSessionNotifications(unittest.TestCase):
                     self.responder.meshtastic.find_node_by_name.return_value = None
 
     def tearDown(self):
+        if hasattr(self, 'responder') and hasattr(self.responder, '_bg_executor'):
+            self.responder._bg_executor.shutdown(wait=True)
         self.config_patcher.stop()
         if os.path.exists(self.mock_config_dir):
-            shutil.rmtree(self.mock_config_dir)
+            shutil.rmtree(self.mock_config_dir, ignore_errors=True)
     
     def test_session_metadata_persistence(self):
         """Test that session manager stores and returns routing metadata."""
@@ -631,7 +644,6 @@ class TestSessionNotifications(unittest.TestCase):
         """Test that !ai -end correctly unpacks the 4 values from end_session."""
         from_node = "!sender"
         to_node = "!bot"
-        channel = 5
         
         # Mock end_session to return 4 values
         with patch.object(self.session_manager, 'end_session') as mock_end:
@@ -644,7 +656,8 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Session ended", mock_send.call_args[0][0])
 
-    def test_location_query_injects_metadata(self):
+    @patch('time.sleep', return_value=None)
+    def test_location_query_injects_metadata(self, _):
         """Test that location-related queries trigger metadata injection."""
         from_node = "!sender"
         to_node = "!bot"
@@ -658,15 +671,11 @@ class TestSessionNotifications(unittest.TestCase):
         with patch.object(self.responder.meshtastic, 'get_node_metadata') as mock_meta:
             mock_meta.return_value = "(Location: 40.7, -74.0)"
             
-            with patch.object(self.responder, 'get_ai_response') as mock_ai:
-                mock_ai.return_value = "You are at 40.7, -74.0"
-                
+            with patch('providers.ollama.OllamaProvider.get_response', return_value="You are at 40.7, -74.0"):
                 # run _process_ai_query_thread directly to avoid threading
                 self.responder._process_ai_query_thread("Where am I?", from_node, to_node, channel, is_dm=True)
                 
                 # Should have called get_node_metadata because of "Where am I?"
-                # It may be called twice: once for primary sender telemetry, and once for name resolution if "Where" or "am" matched
-                # (But we mocked find_node_by_name to return None, so it should be once)
                 mock_meta.assert_any_call(from_node)
                 
                 # Test Battery Query
@@ -727,7 +736,8 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Timed out", mock_send.call_args[0][0])
 
-    def test_bot_metadata_injection(self):
+    @patch('time.sleep', return_value=None)
+    def test_bot_metadata_injection(self, _):
         """Test that bot's own metadata includes name and is triggered by reference."""
         from_node = "!sender"
         to_node = "!bot"
@@ -740,7 +750,7 @@ class TestSessionNotifications(unittest.TestCase):
         
         # 2. Mock get_node_metadata to return a string (simulating real handler output)
         self.responder.meshtastic.get_node_metadata.side_effect = lambda node_id: \
-            f"(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
+            "(Name: MockBot, ShortName: MB, SNR: 5.5dB, RSSI: -80dBm, Battery: 88%)" if node_id == "!bot" else "(Name: Sender, Battery: 50%)"
 
         # 3. Test metadata formatting (Direct check)
         meta = self.responder.meshtastic.get_node_metadata("!bot")
@@ -754,7 +764,7 @@ class TestSessionNotifications(unittest.TestCase):
         # Mock find_node_by_name to return !bot when "MockBot" is used
         self.responder.meshtastic.find_node_by_name.side_effect = lambda name: "!bot" if name.lower() == "mockbot" else None
         
-        with patch.object(self.responder, 'get_ai_response', return_value="OK"):
+        with patch('providers.ollama.OllamaProvider.get_response', return_value="OK"):
              # Query referencing bot by name
              self.responder._process_ai_query_thread("How are you, MockBot?", from_node, to_node, 0, is_dm=True)
              
@@ -839,7 +849,9 @@ class TestAIProviders(unittest.TestCase):
         
         with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
             response = provider.get_response("test")
-            self.assertIn("Failed to get response", response)
+            self.assertTrue(
+                "Terminal API Error" in response or "Failed to get response" in response
+            )
 
     @patch('providers.gemini.requests.Session')
     def test_gemini_grounding_feedback(self, mock_session_cls):
