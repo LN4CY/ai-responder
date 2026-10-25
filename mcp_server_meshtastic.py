@@ -145,7 +145,7 @@ def list_proactive_tasks() -> str:
 
 @mcp.tool()
 def cancel_proactive_task(task_id: str) -> str:
-    """Cancel a scheduled task or watcher (supply ID or 'all')."""
+    """Cancel and remove a scheduled task or watcher (supply ID or 'all' to delete/cancel all active tasks). Note: tasks that reach their duration or finish all runs are automatically deleted upon completion."""
     if not responder_app:
         return "Error"
     ctx = _get_caller_context()

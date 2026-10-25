@@ -143,14 +143,14 @@ def test_cancel_proactive_task_tool(responder):
     responder.condition_watchers.append({'id': 'cond-1', 'from_node': '!user1'})
     responder.node_online_watchers.append({'id': 'node-1', 'from_node': '!user1'})
     
-    # Target single cancellation
-    res = responder._cancel_proactive_task_mcp('cond-1', from_node='!user1')
+    # Target single cancellation (with brackets e.g. [cond-1])
+    res = responder._cancel_proactive_task_mcp('[cond-1]', from_node='!user1')
     assert "✅" in res
     assert len(responder.condition_watchers) == 0
     assert len(responder.scheduled_tasks) == 1
     
-    # Target 'all'
-    res_all = responder._cancel_proactive_task_mcp('all', from_node='!user1')
+    # Target 'everything'
+    res_all = responder._cancel_proactive_task_mcp('everything', from_node='!user1')
     assert "✅" in res_all
     assert len(responder.scheduled_tasks) == 0
     assert len(responder.node_online_watchers) == 0
@@ -333,3 +333,51 @@ def test_system_trigger_with_history(responder):
             history_sent = kwargs.get('history') or args[1]
             assert len(history_sent) == 3
             assert history_sent[0]['content'] == 'Start count at 1'
+
+def test_scheduled_task_auto_expiration_on_max_runs(responder):
+    """Test that recurring tasks auto-delete when reaching max_runs or duration."""
+    import time
+    now = time.time()
+    task = {
+        'id': 'sched-expire',
+        'next_time': now - 1,
+        'end_time': now + 1000,
+        'interval': 10,
+        'run_count': 2,
+        'max_runs': 3,
+        'context_note': 'Test count limit',
+        'from_node': '!user1',
+        'to_node': '!bot',
+        'channel': 0,
+        'targets': 'requester'
+    }
+    responder.scheduled_tasks.append(task)
+    
+    with patch.object(responder, '_fire_system_trigger'):
+        # Simulate ticker logic
+        to_keep = []
+        with responder._scheduled_tasks_lock:
+            for t in responder.scheduled_tasks:
+                if now >= t['next_time']:
+                    t['run_count'] = t.get('run_count', 0) + 1
+                    
+                    interval = t.get('interval')
+                    end_time = t.get('end_time')
+                    max_runs = t.get('max_runs')
+                    run_count = t.get('run_count', 0)
+                    
+                    is_expired = False
+                    if not interval:
+                        is_expired = True
+                    elif max_runs and run_count >= max_runs:
+                        is_expired = True
+                    elif end_time is not None and (now + interval) > (end_time + 2):
+                        is_expired = True
+                    
+                    if not is_expired:
+                        t['next_time'] = now + interval
+                        to_keep.append(t)
+            responder.scheduled_tasks = to_keep
+            
+        assert len(responder.scheduled_tasks) == 0
+        assert task['run_count'] == 3

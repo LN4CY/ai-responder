@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.1.1"
+VERSION = "2.1.2"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -149,8 +149,8 @@ TOOL USAGE PROTOCOL:
      * Use when user asks "what alerts do I have?", "show my reminders", "what am I watching?".
      * Returns only the caller's own tasks with their IDs and remaining time.
    - "cancel_proactive_task(task_id)":
-     * Use when user says "cancel [sched-1]", "remove my battery alert", "cancel all my alerts".
-     * Pass task_id="all" to cancel everything the user registered.
+     * Use when user says "cancel [sched-1]", "remove my battery alert", "delete all tasks", "cancel all my alerts".
+     * Pass task_id="all" to cancel and remove everything the user registered.
 
 LOGIC FLOW:
 - User asks about Mesh -> Call Meshtastic Tool -> Get Data -> Analyze Internally -> Respond.
@@ -167,13 +167,18 @@ LOGIC FLOW:
   6. EXAMPLE: `schedule_message(delay_seconds=15, context_note="Fetch SNR for !1234abcd and reply with it. Include current count.", recur_interval_seconds=15, max_duration_seconds=600)`
 - User asks to send a message to another node/channel NOW -> Call send_message tool.
 
+TASK LIFECYCLE & ACTION SCOPE RULES:
+- CURRENT REQUEST ONLY: You must ONLY call action tools (`schedule_message`, `watch_condition`, `watch_node_online`, `send_message`) if the user's CURRENT message is requesting an action. NEVER retroactively schedule, repeat, or re-execute actions requested in previous conversation turns or history.
+- AUTO-COMPLETION & REMOVAL: When a scheduled reminder or condition watcher completes (its duration ends, its runs finish, or its condition fires), the system AUTOMATICALLY deletes and removes it from memory and disk. Completed tasks never linger and do NOT require manual deletion.
+- CANCELLATION / DELETION: If a user asks to "cancel", "delete", "stop", or "remove" active alerts or reminders, call `cancel_proactive_task(task_id)` (or pass `task_id="all"` to delete all active tasks). Never refuse or debate terminology like "delete vs cancel" — `cancel_proactive_task` is the tool that cancels and deletes active tasks.
+
 DIRECT ACTION POLICY:
 - If a user asks for information (temperature, location, etc.) and you don't have it, DO NOT ask if you should look it up.
 - CALL the appropriate tool (`get_node_details` or `request_node_telemetry`) IMMEDIATELY.
 - Responses like "Would you like me to check?" are FORBIDDEN if a tool can provide the answer.
 - Only ask for clarification if the user's request is ambiguous.
 - User asks what alerts they have -> Call list_proactive_tasks.
-- User asks to cancel an alert -> Call cancel_proactive_task.
+- User asks to cancel or delete an alert -> Call cancel_proactive_task.
 - Multi-part request (e.g. "show my location AND nearest store") -> Complete ALL parts NOW using sequential tool calls in the SAME response. NEVER say "I will also find X" or "now I'll look up Y" — call the tool immediately and include the result before responding.
 
 RESPONSE STYLE:
