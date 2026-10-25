@@ -1880,15 +1880,18 @@ class AIResponder:
         return "📋 Your active tasks:\n" + "\n".join(lines)
 
     def _cancel_proactive_task_mcp(self, task_id, from_node=None):
-        """Tool handler: cancel a proactive task by ID, or 'all' to cancel everything."""
+        """Tool handler: cancel/delete a proactive task by ID, or 'all' to delete everything."""
         caller = from_node
         cancelled = []
-        cancel_all = (task_id.strip().lower() == 'all')
+        raw_id = str(task_id).strip()
+        clean_id = raw_id.strip('[]').lower()
+        cancel_all = clean_id in ('all', 'everything', '*', 'all tasks')
 
         with self._scheduled_tasks_lock:
             keep, remove = [], []
             for t in self.scheduled_tasks:
-                if t.get('from_node') == caller and (cancel_all or t.get('id') == task_id):
+                tid = str(t.get('id', '')).lower()
+                if (t.get('from_node') == caller or not caller) and (cancel_all or tid == clean_id):
                     remove.append(t.get('id'))
                 else:
                     keep.append(t)
@@ -1898,7 +1901,8 @@ class AIResponder:
         with self._condition_watchers_lock:
             keep, remove = [], []
             for w in self.condition_watchers:
-                if w.get('from_node') == caller and (cancel_all or w.get('id') == task_id):
+                wid = str(w.get('id', '')).lower()
+                if (w.get('from_node') == caller or not caller) and (cancel_all or wid == clean_id):
                     remove.append(w.get('id'))
                 else:
                     keep.append(w)
@@ -1908,7 +1912,8 @@ class AIResponder:
         with self._node_online_watchers_lock:
             keep, remove = [], []
             for w in self.node_online_watchers:
-                if w.get('from_node') == caller and (cancel_all or w.get('id') == task_id):
+                nid = str(w.get('id', '')).lower()
+                if (w.get('from_node') == caller or not caller) and (cancel_all or nid == clean_id):
                     remove.append(w.get('id'))
                 else:
                     keep.append(w)
@@ -1918,8 +1923,8 @@ class AIResponder:
         if cancelled:
             self._save_proactive_tasks()
             ids = ', '.join(f'[{c}]' for c in cancelled)
-            return f"✅ Cancelled: {ids}"
-        return f"❌ Task [{task_id}] not found or does not belong to you."
+            return f"✅ Cancelled and removed: {ids}"
+        return f"❌ Task [{task_id}] not found or already completed/removed."
 
     def _save_proactive_tasks(self):
         """Save all proactive tasks to a JSON file atomically."""
@@ -2673,14 +2678,28 @@ class AIResponder:
                             # Reschedule if recurring and not expired
                             interval = task.get('interval')
                             end_time = task.get('end_time')
-                            if interval:
+                            max_runs = task.get('max_runs')
+                            run_count = task.get('run_count', 0)
+
+                            is_expired = False
+                            if not interval:
+                                # One-shot task fires once and completes
+                                is_expired = True
+                            elif max_runs and run_count >= max_runs:
+                                # Reached maximum allowed runs
+                                is_expired = True
+                            elif end_time is not None and (now + interval) > (end_time + 2):
+                                # Reached end of allowed duration
+                                is_expired = True
+
+                            if not is_expired:
                                 next_fire = task['next_time'] + interval
                                 if next_fire <= now:
                                     next_fire = now + interval
-                                if end_time is None or next_fire <= (end_time + 2):
-                                    task['next_time'] = next_fire
-                                    to_keep.append(task)
-                            # else: one-shot or expired, discard
+                                task['next_time'] = next_fire
+                                to_keep.append(task)
+                            else:
+                                logger.info(f"🏁 Proactive task [{task.get('id')}] completed (runs: {run_count}) and was automatically removed.")
                         else:
                             to_keep.append(task)
                     self.scheduled_tasks = to_keep
