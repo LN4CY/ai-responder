@@ -356,11 +356,9 @@ def test_scheduled_task_auto_expiration_on_max_runs(responder):
     with patch.object(responder, '_fire_system_trigger'):
         # Simulate ticker logic
         to_keep = []
-        tasks_changed = False
         with responder._scheduled_tasks_lock:
             for t in responder.scheduled_tasks:
                 if now >= t['next_time']:
-                    tasks_changed = True
                     t['run_count'] = t.get('run_count', 0) + 1
                     
                     interval = t.get('interval')
