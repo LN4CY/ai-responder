@@ -663,10 +663,13 @@ class MeshtasticHandler:
             })
         return nodes
 
-    def get_node_list_summary(self):
+    def get_node_list_summary(self, max_nodes=8):
         """
         Get a concise summary of the node list for AI context, including distances.
         
+        Args:
+            max_nodes: Maximum number of nodes to include to prevent context bloat
+            
         Returns:
             str: Formatted string of known nodes with distance data
         """
@@ -685,20 +688,29 @@ class MeshtasticHandler:
             my_lon = my_pos.get('longitudeI') / 1e7
 
         lines = ["Neighbor nodes on mesh:"]
+        
+        # Calculate distances if available so we can prioritize closest nodes
         for n in nodes:
-            if not n['id']:
-                continue
+            if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
+                n['_distance'] = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
+            else:
+                n['_distance'] = 999999.0
+
+        sorted_nodes = sorted([n for n in nodes if n.get('id')], key=lambda x: x.get('_distance', 999999.0))
+        
+        for n in sorted_nodes[:max_nodes]:
             name = n['longName'] or n['shortName'] or "Unknown"
             short = f" ({n['shortName']})" if n['shortName'] and n['shortName'] != name else ""
             
-            # Calculate distance and get coordinates if positions are available
             location_str = ""
-            if my_lat is not None and my_lon is not None and n.get('lat') is not None and n.get('lon') is not None:
-                dist = self._calculate_haversine(my_lat, my_lon, n['lat'], n['lon'])
+            if n.get('_distance', 999999.0) < 999998.0:
                 alt_str = f", {n['altitude']}m alt" if n.get('altitude') is not None else ""
-                location_str = f" [Distance: {dist:.2f}km, Pos: {n['lat']:.6f}, {n['lon']:.6f}{alt_str}]"
+                location_str = f" [Distance: {n['_distance']:.2f}km, Pos: {n['lat']:.6f}, {n['lon']:.6f}{alt_str}]"
                 
             lines.append(f"- {n['id']}: {name}{short}{location_str}")
+            
+        if len(sorted_nodes) > max_nodes:
+            lines.append(f"... and {len(sorted_nodes) - max_nodes} more nodes.")
             
         return "\n".join(lines)
 

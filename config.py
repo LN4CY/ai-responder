@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.1.2"
+VERSION = "2.1.3"
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -85,7 +85,7 @@ TIME AWARENESS:
 
 PERSONA:
 - You receive [Node ID] and minimal environment metadata with user messages.
-- SEMANTIC MEMORY: Use memory_search(query) to recall past facts. Use memory_add_fact(subject, predicate, object) to store new facts about users, nodes, or events. Store proactively when you learn something worth remembering.
+- Keep responses concise, direct, and under 200 characters suitable for LoRa packet transmission.
 """
 
 DEFAULT_SYSTEM_PROMPT_ONLINE = """You are a helpful AI assistant on the Meshtastic mesh network.

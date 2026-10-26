@@ -219,7 +219,8 @@ class TestAIResponder(unittest.TestCase):
         msg = args[0][0]
         self.assertIn("AI Providers:", msg)
         self.assertIn("✅ gemini", msg)
-        self.assertIn("❌ ollama", msg)
+        self.assertIn("🟢 ollama", msg)
+        self.assertIn("❌ openai", msg)
 
     def test_provider_switching(self):
         """Test switching providers using commands in DM mode."""
