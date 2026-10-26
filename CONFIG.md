@@ -43,8 +43,8 @@ The application is configured primarily via environment variables passed to the 
 | `OPENAI_MODEL` | `gpt-4o-mini` | The specific OpenAI fast model to use for simple queries. |
 | `OPENAI_REASONING_MODEL` | `o4-mini` | The specific OpenAI reasoning model to use for complex queries. |
 | `ANTHROPIC_API_KEY` | - | API Key for Anthropic (required if provider is `anthropic`). |
-| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | The specific Anthropic fast model to use for simple queries. |
-| `ANTHROPIC_THINKING_MODEL` | `claude-sonnet-4-6` | The specific Anthropic thinking model to use for complex queries. |
+| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | The specific Anthropic fast model to use for simple queries. |
+| `ANTHROPIC_THINKING_MODEL` | `claude-sonnet-5-5` | The specific Anthropic thinking model to use for complex queries. |
 
 ### AI Persona / System Prompt
 
