@@ -44,8 +44,18 @@ def fetch_openai_models(api_key):
     return ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
 
 def fetch_anthropic_models(api_key):
-    # Anthropic doesn't have a simple GET endpoint for models without complex headers/versions
-    return ["claude-3-5-sonnet-latest", "claude-3-haiku-20240307", "claude-3-opus-20240229"]
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01"
+    }
+    data = fetch_http("https://api.anthropic.com/v1/models", headers=headers)
+    if data:
+        try:
+            models = json.loads(data).get('data', [])
+            return sorted([m['id'] for m in models])
+        except Exception:
+            pass
+    return ["claude-haiku-5-5", "claude-sonnet-5-5"]
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
