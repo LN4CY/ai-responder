@@ -2227,6 +2227,8 @@ class AIResponder:
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""
         my_info = self.meshtastic.get_node_metadata(self.meshtastic.get_node_info().get('user', {}).get('id'))
+        # Cap neighbor summary to at most 8 closest nodes to avoid bloating prompt for local models
+        neighbor_summary = self.meshtastic.get_node_list_summary(max_nodes=8)
         user_info = self.meshtastic.get_node_metadata(from_node)
         
         metadata_block = "\n\n[RADIO CONTEXT]\n"
@@ -2234,15 +2236,8 @@ class AIResponder:
             metadata_block += f"Self: {my_info}\n"
         if user_info:
             metadata_block += f"User ({from_node}): {user_info}\n"
-            
-        # Only inject neighbor summary if query specifically asks about mesh or neighbor nodes
-        # to avoid dumping the whole node database and stalling local CPU inference
-        neighbor_keywords = ['neighbor', 'neighbors', 'who is online', 'nodes', 'mesh', 'nearby', 'hear', 'active']
-        if any(k in query.lower() for k in neighbor_keywords):
-            neighbor_summary = self.meshtastic.get_node_list_summary(max_nodes=8)
-            if neighbor_summary:
-                metadata_block += f"{neighbor_summary}\n"
-                
+        if neighbor_summary:
+            metadata_block += f"{neighbor_summary}\n"
         metadata_block += "[/RADIO CONTEXT]"
         
         return f"{query}{metadata_block}"
