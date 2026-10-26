@@ -1202,15 +1202,40 @@ class AIResponder:
             logger.warning(f"Re-hydration from graph failed for {node_id}/{topic_name}: {e}")
             return None
     
+    def _is_provider_configured(self, provider_name):
+        """Check if an AI provider has valid configuration / API keys."""
+        p = provider_name.lower()
+        if p in ['ollama', 'local']:
+            return True
+        elif p == 'gemini':
+            key = self.config.get('gemini_api_key') or getattr(config, 'GEMINI_API_KEY', '')
+            return bool(key and str(key).strip())
+        elif p == 'anthropic':
+            key = self.config.get('anthropic_api_key') or getattr(config, 'ANTHROPIC_API_KEY', '')
+            return bool(key and str(key).strip())
+        elif p == 'openai':
+            key = self.config.get('openai_api_key') or getattr(config, 'OPENAI_API_KEY', '')
+            return bool(key and str(key).strip())
+        return False
+
     def _handle_provider_command(self, args, from_node, to_node, channel):
         """Handle AI provider switching."""
         if not args or args.strip().lower() == 'ls':
-            # List providers
+            # List providers with active (✅), ready (🟢), or unconfigured (❌) status
             current = self.config.get('current_provider', 'ollama')
             providers_status = []
-            for p in ['ollama', 'gemini', 'openai', 'anthropic']:
-                marker = "✅" if p == current else "❌"
-                providers_status.append(f"{marker} {p}")
+            for p in ['ollama', 'gemini', 'anthropic', 'openai']:
+                is_configured = self._is_provider_configured(p)
+                if p == current:
+                    marker = "✅"
+                    suffix = " (active)"
+                elif is_configured:
+                    marker = "🟢"
+                    suffix = " (ready)"
+                else:
+                    marker = "❌"
+                    suffix = " (no key)"
+                providers_status.append(f"{marker} {p}{suffix}")
             
             message = "🤖 AI Providers:\n" + "\n".join(providers_status)
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
@@ -1239,7 +1264,10 @@ class AIResponder:
             'anthropic': 'ONLINE'
         }
         label = provider_labels.get(provider, provider.upper())
-        self.send_response(f"✅ Switched to {label} ({provider})", from_node, to_node, channel, is_admin_cmd=True)
+        if not self._is_provider_configured(provider):
+            self.send_response(f"⚠️ Switched to {label} ({provider}), but it is unconfigured (missing API key).", from_node, to_node, channel, is_admin_cmd=True)
+        else:
+            self.send_response(f"✅ Switched to {label} ({provider})", from_node, to_node, channel, is_admin_cmd=True)
     
     def _handle_channel_command(self, args, from_node, to_node, channel):
         """Handle channel management."""
