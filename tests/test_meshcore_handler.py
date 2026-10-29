@@ -252,9 +252,11 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
             self.assertFalse(app.is_admin('OtherUser'))
 
     def test_protocol_isolated_responders(self):
+        import tempfile
         from responders import MeshtasticAIResponder, MeshCoreAIResponder
         from ai_responder import create_responder
-        with patch('ai_responder.Config') as MockConfig, \
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch('ai_responder.Config') as MockConfig, \
              patch('ai_responder.MeshtasticHandler'), \
              patch('ai_responder.MeshCoreHandler'), \
              patch('ai_responder.ConversationManager'), \
@@ -269,8 +271,8 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
             MockConfig.return_value.get.side_effect = lambda k, default=None: cfg.get(k, default)
             MockConfig.return_value.data = cfg
 
-            msh_app = create_responder('meshtastic')
-            mc_app = create_responder('meshcore')
+            msh_app = create_responder('meshtastic', history_dir=tmpdir)
+            mc_app = create_responder('meshcore', history_dir=tmpdir)
 
             self.assertIsInstance(msh_app, MeshtasticAIResponder)
             self.assertIsInstance(mc_app, MeshCoreAIResponder)

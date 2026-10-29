@@ -25,7 +25,7 @@ class CommandsMixin:
         """
         # Track node for telemetry logging of active users
         try:
-            handler = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+            handler = getattr(self, 'meshtastic', None)
             if handler:
                 handler.track_node(from_node)
         except Exception:

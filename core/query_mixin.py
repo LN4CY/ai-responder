@@ -145,7 +145,7 @@ class QueryMixin:
 
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""
-        handler = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+        handler = getattr(self, 'meshtastic', None)
         if not handler:
             return query
         my_id = (handler.get_node_info() or {}).get('user', {}).get('id')
@@ -226,7 +226,7 @@ class QueryMixin:
                 is_keyword_query = any(k in query.lower() for k in keywords)
                 
                 mentions_bot = False
-                active_handler = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+                active_handler = getattr(self, 'meshtastic', None)
                 my_node_info = active_handler.get_node_info() if active_handler else {}
                 if my_node_info:
                     bot_names = [

@@ -246,7 +246,7 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
 
         self._log_provider_info()
 
-        radio = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+        radio = getattr(self, 'meshtastic', None)
         if radio and radio.connect(on_receive_callback=self.on_receive):
             logger.info(f"✅ Initial connection to {net_name} successful.")
             if hasattr(self, '_bg_executor') and self._bg_executor:
@@ -265,7 +265,7 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
                 health_ok = True
                 reasons = []
 
-                radio = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+                radio = getattr(self, 'meshtastic', None)
 
                 # Check radio activity
                 if radio and hasattr(radio, 'last_activity') and radio.last_activity > 0:

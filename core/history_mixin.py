@@ -151,7 +151,7 @@ class HistoryMixin:
             # Try to get bot's own name for a descriptive label
             name = "Bot"
             try:
-                handler = getattr(self, 'radio', None) or getattr(self, 'meshtastic', None)
+                handler = getattr(self, 'meshtastic', None)
                 if handler:
                     my_info = handler.get_node_info()
                     if my_info:
