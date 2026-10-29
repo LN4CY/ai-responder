@@ -1732,9 +1732,9 @@ class AIResponder:
             else:
                 available_channels = self.meshtastic.get_channels() if self.meshtastic else []
                 if not available_channels:
-                    message = f"📡 {net_label} Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve channels from radio)"
+                    message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve channels from radio)"
                 else:
-                    lines = [f"📡 {net_label} Channels:"]
+                    lines = ["📡 Channels:"]
                     for ch in available_channels:
                         idx = ch['index']
                         name = ch.get('name') or "Unnamed"
@@ -1760,6 +1760,8 @@ class AIResponder:
             if channel_id not in allowed:
                 allowed.append(channel_id)
                 self.config[config_key] = allowed
+                if network != 'meshcore':
+                    self.config['allowed_channels'] = allowed
                 self.config.save()
                 self.send_response(f"✅ Added {net_label} channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
             else:
@@ -1769,6 +1771,8 @@ class AIResponder:
             if channel_id in allowed:
                 allowed.remove(channel_id)
                 self.config[config_key] = allowed
+                if network != 'meshcore':
+                    self.config['allowed_channels'] = allowed
                 self.config.save()
                 self.send_response(f"✅ Removed {net_label} channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
             else:
