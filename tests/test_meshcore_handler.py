@@ -213,5 +213,48 @@ class TestMeshCoreMCP(unittest.TestCase):
         self.mock_handler.send_message.assert_called_with(text="Hello", destination_id="Alice", channel_index=0)
 
 
+class TestMeshCoreAdminResolution(unittest.TestCase):
+    """Test admin node resolution for MeshCore names and public key prefixes."""
+
+    def test_meshcore_admin_checks(self):
+        from ai_responder import AIResponder
+        with patch('ai_responder.Config') as MockConfig, \
+             patch('ai_responder.UnifiedMCPClient'):
+            cfg = {
+                'admin_nodes': ['!9e044360', 'LN4CY_TDeck', '!12A1B2DD1DE3'],
+                'allowed_channels': [0]
+            }
+            MockConfig.return_value.get.side_effect = lambda k, default=None: cfg.get(k, default)
+            app = AIResponder.__new__(AIResponder)
+            app.config = MockConfig.return_value
+            app.meshcore = MagicMock()
+            app.meshcore.meshcore = MagicMock()
+
+            # Mock contact lookup
+            mock_contact = {
+                'adv_name': 'LN4CY_TDeck',
+                'public_key': '12a1b2dd1de3456789abcdef1234567890abcdef1234567890abcdef12345678'
+            }
+            app.meshcore.meshcore.get_contact_by_name.side_effect = lambda name: mock_contact if name.lower() == 'ln4cy_tdeck' else None
+            app.meshcore.meshcore.get_contact_by_key_prefix.side_effect = lambda p: mock_contact if p.lower().startswith('12a1b2dd1de3') else None
+
+            # 1. Meshtastic admin ID match
+            self.assertTrue(app.is_admin('!9e044360'))
+            self.assertTrue(app.is_admin('9e044360'))
+
+            # 2. MeshCore exact name match
+            self.assertTrue(app.is_admin('LN4CY_TDeck'))
+            self.assertTrue(app.is_admin('ln4cy_tdeck'))
+
+            # 3. MeshCore prefix match (case-insensitive, with/without '!')
+            self.assertTrue(app.is_admin('!12A1B2DD1DE3'))
+            self.assertTrue(app.is_admin('!12a1b2dd1de3'))
+            self.assertTrue(app.is_admin('12a1b2dd1de3'))
+
+            # 4. Unknown node returns False
+            self.assertFalse(app.is_admin('!unknown999'))
+            self.assertFalse(app.is_admin('OtherUser'))
+
+
 if __name__ == '__main__':
     unittest.main()

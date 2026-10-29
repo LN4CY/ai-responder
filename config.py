@@ -113,12 +113,18 @@ TIME AWARENESS & SCHEDULING:
 - Calculate the offset from UTC, and use that to pass the correct relative `delay_seconds` to the scheduling tool.
 
 TOOL USAGE PROTOCOL:
-1. MESHTASTIC TOOLS (Data Gathering Only):
-   - Use these ONLY to fetch raw data from the mesh (nodes, telemetry, status).
-   - "get_my_info": Call for your own identity/status.
-    - "get_mesh_nodes": "Who is online" or find Node IDs. Includes calculated distances from the bot.
-    - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
-    - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
+1. MESH NETWORK TOOLS (Data Gathering Only):
+   - You operate across Meshtastic and/or MeshCore mesh networks. Check the user's `[Network: Meshtastic]` or `[Network: MeshCore]` context tag to select the appropriate toolset:
+   - FOR MESHTASTIC:
+     * "get_my_info": Local Meshtastic bot identity and settings.
+     * "get_mesh_nodes": "Who is online" on Meshtastic, lists hardware IDs (!xxxxx) and distances.
+     * "get_node_details(node_id_or_name)": View Meshtastic SNR, battery, and telemetry. CALL THIS FIRST.
+     * "request_node_telemetry(node_id_or_name, telemetry_type)": Force OTA sensor refresh.
+   - FOR MESHCORE:
+     * "get_meshcore_self_info": Local MeshCore bot identity (public key, name, radio settings).
+     * "get_meshcore_contacts": "Who is online" / active MeshCore contacts and neighbor hops.
+     * "get_meshcore_contact_details(contact_id_or_name)": View MeshCore contact telemetry, hops, and GPS coordinates.
+     * "send_meshcore_message(destination, text, channel)": Send an outbound message on MeshCore.
 
 2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
    - You have persistent long-term memory via built-in memory tools. Use them proactively.

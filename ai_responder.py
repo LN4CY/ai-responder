@@ -371,27 +371,32 @@ class AIResponder:
             self.save_history(user_id)
             logger.info(f"Cleared history for {user_id}")
     
-    def _format_dual_metadata(self, local_metadata, remote_metadata):
+    def _format_dual_metadata(self, local_metadata, remote_metadata, network=None):
         """
         Format dual metadata with clear labels for AI context.
         
         Args:
             local_metadata: Bot's own status metadata
             remote_metadata: User's environmental metadata
+            network: Optional originating network ('meshtastic' or 'meshcore')
             
         Returns:
             str: Combined metadata string or None
         """
         parts = []
+        if network:
+            parts.append(f"[Network: {network.capitalize()}]")
         if remote_metadata:
             parts.append(f"[User: {remote_metadata}]")
         if local_metadata:
             # Try to get bot's own name for a descriptive label
             name = "Bot"
             try:
-                my_info = self.meshtastic.get_node_info()
-                if my_info:
-                    name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
+                handler = self.meshcore if network == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore else self.meshtastic
+                if handler:
+                    my_info = handler.get_node_info()
+                    if my_info:
+                        name = my_info.get('user', {}).get('longName') or my_info.get('user', {}).get('shortName') or "Bot"
             except Exception:
                 pass
             parts.append(f"[{name}: {local_metadata}]")
@@ -513,13 +518,49 @@ class AIResponder:
         """
         Check if a node ID is an admin.
         
+        Supports Meshtastic hardware IDs (!xxxxxxxx), MeshCore contact names,
+        and MeshCore public key prefixes (with or without leading '!', case-insensitive).
+        
         Args:
-            node_id: Node ID to check
+            node_id: Node ID or contact name to check
             
         Returns:
             bool: True if node is admin
         """
-        return node_id in self.config.get('admin_nodes', [])
+        admin_nodes = self.config.get('admin_nodes', [])
+        if not admin_nodes:
+            return False
+            
+        node_str = str(node_id).strip()
+        node_clean = node_str.lstrip('!')
+        
+        # 1. Direct or normalized match against admin list
+        for admin in admin_nodes:
+            admin_str = str(admin).strip()
+            if admin_str == node_str:
+                return True
+            if admin_str.lower() == node_str.lower():
+                return True
+            if admin_str.lstrip('!').lower() == node_clean.lower():
+                return True
+                
+        # 2. Check against MeshCore contact book if active
+        if hasattr(self, 'meshcore') and self.meshcore and hasattr(self.meshcore, 'meshcore') and self.meshcore.meshcore:
+            try:
+                contact = self.meshcore.meshcore.get_contact_by_name(node_str) or self.meshcore.meshcore.get_contact_by_key_prefix(node_clean)
+                if contact:
+                    c_name = str(contact.get('adv_name') or contact.get('name') or '').strip().lower()
+                    c_prefix = str(contact.get('public_key', ''))[:12].strip().lower()
+                    for admin in admin_nodes:
+                        admin_clean = str(admin).strip().lstrip('!').lower()
+                        if c_name and admin_clean == c_name:
+                            return True
+                        if c_prefix and admin_clean == c_prefix:
+                            return True
+            except Exception:
+                pass
+                
+        return False
     
     def is_channel_allowed(self, channel_index):
         """
@@ -2715,7 +2756,8 @@ class AIResponder:
                 
                 # Check for mentions of bot or neighbors
                 mentions_bot = False
-                my_node_info = self.meshtastic.get_node_info()
+                active_handler = self.meshcore if network == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore else self.meshtastic
+                my_node_info = active_handler.get_node_info() if active_handler else {}
                 if my_node_info:
                     bot_names = [
                         str(my_node_info.get('user', {}).get('longName') or '').lower(),
@@ -2730,11 +2772,17 @@ class AIResponder:
                 combined_metadata = None
                 if must_refresh:
                     # Fetch dual metadata for context
-                    my_node_info = self.meshtastic.get_node_info() or {}
-                    my_id = my_node_info.get('user', {}).get('id')
-                    local_metadata = self.meshtastic.get_node_metadata(my_id)
-                    remote_metadata = self.meshtastic.get_node_metadata(from_node)
-                    combined_metadata = self._format_dual_metadata(local_metadata, remote_metadata)
+                    if network == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore:
+                        my_info = self.meshcore.get_node_info() or {}
+                        my_id = my_info.get('user', {}).get('id')
+                        local_metadata = self.meshcore.get_node_metadata(my_id)
+                        remote_metadata = self.meshcore.get_node_metadata(from_node)
+                    else:
+                        my_info = self.meshtastic.get_node_info() or {} if self.meshtastic else {}
+                        my_id = my_info.get('user', {}).get('id')
+                        local_metadata = self.meshtastic.get_node_metadata(my_id) if self.meshtastic else None
+                        remote_metadata = self.meshtastic.get_node_metadata(from_node) if self.meshtastic else None
+                    combined_metadata = self._format_dual_metadata(local_metadata, remote_metadata, network=network)
                     
                     # Clear refresh flag
                     if from_node in self._refresh_metadata_nodes:
