@@ -39,8 +39,10 @@ from providers import get_provider
 from conversation.manager import ConversationManager
 from conversation.session import SessionManager
 from meshtastic_handler import MeshtasticHandler
+from meshcore_handler import MeshCoreHandler
 from mcp_client import UnifiedMCPClient
 from mcp_server_meshtastic import init_meshtastic_mcp
+from mcp_server_meshcore import init_meshcore_mcp
 
 # Logging setup
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -78,17 +80,41 @@ class AIResponder:
         if history_dir is None:
             history_dir = config.HISTORY_DIR
         self.history_dir = history_dir
-        self.meshtastic = MeshtasticHandler(
-            interface_type=INTERFACE_TYPE,
-            serial_port=SERIAL_PORT,
-            tcp_host=MESHTASTIC_HOST,
-            tcp_port=MESHTASTIC_PORT
-        )
+
+        # Mesh Network Type & Handlers
+        self.mesh_type = getattr(config, 'MESH_TYPE', 'meshtastic').lower()
+        self.meshtastic = None
+        self.meshcore = None
+
+        if self.mesh_type in ('meshtastic', 'dual'):
+            self.meshtastic = MeshtasticHandler(
+                interface_type=INTERFACE_TYPE,
+                serial_port=SERIAL_PORT,
+                tcp_host=MESHTASTIC_HOST,
+                tcp_port=MESHTASTIC_PORT
+            )
+
+        if self.mesh_type in ('meshcore', 'dual'):
+            self.meshcore = MeshCoreHandler(
+                interface_type=getattr(config, 'MESHCORE_INTERFACE', 'tcp'),
+                serial_port=getattr(config, 'MESHCORE_SERIAL_PORT', '/dev/ttyUSB1'),
+                tcp_host=getattr(config, 'MESHCORE_HOST', '127.0.0.1'),
+                tcp_port=getattr(config, 'MESHCORE_PORT', 5000),
+                baudrate=getattr(config, 'MESHCORE_BAUDRATE', 115200)
+            )
+
+        # For backward compatibility with any direct self.meshtastic references
+        if self.meshtastic is None and self.meshcore is not None:
+            self.meshtastic = self.meshcore
+
         self.conversation_manager = ConversationManager()
         self.session_manager = SessionManager(self.conversation_manager)
         
         # Initialize MCP Architecture
-        init_meshtastic_mcp(self)
+        if self.mesh_type in ('meshtastic', 'dual'):
+            init_meshtastic_mcp(self)
+        if self.mesh_type in ('meshcore', 'dual'):
+            init_meshcore_mcp(self)
         self.mcp_client = UnifiedMCPClient(self.config)
         
         # Track nodes that need a metadata refresh in their next message
@@ -675,6 +701,47 @@ class AIResponder:
             "predicate": "participated_in",
             "object": hub_name
         })
+
+        # Base station / host node is also a participant in the conversation
+        my_node_id = None
+        if hasattr(self.meshtastic, 'get_node_info'):
+            my_info = self.meshtastic.get_node_info() or {}
+            my_node_id = my_info.get('user', {}).get('id')
+
+        if my_node_id and str(my_node_id).startswith('!') and str(my_node_id).lower() != str(node_id).lower():
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": my_node_id,
+                "predicate": "participated_in",
+                "object": hub_name
+            })
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": node_id,
+                "predicate": "interacts_with",
+                "object": my_node_id
+            })
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": my_node_id,
+                "predicate": "interacts_with",
+                "object": node_id
+            })
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": my_node_id,
+                "predicate": "is_a",
+                "object": "MeshNode"
+            })
+            u = my_info.get('user', {})
+            if u.get('longName'):
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": my_node_id,
+                    "predicate": "has_name",
+                    "object": u.get('longName')
+                })
+            if u.get('shortName'):
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": my_node_id,
+                    "predicate": "has_short_name",
+                    "object": u.get('shortName')
+                })
         
         # 3. Relate Topic if in session
         if session_name:
@@ -696,6 +763,72 @@ class AIResponder:
             "predicate": "recorded_turn",
             "object": observation
         })
+
+        # Ensure node identity and type are indexed in Knowledge Graph
+        if hasattr(self.meshtastic, '_get_node_by_id'):
+            node_info = self.meshtastic._get_node_by_id(node_id)
+            if node_info:
+                user = node_info.get('user', {})
+                if user.get('longName'):
+                    self.mcp_client.call_tool("memory_add_fact", {
+                        "subject": node_id,
+                        "predicate": "has_name",
+                        "object": user.get('longName')
+                    })
+                if user.get('shortName'):
+                    self.mcp_client.call_tool("memory_add_fact", {
+                        "subject": node_id,
+                        "predicate": "has_short_name",
+                        "object": user.get('shortName')
+                    })
+        self.mcp_client.call_tool("memory_add_fact", {
+            "subject": node_id,
+            "predicate": "is_a",
+            "object": "MeshNode"
+        })
+
+        # Link task execution if this is a system proactive turn
+        if is_system:
+            t_match = re.search(r"\[?(sched-\d+|cond-\d+|node-\d+)\]?", prompt, re.IGNORECASE)
+            if t_match:
+                t_id = t_match.group(1).lower()
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": t_id,
+                    "predicate": "executed_in",
+                    "object": hub_name
+                })
+
+        # Inter-node relationships mentioned in turn
+        combined_text = f"{prompt} {response}"
+        for token in set(re.findall(r"(![a-zA-Z0-9]{8}|[a-zA-Z0-9_\-]+)", combined_text)):
+            ref_id = None
+            if token.startswith('!') and len(token) == 9 and token.lower() != node_id.lower():
+                ref_id = token.lower()
+            elif hasattr(self.meshtastic, 'find_node_by_name'):
+                found = self.meshtastic.find_node_by_name(token)
+                if found and found.lower() != node_id.lower():
+                    ref_id = found.lower()
+
+            if ref_id:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": hub_name,
+                    "predicate": "references_node",
+                    "object": ref_id
+                })
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "interacts_with",
+                    "object": ref_id
+                })
+                if hasattr(self.meshtastic, '_get_node_by_id'):
+                    ref_info = self.meshtastic._get_node_by_id(ref_id)
+                    if ref_info:
+                        ru = ref_info.get('user', {})
+                        if ru.get('shortName'):
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": ref_id, "predicate": "has_short_name", "object": ru.get('shortName')})
+                        if ru.get('longName'):
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": ref_id, "predicate": "has_name", "object": ru.get('longName')})
+                        self.mcp_client.call_tool("memory_add_fact", {"subject": ref_id, "predicate": "is_a", "object": "MeshNode"})
         
         logger.info(f"🧠 Semantically indexed conversation turn for {node_id} -> {hub_name}")
 
@@ -753,6 +886,205 @@ class AIResponder:
         })
         logger.info(f"🧠 Semantically indexed telemetry for {node_id}")
 
+    def _index_task_registration(self, task_id, task_type, from_node, context_note, targets=None):
+        """Record a newly created proactive task as explicit relational triples in the Knowledge Graph."""
+        if not self.mcp_client or not self.mcp_client.has_server('memory'):
+            return
+        try:
+            tid_clean = str(task_id).strip('[]').lower()
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": tid_clean,
+                "predicate": "is_a",
+                "object": task_type
+            })
+            if from_node:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": tid_clean,
+                    "predicate": "scheduled_by",
+                    "object": from_node
+                })
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": from_node,
+                    "predicate": "scheduled_task",
+                    "object": tid_clean
+                })
+            if context_note:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": tid_clean,
+                    "predicate": "has_description",
+                    "object": str(context_note)[:250]
+                })
+
+            # Target node resolution
+            target_node_id = None
+            raw_tgt = targets[0] if isinstance(targets, list) and targets else targets
+            if raw_tgt and raw_tgt != 'requester':
+                if str(raw_tgt).startswith('!'):
+                    target_node_id = str(raw_tgt).lower()
+                elif hasattr(self.meshtastic, 'find_node_by_name'):
+                    target_node_id = self.meshtastic.find_node_by_name(raw_tgt)
+
+            # Scan context note for destination node
+            if not target_node_id and context_note:
+                for token in re.findall(r"(![a-zA-Z0-9]{8}|[a-zA-Z0-9_\-]+)", str(context_note)):
+                    if token.startswith('!') and len(token) == 9 and token.lower() != str(from_node).lower():
+                        target_node_id = token.lower()
+                        break
+                    elif hasattr(self.meshtastic, 'find_node_by_name'):
+                        found = self.meshtastic.find_node_by_name(token)
+                        if found and str(found).lower() != str(from_node).lower():
+                            target_node_id = str(found).lower()
+                            break
+                        found = self.meshtastic.find_node_by_name(token)
+                        if found and found.lower() != str(from_node).lower():
+                            target_node_id = found.lower()
+                            break
+
+            if target_node_id:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": tid_clean,
+                    "predicate": "targets_node",
+                    "object": target_node_id
+                })
+                if from_node:
+                    self.mcp_client.call_tool("memory_add_fact", {
+                        "subject": from_node,
+                        "predicate": "interacts_with",
+                        "object": target_node_id
+                    })
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to index task registration {task_id}: {e}")
+
+    def _index_task_cancellation(self, task_id):
+        """Mark task as cancelled in the Knowledge Graph."""
+        if not self.mcp_client or not self.mcp_client.has_server('memory'):
+            return
+        try:
+            tid_clean = str(task_id).strip('[]').lower()
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": tid_clean,
+                "predicate": "has_status",
+                "object": "cancelled"
+            })
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to index task cancellation {task_id}: {e}")
+
+    def _bg_sync_graph_triples(self):
+        """Background sync: index all known mesh nodes and backfill relational triples in the Knowledge Graph."""
+        if not self.mcp_client or not self.mcp_client.has_server('memory'):
+            return
+
+        if getattr(self, '_syncing_graph', False):
+            return
+        self._syncing_graph = True
+
+        try:
+            logger.info("🔄 Running semantic graph sync...")
+            # 1. Sync all mesh nodes with names and callsigns
+            if hasattr(self.meshtastic, 'get_all_nodes'):
+                all_nodes = self.meshtastic.get_all_nodes() or []
+                for n in all_nodes:
+                    nid = n.get('id')
+                    if not nid or not str(nid).startswith('!'):
+                        continue
+                    self.mcp_client.call_tool("memory_add_fact", {
+                        "subject": nid,
+                        "predicate": "is_a",
+                        "object": "MeshNode"
+                    })
+                    if n.get('longName'):
+                        self.mcp_client.call_tool("memory_add_fact", {
+                            "subject": nid,
+                            "predicate": "has_name",
+                            "object": str(n.get('longName'))
+                        })
+                    if n.get('shortName'):
+                        self.mcp_client.call_tool("memory_add_fact", {
+                            "subject": nid,
+                            "predicate": "has_short_name",
+                            "object": str(n.get('shortName'))
+                        })
+
+            # 2. Sync active proactive tasks
+            with self._scheduled_tasks_lock:
+                for t in self.scheduled_tasks:
+                    self._index_task_registration(t.get('id'), 'ScheduledTask', t.get('from_node'), t.get('context_note'), t.get('targets'))
+            with self._condition_watchers_lock:
+                for w in self.condition_watchers:
+                    note = f"Alert when {w.get('metric')} {w.get('operator')} {w.get('threshold')}"
+                    self._index_task_registration(w.get('id'), 'ConditionWatcher', w.get('from_node'), note, w.get('node_id'))
+            with self._node_online_watchers_lock:
+                for w in self.node_online_watchers:
+                    note = f"Alert when {w.get('node_id')} comes online"
+                    self._index_task_registration(w.get('id'), 'NodeOnlineWatcher', w.get('from_node'), note, w.get('node_id'))
+
+            # 3. Backfill missing relational triples from recorded turns
+            db_path = getattr(config, "MEMORY_DB_PATH", "/app/data/memory.db")
+            if os.path.exists(db_path):
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=10.0)
+                cur = conn.cursor()
+
+                alias_to_node = {}
+                cur.execute("SELECT subject, object FROM kg_facts WHERE predicate IN ('has_name', 'has_short_name')")
+                for s, o in cur.fetchall():
+                    if str(s).startswith("!"):
+                        alias_to_node[str(o).lower()] = str(s)
+                        alias_to_node[str(s).lower()] = str(s)
+
+                cur.execute("SELECT subject, object, valid_from FROM kg_facts WHERE predicate = 'recorded_turn'")
+                turns = cur.fetchall()
+                conn.close()
+
+                for s, o, v in turns:
+                    text = str(o)
+                    task_ids = set(re.findall(r"\[?(sched-\d+|cond-\d+|node-\d+)\]?", text, re.IGNORECASE))
+                    requester = s.replace("Hub_Chat_", "").replace("Hub_System_", "") if s.startswith("Hub_") else None
+
+                    # Base station participation and interaction
+                    my_node_id = None
+                    if hasattr(self.meshtastic, 'get_node_info'):
+                        my_info = self.meshtastic.get_node_info() or {}
+                        my_node_id = my_info.get('user', {}).get('id')
+                    if my_node_id and str(my_node_id).startswith('!') and (s.startswith("Hub_Chat_") or s.startswith("Hub_System_")):
+                        self.mcp_client.call_tool("memory_add_fact", {"subject": my_node_id, "predicate": "participated_in", "object": s})
+                        if requester and requester.startswith("!") and requester != my_node_id:
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": requester, "predicate": "interacts_with", "object": my_node_id})
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": my_node_id, "predicate": "interacts_with", "object": requester})
+
+                    # Extract target nodes
+                    targets = set()
+                    for token in re.findall(r"(![a-zA-Z0-9]{8}|[a-zA-Z0-9_\-]+)", text):
+                        t_low = token.lower()
+                        if t_low in alias_to_node:
+                            t_nid = alias_to_node[t_low]
+                            if t_nid != requester:
+                                targets.add(t_nid)
+
+                    for tid in task_ids:
+                        tid_lower = tid.lower()
+                        self.mcp_client.call_tool("memory_add_fact", {"subject": tid_lower, "predicate": "is_a", "object": "ScheduledTask"})
+                        if requester and requester.startswith("!"):
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": tid_lower, "predicate": "scheduled_by", "object": requester})
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": requester, "predicate": "scheduled_task", "object": tid_lower})
+                        for tgt in targets:
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": tid_lower, "predicate": "targets_node", "object": tgt})
+                            if requester and requester.startswith("!"):
+                                self.mcp_client.call_tool("memory_add_fact", {"subject": requester, "predicate": "interacts_with", "object": tgt})
+                        if s.startswith("Hub_System_"):
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": tid_lower, "predicate": "executed_in", "object": s})
+
+                    for tgt in targets:
+                        self.mcp_client.call_tool("memory_add_fact", {"subject": s, "predicate": "references_node", "object": tgt})
+                        if requester and requester.startswith("!") and not task_ids:
+                            self.mcp_client.call_tool("memory_add_fact", {"subject": requester, "predicate": "interacts_with", "object": tgt})
+
+            logger.info("✅ Semantic graph sync completed successfully.")
+        except Exception as e:
+            logger.warning(f"⚠️ Semantic graph sync encountered error: {e}")
+        finally:
+            self._syncing_graph = False
+
     # ==================== Message Sending ====================
     
     def send_response(self, text, from_node, to_node, channel, is_admin_cmd=False, use_session_indicator=False):
@@ -791,25 +1123,46 @@ class AIResponder:
         if use_session_indicator:
             session_indicator = self.session_manager.get_session_indicator(from_node)
         
-        # Send via Meshtastic handler
-        self.meshtastic.send_message(text, destination, channel, session_indicator)
+        # Determine destination network (Meshtastic vs MeshCore)
+        caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+        net = caller_ctx.get('network')
+        if not net:
+            if hasattr(self, 'mesh_type') and self.mesh_type == 'meshcore':
+                net = 'meshcore'
+            else:
+                net = 'meshtastic'
+
+        if net == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore:
+            self.meshcore.send_message(text, destination, channel, session_indicator)
+        elif self.meshtastic:
+            self.meshtastic.send_message(text, destination, channel, session_indicator)
     
     def _is_dm(self, to_node):
         """Determine if a message destination represents a Direct Message to this bot."""
-        if not to_node or str(to_node).lower() in ('^all', '!ffffffff', 'unknown', '4294967295'):
+        if not to_node or str(to_node).lower() in ('^all', '!ffffffff', 'unknown', '4294967295', 'broadcast'):
             return False
         try:
-            my_node_info = self.meshtastic.get_node_info()
-            my_id = my_node_info.get('user', {}).get('id', '') if isinstance(my_node_info, dict) else ''
-            if isinstance(my_id, str) and my_id.startswith('!'):
-                return str(to_node).lower() == my_id.lower()
+            # Check Meshtastic identity
+            if self.meshtastic and hasattr(self.meshtastic, 'get_node_info'):
+                my_node_info = self.meshtastic.get_node_info()
+                my_id = my_node_info.get('user', {}).get('id', '') if isinstance(my_node_info, dict) else ''
+                if isinstance(my_id, str) and my_id.startswith('!') and str(to_node).lower() == my_id.lower():
+                    return True
+
+            # Check MeshCore identity
+            if hasattr(self, 'meshcore') and self.meshcore and hasattr(self.meshcore, 'get_node_info'):
+                mc_info = self.meshcore.get_node_info()
+                mc_id = mc_info.get('user', {}).get('id', '') if isinstance(mc_info, dict) else ''
+                mc_name = mc_info.get('user', {}).get('longName', '') if isinstance(mc_info, dict) else ''
+                if str(to_node).lower() in (mc_id.lower(), mc_name.lower(), 'bot'):
+                    return True
         except Exception:
             pass
         return True
 
     # ==================== Command Processing ====================
     
-    def process_command(self, text, from_node, to_node, channel):
+    def process_command(self, text, from_node, to_node, channel, network=None):
         """
         Process AI commands and queries.
         
@@ -821,10 +1174,14 @@ class AIResponder:
             from_node: Source node ID
             to_node: Destination node ID
             channel: Channel index
+            network: Originating mesh network ('meshtastic' or 'meshcore')
         """
         # Track node for telemetry logging of active users
         try:
-            self.meshtastic.track_node(from_node)
+            if network == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore:
+                self.meshcore.track_node(from_node)
+            elif self.meshtastic:
+                self.meshtastic.track_node(from_node)
         except Exception:
             pass
             
@@ -891,7 +1248,7 @@ class AIResponder:
                 self.clear_history(channel_key)
                 if args:
                     # Treat args as a fresh query after reset
-                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖")
+                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖", network=network)
                 else:
                     self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
@@ -937,7 +1294,7 @@ class AIResponder:
         # If no command matched, treat the entire text (minus !ai) as a query
         query = ' '.join(parts[1:]) if len(parts) > 1 else ''
         if query:
-            self._handle_ai_query(query, from_node, to_node, channel)
+            self._handle_ai_query(query, from_node, to_node, channel, network=network)
     
     def _handle_help_command(self, from_node, to_node, channel, is_dm, is_admin):
         """Send expanded categorized multi-message help."""
@@ -1472,6 +1829,8 @@ class AIResponder:
 
             if cancelled:
                 self._save_proactive_tasks()
+                for cid in cancelled:
+                    self._index_task_cancellation(cid)
                 ids = ', '.join(f'[{c}]' for c in cancelled)
                 self.send_response(f"✅ Removed: {ids}", from_node, to_node, channel, is_admin_cmd=True)
             else:
@@ -1494,7 +1853,7 @@ class AIResponder:
         usage = "Usage: !ai -s [rm <id/all>]"
         self.send_response(usage, from_node, to_node, channel, is_admin_cmd=True)
 
-    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖", network=None):
         """
         Handle an AI query in a background thread.
         
@@ -1505,7 +1864,14 @@ class AIResponder:
             channel: Channel index
             is_dm: Optional DM status (if already determined)
             initial_msg: Initial "thinking" message to send
+            network: Originating mesh network ('meshtastic' or 'meshcore')
         """
+        # Inject network context into caller if provided
+        if network:
+            caller_ctx = getattr(threading.current_thread(), 'ai_context', {})
+            caller_ctx['network'] = network
+            threading.current_thread().ai_context = caller_ctx
+
         # Determine if this is a DM interaction if not provided
         if is_dm is None:
             is_dm = self._is_dm(to_node)
@@ -1517,7 +1883,7 @@ class AIResponder:
         # Process in background thread
         thread = threading.Thread(
             target=self._process_ai_query_thread,
-            args=(query, from_node, to_node, channel, is_dm)
+            args=(query, from_node, to_node, channel, is_dm, False, False, network)
         )
         thread.daemon = True
         thread.start()
@@ -1743,6 +2109,8 @@ class AIResponder:
 
             self.scheduled_tasks.append(task)
             self._save_proactive_tasks()
+        
+        self._index_task_registration(task_id, 'ScheduledTask', from_node, context_note, notify_targets)
 
         if recur_interval_seconds:
             duration_desc = f"for the next {max_duration_seconds}s" if max_duration_seconds else "until cancelled"
@@ -1829,6 +2197,9 @@ class AIResponder:
 
             self.condition_watchers.append(watcher)
             self._save_proactive_tasks()
+        
+        cond_note = f"Alert when {node_id} {metric}{operator}{threshold}: {context_note}" if context_note else f"Alert when {node_id} {metric}{operator}{threshold}"
+        self._index_task_registration(task_id, 'ConditionWatcher', from_node, cond_note, node_id)
 
         logger.info(f"👁️ Condition watcher [{task_id}] registered: {node_id} {metric}{operator}{threshold}")
         return f"✅ [{task_id}] Watching {node_id_or_name}: will alert when {metric} {operator} {threshold}"
@@ -1873,6 +2244,9 @@ class AIResponder:
 
             self.node_online_watchers.append(watcher)
             self._save_proactive_tasks()
+        
+        online_note = f"Alert when {node_id_or_name} comes online: {context_note}" if context_note else f"Alert when {node_id_or_name} comes online"
+        self._index_task_registration(task_id, 'NodeOnlineWatcher', from_node, online_note, node_id)
 
         logger.info(f"👀 Node-online watcher [{task_id}] registered for {node_id}")
         return f"✅ [{task_id}] Watching for {node_id_or_name}: I'll alert you when it's heard on the mesh"
@@ -1950,6 +2324,8 @@ class AIResponder:
 
         if cancelled:
             self._save_proactive_tasks()
+            for cid in cancelled:
+                self._index_task_cancellation(cid)
             ids = ', '.join(f'[{c}]' for c in cancelled)
             return f"✅ Cancelled and removed: {ids}"
         return f"❌ Task [{task_id}] not found or already completed/removed."
@@ -2270,7 +2646,7 @@ class AIResponder:
         
         return f"{query}{metadata_block}"
 
-    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False, disable_tools=False):
+    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False, disable_tools=False, network=None):
         """Background thread for processing AI queries with adaptive tool support."""
         thread_id = threading.get_ident()
         with self._workers_lock:
@@ -2279,7 +2655,8 @@ class AIResponder:
                 'from_node': from_node,
                 'to_node': to_node,
                 'channel': channel,
-                'is_system_trigger': is_system_trigger
+                'is_system_trigger': is_system_trigger,
+                'network': network
             }
             
         # Inject context for MCP tools running in this thread
@@ -2287,7 +2664,8 @@ class AIResponder:
             'from_node': from_node,
             'to_node': to_node,
             'channel': channel,
-            'is_system_trigger': is_system_trigger
+            'is_system_trigger': is_system_trigger,
+            'network': network
         }
             
         try:
@@ -2498,11 +2876,12 @@ class AIResponder:
             to_node = packet.get('toId', 'unknown')
             channel = packet.get('channel', 0)
             text = packet['decoded'].get('text', '').strip()
+            network = packet.get('network', 'meshcore' if getattr(interface, '__class__', None).__name__ == 'MeshCoreHandler' else 'meshtastic')
             
             if not text:
                 return
             
-            logger.info(f"📨 Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
+            logger.info(f"📨 [{network.upper()}] Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
             
             # Determine DM status
             is_dm = self._is_dm(to_node)
@@ -2518,12 +2897,12 @@ class AIResponder:
                 else:
                     # Active session - process as AI query without !ai prefix (DMs only)
                     if not text.startswith('!ai'):
-                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm)
+                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm, network=network)
                         return
             
             # Check for !ai command
             if text.lower().startswith('!ai'):
-                self.process_command(text, from_node, to_node, channel)
+                self.process_command(text, from_node, to_node, channel, network=network)
             
         except Exception as e:
             logger.error(f"Error in on_receive: {e}", exc_info=True)
@@ -2531,18 +2910,28 @@ class AIResponder:
     # ==================== Connection Management ====================
     
     def connect(self):
-        """Connect to Meshtastic and start the main loop."""
-        logger.info("🚀 AI Responder Service Starting...")
+        """Connect to Mesh networks and start the main loop."""
+        logger.info(f"🚀 AI Responder Service Starting (Mesh Mode: {self.mesh_type.upper()})...")
         
         # Log AI Provider info at startup
         self._log_provider_info()
         
-        # Initial Connection
-        # We don't exit if this fails, we just enter the loop and retry there
-        if self.meshtastic.connect(on_receive_callback=self.on_receive):
-            logger.info("✅ Initial connection successful.")
-        else:
-            logger.warning("⚠️ Initial connection failed. Will retry in main loop.")
+        # Initial Connection(s)
+        if self.mesh_type in ('meshtastic', 'dual') and self.meshtastic and self.meshtastic != getattr(self, 'meshcore', None):
+            if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                logger.info("✅ Initial connection to Meshtastic successful.")
+                if hasattr(self, '_bg_executor') and self._bg_executor:
+                    self._bg_executor.submit(self._bg_sync_graph_triples)
+            else:
+                logger.warning("⚠️ Initial connection to Meshtastic failed. Will retry in main loop.")
+
+        if self.mesh_type in ('meshcore', 'dual') and hasattr(self, 'meshcore') and self.meshcore:
+            if self.meshcore.connect(on_receive_callback=self.on_receive):
+                logger.info("✅ Initial connection to MeshCore successful.")
+                if self.mesh_type == 'meshcore' and hasattr(self, '_bg_executor') and self._bg_executor:
+                    self._bg_executor.submit(self._bg_sync_graph_triples)
+            else:
+                logger.warning("⚠️ Initial connection to MeshCore failed. Will retry in main loop.")
         
         # Subscribe to telemetry for proactive callbacks (condition watchers + deferred requests)
         try:
@@ -2568,7 +2957,12 @@ class AIResponder:
                 reasons = []
 
                 # Check radio activity
-                last_radio = self.meshtastic.last_activity
+                last_radio = 0
+                if self.meshtastic and hasattr(self.meshtastic, 'last_activity'):
+                    last_radio = max(last_radio, self.meshtastic.last_activity)
+                if hasattr(self, 'meshcore') and self.meshcore and hasattr(self.meshcore, 'last_activity'):
+                    last_radio = max(last_radio, self.meshcore.last_activity)
+
                 if last_radio > 0:
                     time_since_radio = current_time - last_radio
                     if time_since_radio > HEALTH_CHECK_ACTIVITY_TIMEOUT:
@@ -2577,24 +2971,36 @@ class AIResponder:
                         if time_since_last_probe > 40: # Probe every 40s when silent
                             logger.warning(f"Radio silent for {int(time_since_radio)}s. Sending active probe...")
                             self.last_probe = current_time
-                            self.meshtastic.send_probe()
+                            if self.meshtastic:
+                                self.meshtastic.send_probe()
+                            if hasattr(self, 'meshcore') and self.meshcore and self.meshcore != self.meshtastic:
+                                self.meshcore.send_probe()
                         elif time_since_last_probe > 30:
-                            # If we probed 30s ago and still no activity, health is failing
                             health_ok = False
                             reasons.append(f"Radio silent (Probed {int(time_since_last_probe)}s ago - NO REPLY)")
                 
-                # Check connection status
-                if not self.meshtastic.is_connected():
+                # Check connection status across active mesh types
+                is_meshtastic_down = (self.mesh_type in ('meshtastic', 'dual') and self.meshtastic and not self.meshtastic.is_connected())
+                is_meshcore_down = (self.mesh_type in ('meshcore', 'dual') and hasattr(self, 'meshcore') and self.meshcore and not self.meshcore.is_connected())
+
+                if is_meshtastic_down or is_meshcore_down:
                     if not self.connection_lost:
                         self.connection_lost = True
                         self.last_activity = current_time # Start tracking disconnect duration
-                        logger.warning("Meshtastic connection lost. Attempting to reconnect...")
+                        logger.warning("Mesh connection lost. Attempting to reconnect...")
                     
                     # Try to reconnect every 10 seconds
                     if int(current_time) % 10 == 0:
-                        if self.meshtastic.connect(on_receive_callback=self.on_receive):
-                            logger.info("✅ Reconnected to Meshtastic successfully.")
+                        if is_meshtastic_down and self.meshtastic != getattr(self, 'meshcore', None):
+                            if self.meshtastic.connect(on_receive_callback=self.on_receive):
+                                logger.info("✅ Reconnected to Meshtastic successfully.")
+                        if is_meshcore_down and hasattr(self, 'meshcore') and self.meshcore:
+                            if self.meshcore.connect(on_receive_callback=self.on_receive):
+                                logger.info("✅ Reconnected to MeshCore successfully.")
+                        if (not is_meshtastic_down) and (not is_meshcore_down):
                             self.connection_lost = False
+                            if hasattr(self, '_bg_executor') and self._bg_executor:
+                                self._bg_executor.submit(self._bg_sync_graph_triples)
                         else:
                             logger.warning("Still disconnected from Meshtastic...")
 
@@ -2740,7 +3146,10 @@ class AIResponder:
         except KeyboardInterrupt:
             logger.info("\n👋 Shutting down AI Responder...")
         finally:
-            self.meshtastic.disconnect()
+            if self.meshtastic and hasattr(self.meshtastic, 'disconnect'):
+                self.meshtastic.disconnect()
+            if hasattr(self, 'meshcore') and self.meshcore and self.meshcore != self.meshtastic:
+                self.meshcore.disconnect()
             logger.info("✅ AI Responder stopped.")
 
 

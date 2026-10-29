@@ -16,8 +16,10 @@ COPY config.py .
 COPY providers/ ./providers/
 COPY conversation/ ./conversation/
 COPY meshtastic_handler/ ./meshtastic_handler/
+COPY meshcore_handler/ ./meshcore_handler/
 COPY mcp_client.py .
 COPY mcp_server_meshtastic.py .
+COPY mcp_server_meshcore.py .
 COPY mcp_server_memory.py .
 COPY ai_responder.py .
 

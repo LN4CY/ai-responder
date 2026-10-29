@@ -12,7 +12,10 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.1.3"
+VERSION = "2.2.0"
+MESH_TYPE = os.getenv('MESH_NETWORK_TYPE', os.getenv('MESH_TYPE', 'meshtastic')).lower()  # 'meshtastic', 'meshcore', 'dual'
+
+# Meshtastic Configuration
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
@@ -21,6 +24,16 @@ ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
 AI_PROVIDER = os.getenv('AI_PROVIDER', '')
 ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
 MESHTASTIC_AWARENESS = os.getenv('MESHTASTIC_AWARENESS', 'true').lower() == 'true'
+
+# MeshCore Configuration (Standalone or via MeshMonitor Virtual Node)
+MESHCORE_INTERFACE = os.getenv('MESHCORE_INTERFACE', 'tcp').lower()  # 'tcp' or 'serial'
+MESHCORE_HOST = os.getenv('MESHCORE_HOST', '127.0.0.1')
+MESHCORE_PORT = int(os.getenv('MESHCORE_PORT', '5000'))  # Default MeshMonitor MeshCore Virtual Node port
+MESHCORE_SERIAL_PORT = os.getenv('MESHCORE_SERIAL_PORT', '/dev/ttyUSB1')
+MESHCORE_BAUDRATE = int(os.getenv('MESHCORE_BAUDRATE', '115200'))
+MESHCORE_AUTO_RECONNECT = os.getenv('MESHCORE_AUTO_RECONNECT', 'true').lower() == 'true'
+MESHCORE_RECONNECT_INTERVAL = int(os.getenv('MESHCORE_RECONNECT_INTERVAL', '10'))
+MESHCORE_ACK_TIMEOUT = int(os.getenv('MESHCORE_ACK_TIMEOUT', '30'))
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
@@ -248,6 +261,7 @@ class Config:
         
         # Default configuration
         return {
+            'mesh_type': 'meshtastic',
             'allowed_channels': [0],
             'admin_nodes': [],
             'current_provider': 'ollama',

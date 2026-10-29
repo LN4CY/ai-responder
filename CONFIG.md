@@ -10,10 +10,17 @@ The application is configured primarily via environment variables passed to the 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `INTERFACE_TYPE` | `tcp` | Connection type: `tcp` or `serial`. |
-| `SERIAL_PORT` | `/dev/ttyACM0` | Serial device path (e.g., `COM3` on Windows). |
+| `MESH_NETWORK_TYPE` | `meshtastic` | Network type to operate on: `meshtastic`, `meshcore`, or `dual` (both active concurrently). (Alias: `MESH_TYPE`). |
+| `INTERFACE_TYPE` | `tcp` | Meshtastic connection type: `tcp` or `serial`. |
+| `SERIAL_PORT` | `/dev/ttyACM0` | Meshtastic serial device path (e.g., `COM3` on Windows). |
 | `MESHTASTIC_HOST` | `meshmonitor` | Hostname of the Meshtastic TCP interface. |
-| `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface. |
+| `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface (MeshMonitor Meshtastic Virtual Node). |
+| `MESHCORE_INTERFACE` | `tcp` | MeshCore connection type: `tcp` (for MeshMonitor Virtual Node or WiFi companion) or `serial` (for standalone radio). |
+| `MESHCORE_HOST` | `127.0.0.1` | Hostname/IP for MeshCore TCP connection (e.g. `meshmonitor` in Docker). |
+| `MESHCORE_PORT` | `5000` | Port for MeshCore TCP connection (default MeshMonitor MeshCore Virtual Node port). |
+| `MESHCORE_SERIAL_PORT` | `/dev/ttyUSB1` | Serial device path for standalone MeshCore hardware. |
+| `MESHCORE_BAUDRATE` | `115200` | Baudrate for standalone MeshCore serial interface. |
+| `MESHCORE_AUTO_RECONNECT` | `true` | Automatically reconnect to MeshCore if connection drops. |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds to wait between reconnection attempts. |
 | `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
 | `MESHTASTIC_AWARENESS` | `true` | Enable/Disable all mesh context injection (metadata & tools). |

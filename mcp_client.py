@@ -12,6 +12,7 @@ from mcp.client.sse import sse_client
 # Local tools
 from mcp_server_meshtastic import mcp as internal_meshtastic_mcp
 from mcp_server_memory import mcp as internal_memory_mcp
+from mcp_server_meshcore import mcp as internal_meshcore_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -106,23 +107,42 @@ class UnifiedMCPClient:
             logger.error(f"Failed to load JSON servers: {e}")
 
     async def _init_internal_server(self):
-        """Initialize the in-process tools (Meshtastic + SQLite Memory)."""
-        print("[MCP] Initializing internal meshtastic tools...", flush=True)
-        try:
-            tools = await internal_meshtastic_mcp.list_tools()
-            self.servers['meshtastic'] = {
-                'type': 'internal',
-                'mcp': internal_meshtastic_mcp,
-                'tools': tools,
-                'session': None
-            }
-            print(f"[MCP] Internal tools loaded: {len(tools)} items.", flush=True)
-            logger.info("Internal Meshtastic MCP tools loaded.")
-        except Exception as e:
-            print(f"[MCP] Internal tools FAILED: {e}", flush=True)
-            logger.error(f"Failed to load internal Meshtastic tools: {e}")
-
+        """Initialize the in-process tools (Meshtastic, MeshCore, and SQLite Memory)."""
         import config as app_config
+        mesh_type = getattr(app_config, 'MESH_TYPE', 'meshtastic').lower()
+
+        if mesh_type in ('meshtastic', 'dual'):
+            print("[MCP] Initializing internal meshtastic tools...", flush=True)
+            try:
+                tools = await internal_meshtastic_mcp.list_tools()
+                self.servers['meshtastic'] = {
+                    'type': 'internal',
+                    'mcp': internal_meshtastic_mcp,
+                    'tools': tools,
+                    'session': None
+                }
+                print(f"[MCP] Internal Meshtastic tools loaded: {len(tools)} items.", flush=True)
+                logger.info("Internal Meshtastic MCP tools loaded.")
+            except Exception as e:
+                print(f"[MCP] Internal Meshtastic tools FAILED: {e}", flush=True)
+                logger.error(f"Failed to load internal Meshtastic tools: {e}")
+
+        if mesh_type in ('meshcore', 'dual'):
+            print("[MCP] Initializing internal meshcore tools...", flush=True)
+            try:
+                mc_tools = await internal_meshcore_mcp.list_tools()
+                self.servers['meshcore'] = {
+                    'type': 'internal',
+                    'mcp': internal_meshcore_mcp,
+                    'tools': mc_tools,
+                    'session': None
+                }
+                print(f"[MCP] Internal MeshCore tools loaded: {len(mc_tools)} items.", flush=True)
+                logger.info("Internal MeshCore MCP tools loaded.")
+            except Exception as e:
+                print(f"[MCP] Internal MeshCore tools FAILED: {e}", flush=True)
+                logger.error(f"Failed to load internal MeshCore tools: {e}")
+
         if getattr(app_config, 'MEMORY_ENABLED', True):
             try:
                 mem_tools = await internal_memory_mcp.list_tools()

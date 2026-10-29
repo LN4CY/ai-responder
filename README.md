@@ -84,15 +84,34 @@ The AI can now spontaneously send messages to users or manage its own future beh
 
 Add to your `docker-compose.yml`:
 
+### Kubernetes / Docker Compose (Recommended)
+
+#### Option 1: Dual-Mesh (Meshtastic + MeshCore) via MeshMonitor
 ```yaml
    ai-responder:
      image: ghcr.io/ln4cy/ai-responder:latest
      environment:
+       - MESH_TYPE=dual                  # 'meshtastic', 'meshcore', or 'dual'
        - MESHTASTIC_HOST=meshmonitor
-       - MESHTASTIC_PORT=4404
+       - MESHTASTIC_PORT=4404            # MeshMonitor Meshtastic Virtual Node
+       - MESHCORE_HOST=meshmonitor
+       - MESHCORE_PORT=5000              # MeshMonitor MeshCore Virtual Node
        - AI_PROVIDER=gemini
        - GEMINI_API_KEY=your_key_here
        - ADMIN_NODE_ID=!your_admin_id
+```
+
+#### Option 2: MeshCore Only (via MeshMonitor Virtual Node or Standalone)
+```yaml
+   ai-responder:
+     image: ghcr.io/ln4cy/ai-responder:latest
+     environment:
+       - MESH_TYPE=meshcore
+       - MESHCORE_INTERFACE=tcp          # 'tcp' for MeshMonitor Virtual Node; 'serial' for standalone
+       - MESHCORE_HOST=meshmonitor
+       - MESHCORE_PORT=5000
+       - AI_PROVIDER=gemini
+       - GEMINI_API_KEY=your_key_here
 ```
 
 ### Ollama Setup (Local AI)
@@ -106,18 +125,19 @@ If using the `ollama` provider, you must run the Ollama container and pull a mod
     ```
     *Note: The default model is `llama3.2:1b`. If you change `OLLAMA_MODEL` in env, pull that one instead.*
 
-### Connecting to MeshMonitor
+### Connecting to MeshMonitor Virtual Nodes
 
-The `ai-responder` acts as a "client" to [MeshMonitor](https://github.com/yeraze/meshmonitor).
-- The `ai-responder` connects to MeshMonitor's Virtual Node TCP port (default `4404`).
-- This allows the AI bot to "see" chat messages on the mesh without needing its own dedicated LoRa radio hardware, leveraging the radio connected to MeshMonitor.
+The `ai-responder` acts as a multi-client connection to [MeshMonitor](https://github.com/yeraze/meshmonitor):
+- **Meshtastic**: Connects to MeshMonitor's Meshtastic Virtual Node TCP port (default `4404`).
+- **MeshCore**: Connects to MeshMonitor's MeshCore Virtual Node TCP port (default `5000`, companion protocol).
+- **Multi-Client Sharing**: MeshMonitor holds the single physical USB radio connection and safely multiplexes traffic between MeshMonitor's dashboard, official mobile apps, and `ai-responder`.
 
-**Enabling the Virtual Node in MeshMonitor:**
+**Enabling Virtual Nodes in MeshMonitor (v4.11+):**
 
-| Version | How to enable |
-|---------|---------------|
-| **v4.0+** | Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404` |
-| **v3.x** | Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars |
+| Network | How to enable | Default Port |
+|---------|---------------|--------------|
+| **Meshtastic** | Dashboard → **Sources** → **Edit Meshtastic Source** → **Virtual Node** → toggle ON | `4404` |
+| **MeshCore** | Dashboard → **Sources** → **Edit MeshCore Source** → **Virtual Node** → toggle ON | `5000` |
 
 61
 62
