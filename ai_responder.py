@@ -32,8 +32,9 @@ from concurrent.futures import ThreadPoolExecutor
 import config
 from config import (
     Config, INTERFACE_TYPE, SERIAL_PORT, MESHTASTIC_HOST, MESHTASTIC_PORT,
-    ENV_ADMIN_NODE_ID, ALLOWED_CHANNELS, AI_PROVIDER,
-    HEALTH_CHECK_ACTIVITY_TIMEOUT
+    ENV_ADMIN_NODE_ID, MESHTASTIC_ADMIN_NODE_ID, MESHCORE_ADMIN_NODE_ID,
+    ALLOWED_CHANNELS, MESHTASTIC_ALLOWED_CHANNELS, MESHCORE_ALLOWED_CHANNELS,
+    AI_PROVIDER, HEALTH_CHECK_ACTIVITY_TIMEOUT
 )
 from providers import get_provider
 from conversation.manager import ConversationManager
@@ -176,64 +177,56 @@ class AIResponder:
         # Initial task load from disk
         self._load_proactive_tasks()
         
-        # Initialize admin from environment variable
-        if ENV_ADMIN_NODE_ID:
+        # Helper to merge comma-separated list into a config key
+        def _merge_env_list(env_val, config_key, is_int=False):
+            if not env_val:
+                return
             try:
-                # Parse "!abc,!def" string into list and merge with existing
-                new_admins = [n.strip() for n in ENV_ADMIN_NODE_ID.split(',') if n.strip()]
-                if new_admins:
-                    admin_nodes = self.config.get('admin_nodes', [])
+                raw_items = [n.strip() for n in env_val.split(',') if n.strip()]
+                parsed = [int(n) for n in raw_items if n.isdigit()] if is_int else raw_items
+                if parsed:
+                    existing = self.config.get(config_key, [])
                     updated = False
-                    for node in new_admins:
-                        if node not in admin_nodes:
-                            admin_nodes.append(node)
+                    for item in parsed:
+                        if item not in existing:
+                            existing.append(item)
                             updated = True
-                    if updated:
-                        self.config['admin_nodes'] = admin_nodes
+                    if updated or config_key not in self.config.data:
+                        self.config[config_key] = existing
                         self.config.save()
-                        logger.info(f"Updated admin nodes from environment: {new_admins}")
+                        logger.info(f"Initialized {config_key} from environment: {existing}")
             except Exception as e:
-                logger.warning(f"Failed to parse ADMIN_NODE_ID '{ENV_ADMIN_NODE_ID}': {e}")
+                logger.warning(f"Failed to parse environment setting for {config_key}: {e}")
+
+        # Initialize protocol-specific and global admin nodes
+        _merge_env_list(ENV_ADMIN_NODE_ID, 'admin_nodes')
+        _merge_env_list(MESHTASTIC_ADMIN_NODE_ID, 'meshtastic_admin_nodes')
+        _merge_env_list(MESHCORE_ADMIN_NODE_ID, 'meshcore_admin_nodes')
         
         # Auto-cleanup corrupted config entries
-        # If a past bug (or direct ENV injection) inserted "!node1,!node2" as a single string,
-        # we flatten and re-save the list here so permissions work correctly.
-        current_admins = self.config.get('admin_nodes', [])
-        cleaned_admins = []
-        needs_cleanup = False
+        for a_key in ('admin_nodes', 'meshtastic_admin_nodes', 'meshcore_admin_nodes'):
+            current_admins = self.config.get(a_key, [])
+            cleaned_admins = []
+            needs_cleanup = False
+            for item in current_admins:
+                if isinstance(item, str) and ',' in item:
+                    needs_cleanup = True
+                    cleaned_admins.extend([n.strip() for n in item.split(',') if n.strip()])
+                else:
+                    cleaned_admins.append(str(item).strip())
+            if needs_cleanup:
+                final_admins = []
+                for item in cleaned_admins:
+                    if item not in final_admins:
+                        final_admins.append(item)
+                logger.info(f"🧹 Auto-cleaned corrupted {a_key} list from config: {final_admins}")
+                self.config[a_key] = final_admins
+                self.config.save()
         
-        for item in current_admins:
-            if ',' in item:
-                needs_cleanup = True
-                cleaned_admins.extend([n.strip() for n in item.split(',') if n.strip()])
-            else:
-                cleaned_admins.append(item.strip())
-                
-        if needs_cleanup:
-            # Deduplicate while preserving order
-            final_admins = []
-            for item in cleaned_admins:
-                if item not in final_admins:
-                    final_admins.append(item)
-            
-            logger.info(f"🧹 Auto-cleaned corrupted admin_nodes list from config: {final_admins}")
-            self.config['admin_nodes'] = final_admins
-            self.config.save()
-        
-        # Initialize allowed channels from environment variable
-        if ALLOWED_CHANNELS:
-            try:
-                # Parse "0,1,2" string into [0, 1, 2] list
-                channels = [int(c.strip()) for c in ALLOWED_CHANNELS.split(',') if c.strip().isdigit()]
-                if channels:
-                    # Only apply environment variable if config is new/missing this key
-                    # OR if the user explicitly wants to keep them in sync (we assume if it's new it's safe)
-                    if self.config.is_new or 'allowed_channels' not in self.config.data:
-                        self.config['allowed_channels'] = channels
-                        self.config.save()
-                        logger.info(f"Initialized allowed channels from environment: {channels}")
-            except Exception as e:
-                logger.warning(f"Failed to parse ALLOWED_CHANNELS '{ALLOWED_CHANNELS}': {e}")
+        # Initialize protocol-specific and global allowed channels
+        _merge_env_list(ALLOWED_CHANNELS, 'allowed_channels', is_int=True)
+        _merge_env_list(MESHTASTIC_ALLOWED_CHANNELS, 'meshtastic_allowed_channels', is_int=True)
+        _merge_env_list(MESHCORE_ALLOWED_CHANNELS, 'meshcore_allowed_channels', is_int=True)
         
         # Initialize provider from environment variable
         if AI_PROVIDER:
@@ -514,28 +507,55 @@ class AIResponder:
     
     # ==================== Admin & Permission Management ====================
     
-    def is_admin(self, node_id):
+    def is_admin(self, node_id, network=None):
         """
-        Check if a node ID is an admin.
+        Check if a node ID is an admin for a specific network (or any if unspecified).
         
         Supports Meshtastic hardware IDs (!xxxxxxxx), MeshCore contact names,
         and MeshCore public key prefixes (with or without leading '!', case-insensitive).
+        Protocol-specific lists ('meshtastic_admin_nodes' and 'meshcore_admin_nodes')
+        ensure identities from one network cannot collide with or grant permissions on another.
         
         Args:
             node_id: Node ID or contact name to check
+            network: 'meshtastic' or 'meshcore' (or None)
             
         Returns:
             bool: True if node is admin
         """
-        admin_nodes = self.config.get('admin_nodes', [])
-        if not admin_nodes:
+        if not network:
+            caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+            network = caller_ctx.get('network')
+
+        # Gather relevant admin lists based on protocol isolation
+        target_admins = []
+        if network == 'meshcore':
+            mc_admins = self.config.get('meshcore_admin_nodes')
+            if mc_admins:
+                target_admins.extend(mc_admins)
+            else:
+                # Fallback to general admin_nodes only if protocol-specific list is empty
+                target_admins.extend(self.config.get('admin_nodes', []))
+        elif network == 'meshtastic':
+            msh_admins = self.config.get('meshtastic_admin_nodes')
+            if msh_admins:
+                target_admins.extend(msh_admins)
+            else:
+                target_admins.extend(self.config.get('admin_nodes', []))
+        else:
+            # Check all
+            target_admins.extend(self.config.get('admin_nodes', []))
+            target_admins.extend(self.config.get('meshtastic_admin_nodes', []))
+            target_admins.extend(self.config.get('meshcore_admin_nodes', []))
+
+        if not target_admins:
             return False
             
         node_str = str(node_id).strip()
         node_clean = node_str.lstrip('!')
         
         # 1. Direct or normalized match against admin list
-        for admin in admin_nodes:
+        for admin in target_admins:
             admin_str = str(admin).strip()
             if admin_str == node_str:
                 return True
@@ -544,14 +564,14 @@ class AIResponder:
             if admin_str.lstrip('!').lower() == node_clean.lower():
                 return True
                 
-        # 2. Check against MeshCore contact book if active
-        if hasattr(self, 'meshcore') and self.meshcore and hasattr(self.meshcore, 'meshcore') and self.meshcore.meshcore:
+        # 2. Check against MeshCore contact book ONLY if network is MeshCore or unspecified
+        if (not network or network == 'meshcore') and hasattr(self, 'meshcore') and self.meshcore and hasattr(self.meshcore, 'meshcore') and self.meshcore.meshcore:
             try:
                 contact = self.meshcore.meshcore.get_contact_by_name(node_str) or self.meshcore.meshcore.get_contact_by_key_prefix(node_clean)
                 if contact:
                     c_name = str(contact.get('adv_name') or contact.get('name') or '').strip().lower()
                     c_prefix = str(contact.get('public_key', ''))[:12].strip().lower()
-                    for admin in admin_nodes:
+                    for admin in target_admins:
                         admin_clean = str(admin).strip().lstrip('!').lower()
                         if c_name and admin_clean == c_name:
                             return True
@@ -562,17 +582,33 @@ class AIResponder:
                 
         return False
     
-    def is_channel_allowed(self, channel_index):
+    def is_channel_allowed(self, channel_index, network=None):
         """
-        Check if a channel is allowed for AI responses.
+        Check if a channel is allowed for AI responses on a specific network.
         
         Args:
-            channel_index: Meshtastic channel index
+            channel_index: Channel index
+            network: 'meshtastic' or 'meshcore' (or None)
             
         Returns:
             bool: True if channel is allowed
         """
-        return channel_index in self.config.get('allowed_channels', [0])
+        if not network:
+            caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+            network = caller_ctx.get('network')
+            if not network:
+                network = self.mesh_type if hasattr(self, 'mesh_type') and self.mesh_type != 'dual' else 'meshtastic'
+                
+        if network == 'meshcore':
+            mc_channels = self.config.get('meshcore_allowed_channels')
+            if mc_channels is not None:
+                return channel_index in mc_channels
+            return channel_index in self.config.get('allowed_channels', [0])
+        else:
+            msh_channels = self.config.get('meshtastic_allowed_channels')
+            if msh_channels is not None:
+                return channel_index in msh_channels
+            return channel_index in self.config.get('allowed_channels', [0])
     
     # ==================== AI Provider Interface ====================
     
@@ -1142,18 +1178,27 @@ class AIResponder:
             is_admin_cmd: Whether this is an admin command response
             use_session_indicator: Whether to include the [🟢 session_name] prefix
         """
+        # Determine destination network (Meshtastic vs MeshCore)
+        caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+        net = caller_ctx.get('network')
+        if not net:
+            if hasattr(self, 'mesh_type') and self.mesh_type == 'meshcore':
+                net = 'meshcore'
+            else:
+                net = 'meshtastic'
+
         # Determine destination
         if is_admin_cmd:
             # Admin commands always reply privately
             destination = from_node
         elif to_node == '^all':
-            # Public message - reply publicly only if channel is enabled
-            if self.is_channel_allowed(channel):
+            # Public message - reply publicly only if channel is enabled on this network
+            if self.is_channel_allowed(channel, network=net):
                 destination = '^all'
                 use_session_indicator = False # Force off for channel messages
             else:
                 # Channel not enabled, don't respond
-                logger.info(f"Skipping response on disabled channel {channel}")
+                logger.info(f"Skipping response on disabled channel {channel} for network {net}")
                 return
         else:
             # DM - reply privately
@@ -1163,15 +1208,6 @@ class AIResponder:
         session_indicator = ""
         if use_session_indicator:
             session_indicator = self.session_manager.get_session_indicator(from_node)
-        
-        # Determine destination network (Meshtastic vs MeshCore)
-        caller_ctx = getattr(threading.current_thread(), "ai_context", {})
-        net = caller_ctx.get('network')
-        if not net:
-            if hasattr(self, 'mesh_type') and self.mesh_type == 'meshcore':
-                net = 'meshcore'
-            else:
-                net = 'meshtastic'
 
         if net == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore:
             self.meshcore.send_message(text, destination, channel, session_indicator)
@@ -1235,7 +1271,7 @@ class AIResponder:
         args = parts[2] if len(parts) > 2 else ''
         
         is_dm = self._is_dm(to_node)
-        is_admin = self.is_admin(from_node)
+        is_admin = self.is_admin(from_node, network=network)
         
         # ===== Help Command =====
         if cmd == '-h':
@@ -1327,9 +1363,9 @@ class AIResponder:
             if cmd == '-p':
                 self._handle_provider_command(args, from_node, to_node, channel)
             elif cmd == '-ch':
-                self._handle_channel_command(args, from_node, to_node, channel)
+                self._handle_channel_command(args, from_node, to_node, channel, network=network)
             elif cmd == '-a':
-                self._handle_admin_command(args, from_node, to_node, channel)
+                self._handle_admin_command(args, from_node, to_node, channel, network=network)
             elif cmd == '-s':
                 self._handle_scheduler_command(args, from_node, to_node, channel)
             return
@@ -1673,81 +1709,97 @@ class AIResponder:
         else:
             self.send_response(f"✅ Switched to {label} ({provider})", from_node, to_node, channel, is_admin_cmd=True)
     
-    def _handle_channel_command(self, args, from_node, to_node, channel):
-        """Handle channel management."""
+    def _handle_channel_command(self, args, from_node, to_node, channel, network=None):
+        """Handle protocol-specific channel management."""
+        if not network:
+            caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+            network = caller_ctx.get('network', 'meshtastic')
+
+        config_key = 'meshcore_allowed_channels' if network == 'meshcore' else 'meshtastic_allowed_channels'
+        fallback_channels = self.config.get('allowed_channels', [0])
+        allowed = list(self.config.get(config_key, fallback_channels))
+
         parts = args.split(maxsplit=1) if args else []
         action = parts[0].lower() if parts else ""
+        net_label = "MeshCore" if network == 'meshcore' else "Meshtastic"
         
         if not action or action == 'ls':
-            # List channels
-            allowed = self.config.get('allowed_channels', [0])
-            available_channels = self.meshtastic.get_channels()
-            
-            if not available_channels:
-                message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve available channels from node)"
-            else:
-                lines = ["📡 Channels:"]
-                for ch in available_channels:
-                    idx = ch['index']
-                    name = ch['name']
-                    if not name:
-                        name = "Unnamed"
-                    status = "✅" if idx in allowed else "❌"
-                    lines.append(f"{status} [{idx}] {name}")
+            # List channels for this specific network
+            if network == 'meshcore':
+                lines = [f"📡 {net_label} Allowed Channels: {', '.join(map(str, allowed))}"]
+                lines.append("(Channel 0 is the default broadcast channel)")
                 message = "\n".join(lines)
+            else:
+                available_channels = self.meshtastic.get_channels() if self.meshtastic else []
+                if not available_channels:
+                    message = f"📡 {net_label} Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve channels from radio)"
+                else:
+                    lines = [f"📡 {net_label} Channels:"]
+                    for ch in available_channels:
+                        idx = ch['index']
+                        name = ch.get('name') or "Unnamed"
+                        status = "✅" if idx in allowed else "❌"
+                        lines.append(f"{status} [{idx}] {name}")
+                    message = "\n".join(lines)
             
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
         if len(parts) < 2 or action not in ['add', 'rm']:
-            self.send_response("Usage: !ai -ch [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response(f"Usage: !ai -ch [ls|add <id>|rm <id>] ({net_label})", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         channel_id_str = parts[1]
-        
         if not channel_id_str.isdigit():
             self.send_response("Channel ID must be a number", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         channel_id = int(channel_id_str)
-        allowed_channels = self.config.get('allowed_channels', [0])
         
         if action == 'add':
-            if channel_id not in allowed_channels:
-                allowed_channels.append(channel_id)
-                self.config['allowed_channels'] = allowed_channels
+            if channel_id not in allowed:
+                allowed.append(channel_id)
+                self.config[config_key] = allowed
                 self.config.save()
-                self.send_response(f"✅ Added channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
+                self.send_response(f"✅ Added {net_label} channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
             else:
-                self.send_response(f"Channel {channel_id} already allowed", from_node, to_node, channel, is_admin_cmd=True)
+                self.send_response(f"{net_label} channel {channel_id} already allowed", from_node, to_node, channel, is_admin_cmd=True)
         
         elif action == 'rm':
-            if channel_id in allowed_channels:
-                allowed_channels.remove(channel_id)
-                self.config['allowed_channels'] = allowed_channels
+            if channel_id in allowed:
+                allowed.remove(channel_id)
+                self.config[config_key] = allowed
                 self.config.save()
-                self.send_response(f"✅ Removed channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
+                self.send_response(f"✅ Removed {net_label} channel {channel_id}", from_node, to_node, channel, is_admin_cmd=True)
             else:
-                self.send_response(f"Channel {channel_id} not in allowed list", from_node, to_node, channel, is_admin_cmd=True)
+                self.send_response(f"{net_label} channel {channel_id} not in allowed list", from_node, to_node, channel, is_admin_cmd=True)
         
         else:
-            self.send_response("Usage: !ai -ch add/rm <channel_id>", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response(f"Usage: !ai -ch add/rm <channel_id> ({net_label})", from_node, to_node, channel, is_admin_cmd=True)
     
-    def _handle_admin_command(self, args, from_node, to_node, channel):
-        """Handle admin node management."""
+    def _handle_admin_command(self, args, from_node, to_node, channel, network=None):
+        """Handle protocol-specific admin node management."""
+        if not network:
+            caller_ctx = getattr(threading.current_thread(), "ai_context", {})
+            network = caller_ctx.get('network', 'meshtastic')
+
+        config_key = 'meshcore_admin_nodes' if network == 'meshcore' else 'meshtastic_admin_nodes'
+        fallback_admins = self.config.get('admin_nodes', [])
+        admins = list(self.config.get(config_key, fallback_admins))
+        net_label = "MeshCore" if network == 'meshcore' else "Meshtastic"
+
         if not args or args.strip().lower() == 'ls':
             # List admins
-            admins = self.config.get('admin_nodes', [])
             if admins:
-                message = "👑 Admin Nodes:\n" + "\n".join(admins)
+                message = f"👑 {net_label} Admin Nodes:\n" + "\n".join(admins)
             else:
-                message = "No admin nodes configured"
+                message = f"No {net_label} admin nodes configured"
             self.send_response(message, from_node, to_node, channel, is_admin_cmd=True)
             return
         
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            self.send_response("Usage: !ai -a [ls|add <id>|rm <id>]", from_node, to_node, channel, is_admin_cmd=True)
+            self.send_response(f"Usage: !ai -a [ls|add <id>|rm <id>] ({net_label})", from_node, to_node, channel, is_admin_cmd=True)
             return
         
         action = parts[0].lower()
@@ -1759,36 +1811,35 @@ class AIResponder:
             self.send_response("No valid node IDs provided.", from_node, to_node, channel, is_admin_cmd=True)
             return
 
-        admin_nodes = self.config.get('admin_nodes', [])
         messages = []
         updated = False
         
         if action == 'add':
             for nid in nodes_to_process:
-                if nid not in admin_nodes:
-                    admin_nodes.append(nid)
-                    messages.append(f"✅ Added {nid}")
+                if nid not in admins:
+                    admins.append(nid)
+                    messages.append(f"✅ Added {nid} to {net_label}")
                     updated = True
                 else:
-                    messages.append(f"ℹ️ {nid} is already admin")
+                    messages.append(f"ℹ️ {nid} is already {net_label} admin")
             
             if updated:
-                self.config['admin_nodes'] = admin_nodes
+                self.config[config_key] = admins
                 self.config.save()
             
             self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
         
         elif action == 'rm':
             for nid in nodes_to_process:
-                if nid in admin_nodes:
-                    admin_nodes.remove(nid)
-                    messages.append(f"✅ Removed {nid}")
+                if nid in admins:
+                    admins.remove(nid)
+                    messages.append(f"✅ Removed {nid} from {net_label}")
                     updated = True
                 else:
-                    messages.append(f"ℹ️ {nid} not in admin list")
+                    messages.append(f"ℹ️ {nid} not in {net_label} admin list")
             
             if updated:
-                self.config['admin_nodes'] = admin_nodes
+                self.config[config_key] = admins
                 self.config.save()
             
             self.send_response("\n".join(messages), from_node, to_node, channel, is_admin_cmd=True)
@@ -2677,10 +2728,13 @@ class AIResponder:
 
     def _inject_legacy_metadata(self, query, from_node):
         """Helper to inject a clean metadata block for tool-blind models."""
-        my_info = self.meshtastic.get_node_metadata(self.meshtastic.get_node_info().get('user', {}).get('id'))
-        # Cap neighbor summary to at most 8 closest nodes to avoid bloating prompt for local models
-        neighbor_summary = self.meshtastic.get_node_list_summary(max_nodes=8)
-        user_info = self.meshtastic.get_node_metadata(from_node)
+        handler = self.meshcore if (hasattr(self, 'meshcore') and self.meshcore and (self.mesh_type == 'meshcore' or not self.meshtastic)) else self.meshtastic
+        if not handler:
+            return query
+        my_id = (handler.get_node_info() or {}).get('user', {}).get('id')
+        my_info = handler.get_node_metadata(my_id) if my_id else None
+        neighbor_summary = handler.get_node_list_summary(max_nodes=8) if hasattr(handler, 'get_node_list_summary') else None
+        user_info = handler.get_node_metadata(from_node)
         
         metadata_block = "\n\n[RADIO CONTEXT]\n"
         if my_info:
@@ -3111,9 +3165,10 @@ class AIResponder:
                     self._last_health_log = current_time
                     with self._workers_lock:
                         active_count = len(self._active_workers)
-                    queue = getattr(self.meshtastic, '_message_queue', None)
+                    active_handler = self.meshcore if (self.mesh_type == 'meshcore' and hasattr(self, 'meshcore') and self.meshcore) else self.meshtastic
+                    queue = getattr(active_handler, '_message_queue', None) if active_handler else None
                     q_age = int(current_time - queue.last_heartbeat) if queue else -1
-                    connected = self.meshtastic.is_connected()
+                    connected = active_handler.is_connected() if active_handler else False
                     logger.info(
                         f"💓 Health: connected={connected} | "
                         f"active_workers={active_count} | "
