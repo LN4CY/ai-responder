@@ -1248,7 +1248,10 @@ class AIResponder:
                 self.clear_history(channel_key)
                 if args:
                     # Treat args as a fresh query after reset
-                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖", network=network)
+                    if network:
+                        self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖", network=network)
+                    else:
+                        self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖")
                 else:
                     self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
@@ -1294,7 +1297,10 @@ class AIResponder:
         # If no command matched, treat the entire text (minus !ai) as a query
         query = ' '.join(parts[1:]) if len(parts) > 1 else ''
         if query:
-            self._handle_ai_query(query, from_node, to_node, channel, network=network)
+            if network:
+                self._handle_ai_query(query, from_node, to_node, channel, network=network)
+            else:
+                self._handle_ai_query(query, from_node, to_node, channel)
     
     def _handle_help_command(self, from_node, to_node, channel, is_dm, is_admin):
         """Send expanded categorized multi-message help."""
