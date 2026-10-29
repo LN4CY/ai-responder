@@ -74,7 +74,7 @@ class UnifiedMCPClient:
 
     def _initialize_servers(self):
         """Internal wrapper to schedule external server initialization on the loop."""
-        if 'meshtastic' not in self.servers:
+        if not self.servers:
             asyncio.create_task(self._init_internal_server())
         
         mcp_servers_file = self.config.get('mcp_servers_file', '/app/data/mcp_servers.json')

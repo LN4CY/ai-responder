@@ -214,18 +214,18 @@ class TestMeshCoreMCP(unittest.TestCase):
 
 
 class TestMeshCoreAdminResolution(unittest.TestCase):
-    """Test admin node resolution for MeshCore names and public key prefixes."""
+    """Test admin node resolution and isolation for MeshCoreAIResponder and MeshtasticAIResponder."""
 
     def test_meshcore_admin_checks(self):
-        from ai_responder import AIResponder
+        from responders import MeshCoreAIResponder
         with patch('ai_responder.Config') as MockConfig, \
              patch('ai_responder.UnifiedMCPClient'):
             cfg = {
-                'admin_nodes': ['!9e044360', 'LN4CY_TDeck', '!12A1B2DD1DE3'],
-                'allowed_channels': [0]
+                'meshcore_admin_nodes': ['LN4CY_TDeck', '!12A1B2DD1DE3'],
+                'meshcore_allowed_channels': [0]
             }
             MockConfig.return_value.get.side_effect = lambda k, default=None: cfg.get(k, default)
-            app = AIResponder.__new__(AIResponder)
+            app = MeshCoreAIResponder.__new__(MeshCoreAIResponder)
             app.config = MockConfig.return_value
             app.meshcore = MagicMock()
             app.meshcore.meshcore = MagicMock()
@@ -238,26 +238,27 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
             app.meshcore.meshcore.get_contact_by_name.side_effect = lambda name: mock_contact if name.lower() == 'ln4cy_tdeck' else None
             app.meshcore.meshcore.get_contact_by_key_prefix.side_effect = lambda p: mock_contact if p.lower().startswith('12a1b2dd1de3') else None
 
-            # 1. Meshtastic admin ID match
-            self.assertTrue(app.is_admin('!9e044360'))
-            self.assertTrue(app.is_admin('9e044360'))
-
-            # 2. MeshCore exact name match
+            # 1. MeshCore exact name match
             self.assertTrue(app.is_admin('LN4CY_TDeck'))
             self.assertTrue(app.is_admin('ln4cy_tdeck'))
 
-            # 3. MeshCore prefix match (case-insensitive, with/without '!')
+            # 2. MeshCore prefix match (case-insensitive, with/without '!')
             self.assertTrue(app.is_admin('!12A1B2DD1DE3'))
             self.assertTrue(app.is_admin('!12a1b2dd1de3'))
             self.assertTrue(app.is_admin('12a1b2dd1de3'))
 
-            # 4. Unknown node returns False
+            # 3. Unknown node returns False
             self.assertFalse(app.is_admin('!unknown999'))
             self.assertFalse(app.is_admin('OtherUser'))
 
-    def test_protocol_isolated_admin_and_channels(self):
-        from ai_responder import AIResponder
+    def test_protocol_isolated_responders(self):
+        from responders import MeshtasticAIResponder, MeshCoreAIResponder
+        from ai_responder import create_responder
         with patch('ai_responder.Config') as MockConfig, \
+             patch('ai_responder.MeshtasticHandler'), \
+             patch('ai_responder.MeshCoreHandler'), \
+             patch('ai_responder.ConversationManager'), \
+             patch('ai_responder.SessionManager'), \
              patch('ai_responder.UnifiedMCPClient'):
             cfg = {
                 'meshtastic_admin_nodes': ['!9e044360'],
@@ -266,31 +267,27 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
                 'meshcore_allowed_channels': [0],
             }
             MockConfig.return_value.get.side_effect = lambda k, default=None: cfg.get(k, default)
-            app = AIResponder.__new__(AIResponder)
-            app.config = MockConfig.return_value
-            app.meshcore = MagicMock()
-            app.meshcore.meshcore = MagicMock()
+            MockConfig.return_value.data = cfg
 
-            mock_contact = {
-                'adv_name': 'LN4CY_TDeck',
-                'public_key': '12a1b2dd1de3456789abcdef1234567890abcdef1234567890abcdef12345678'
-            }
-            app.meshcore.meshcore.get_contact_by_name.side_effect = lambda name: mock_contact if name.lower() == 'ln4cy_tdeck' else None
-            app.meshcore.meshcore.get_contact_by_key_prefix.side_effect = lambda p: mock_contact if p.lower().startswith('12a1b2dd1de3') else None
+            msh_app = create_responder('meshtastic')
+            mc_app = create_responder('meshcore')
 
-            # Meshtastic admin is admin on Meshtastic, but NOT on MeshCore
-            self.assertTrue(app.is_admin('!9e044360', network='meshtastic'))
-            self.assertFalse(app.is_admin('!9e044360', network='meshcore'))
+            self.assertIsInstance(msh_app, MeshtasticAIResponder)
+            self.assertIsInstance(mc_app, MeshCoreAIResponder)
 
-            # MeshCore admin is admin on MeshCore, but NOT on Meshtastic
-            self.assertTrue(app.is_admin('LN4CY_TDeck', network='meshcore'))
-            self.assertFalse(app.is_admin('LN4CY_TDeck', network='meshtastic'))
+            # Meshtastic admin is admin on MeshtasticAIResponder, NOT on MeshCoreAIResponder
+            self.assertTrue(msh_app.is_admin('!9e044360'))
+            self.assertFalse(mc_app.is_admin('!9e044360'))
+
+            # MeshCore admin is admin on MeshCoreAIResponder, NOT on MeshtasticAIResponder
+            self.assertTrue(mc_app.is_admin('LN4CY_TDeck'))
+            self.assertFalse(msh_app.is_admin('LN4CY_TDeck'))
 
             # Channel isolation
-            self.assertTrue(app.is_channel_allowed(3, network='meshtastic'))
-            self.assertFalse(app.is_channel_allowed(0, network='meshtastic'))
-            self.assertTrue(app.is_channel_allowed(0, network='meshcore'))
-            self.assertFalse(app.is_channel_allowed(3, network='meshcore'))
+            self.assertTrue(msh_app.is_channel_allowed(3))
+            self.assertFalse(msh_app.is_channel_allowed(0))
+            self.assertTrue(mc_app.is_channel_allowed(0))
+            self.assertFalse(mc_app.is_channel_allowed(3))
 
 
 if __name__ == '__main__':
