@@ -5,7 +5,7 @@
 """Unit tests for MeshCore interface handler and MCP server."""
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import sys
 import os
 import asyncio
