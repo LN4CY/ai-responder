@@ -1732,7 +1732,7 @@ class AIResponder:
             else:
                 available_channels = self.meshtastic.get_channels() if self.meshtastic else []
                 if not available_channels:
-                    message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve channels from radio)"
+                    message = f"📡 Allowed Channels: {', '.join(map(str, allowed))}\n(Could not retrieve available channels from node)"
                 else:
                     lines = ["📡 Channels:"]
                     for ch in available_channels:
