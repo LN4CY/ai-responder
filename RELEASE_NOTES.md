@@ -31,6 +31,12 @@ This release introduces **MeshCore Support**, a **Protocol-Isolated Architecture
 - **Full MCP Parity in `mcp_server_meshcore.py`**: Added `schedule_message`, `watch_condition`, `watch_node_online`, `list_proactive_tasks`, `cancel_proactive_task`, and `send_message`.
 - **Bi-directional Identity Matching**: Watchers seamlessly match against contact display names (`LN4CY_TDeck`), public key prefixes (`!12a1b2dd1de3`), and resolved node IDs.
 
+## Reliability, Session Management & Firmware Hardening 🛠️
+- **Radio Payload Safety (`ERR_CODE_BAD_STATE` Fix)**: Implemented UTF-8 byte-aware chunking (`prepare_chunks` and `split_message_utf8`) ensuring each packet stays $\le 152$ bytes under the MeshCore firmware 160-byte limit (`MAX_TEXT_LEN`), with dedicated reservation for session indicators and chunk counters.
+- **Intuitive Session Close Commands**: Added support for `!ai end`, `!ai -end`, `!ai close`, `!ai exit`, and `!ai quit`, as well as plain `end`/`exit`/`quit` within active DM sessions, closing sessions cleanly without unwanted LLM query routing.
+- **Thread-Safe Session Timeout Deduplication**: Added re-entrant lock synchronization (`RLock`) across all `SessionManager` methods, eliminating race conditions between the main health loop and incoming packet callbacks and preventing duplicate timeout messages.
+- **Radio Health Watchdog Link Stability**: Updated `MeshCoreHandler.send_probe()` and message transmissions to refresh radio `last_activity`, preventing false-positive watchdog kills and restart loops during low RF traffic periods.
+
 ---
 
 # Release Notes v2.1.0
