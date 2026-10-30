@@ -230,26 +230,90 @@ In addition to the built-in Meshtastic and SQLite Memory MCP servers, the respon
 > - Values in `config.json` take precedence over environment variables if the file already exists.
 > - `admin_nodes` must be an array of individual hex IDs. The application auto-repairs any comma-concatenated strings (e.g., from `ADMIN_NODE_ID=!a,!b`) into a clean array on startup.
 
-## Docker Compose Example
+## Docker Compose Examples
 
+### Example 1: MeshCore with MeshMonitor Virtual Node
 ```yaml
+services:
   ai-responder:
     image: ghcr.io/ln4cy/ai-responder:latest
-    container_name: meshmonitor-ai-responder
+    container_name: meshmonitor-ai-responder-meshcore
     restart: unless-stopped
     environment:
+      - MESH_TYPE=meshcore
+      - MESHCORE_INTERFACE=tcp
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck        # Admin contact name or hex prefix
+      - MESHCORE_ALLOWED_CHANNELS=0,4             # Channels allowed for public !ai responses
+      - MESHCORE_WAIT_FOR_ACK=true                # Wait for physical RF ACK
+      - MESHCORE_POST_ACK_DELAY=2.0               # Settle buffer between multi-chunk DMs
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-meshcore-data:/app/data
+      # Optional: Custom prompts
+      # - ./system_prompt_online.txt:/app/system_prompt_online.txt
+      # Optional: External MCP servers
+      # - ./mcp_servers.json:/app/data/mcp_servers.json
+    networks:
+      - mesh_net
+
+volumes:
+  ai-meshcore-data:
+```
+
+### Example 2: Meshtastic with MeshMonitor Virtual Node
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-meshtastic
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=meshtastic
       - MESHTASTIC_HOST=meshmonitor
       - MESHTASTIC_PORT=4404
-      - AI_PROVIDER=ollama
-      - OLLAMA_HOST=ollama
-      - OLLAMA_MODEL=llama3.2:1b
-      - ALLOWED_CHANNELS=0,1,2
-      - ADMIN_NODE_ID=!myadminid
+      - ADMIN_NODE_ID=!1234abcd
+      - ALLOWED_CHANNELS=0,3
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
     volumes:
-      - ai-responder-data:/app/data
-      # Optional: Map custom external MCP tools configuration
-      # - ./mcp_servers.json:/app/data/mcp_servers.json
-    depends_on:
-      - meshmonitor
-      - ollama
+      - ai-meshtastic-data:/app/data
+    networks:
+      - mesh_net
+
+volumes:
+  ai-meshtastic-data:
+```
+
+### Example 3: Dual-Mesh (Meshtastic + MeshCore Simultaneously)
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-dual
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=dual
+      # Meshtastic Protocol
+      - MESHTASTIC_HOST=meshmonitor
+      - MESHTASTIC_PORT=4404
+      - MESHTASTIC_ADMIN_NODE_ID=!1234abcd
+      - MESHTASTIC_ALLOWED_CHANNELS=0,3
+      # MeshCore Protocol
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck
+      - MESHCORE_ALLOWED_CHANNELS=0,4
+      # Shared AI Provider
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-dual-data:/app/data
+    networks:
+      - mesh_net
+
+volumes:
+  ai-dual-data:
 ```
