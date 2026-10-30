@@ -139,6 +139,48 @@ class TestMeshCoreHandler(unittest.TestCase):
         self.assertEqual(nodes[0]['longName'], 'AliceRadio')
         self.assertEqual(nodes[0]['id'], '!a1b2c3d4e5f6')
 
+    def test_repeaters_and_rooms(self):
+        """Test node type detection, repeater filtering, and room filtering."""
+        mock_meshcore = MagicMock()
+        mock_meshcore.contacts = {
+            "1111111111110000000000000000000000000000000000000000000000000000": {
+                "public_key": "1111111111110000000000000000000000000000000000000000000000000000",
+                "adv_name": "LN4CY Repeater",
+                "type": 2,
+                "out_path_len": 0
+            },
+            "2222222222220000000000000000000000000000000000000000000000000000": {
+                "public_key": "2222222222220000000000000000000000000000000000000000000000000000",
+                "adv_name": "East Raleigh Room",
+                "type": 3,
+                "out_path_len": -1
+            },
+            "3333333333330000000000000000000000000000000000000000000000000000": {
+                "public_key": "3333333333330000000000000000000000000000000000000000000000000000",
+                "adv_name": "AliceChat",
+                "type": 1,
+                "out_path_len": 1
+            }
+        }
+        self.handler.meshcore = mock_meshcore
+
+        nodes = self.handler.get_all_nodes()
+        self.assertEqual(len(nodes), 3)
+        self.assertEqual(nodes[0]['type'], 'Repeater')
+        self.assertEqual(nodes[1]['type'], 'Room')
+        self.assertEqual(nodes[2]['type'], 'Chat')
+
+        repeaters = self.handler.get_repeaters()
+        self.assertIn("LN4CY Repeater", repeaters)
+        self.assertNotIn("East Raleigh Room", repeaters)
+
+        rooms = self.handler.get_rooms()
+        self.assertIn("East Raleigh Room", rooms)
+        self.assertNotIn("LN4CY Repeater", rooms)
+
+        meta = self.handler.get_node_metadata("LN4CY Repeater")
+        self.assertIn("Type: Repeater", meta)
+
     def test_incoming_contact_message_normalization(self):
         """Test normalizing an incoming CONTACT_MSG_RECV event into AIResponder packet."""
         received_packets = []
@@ -440,6 +482,30 @@ class TestMeshCoreMCP(unittest.TestCase):
         res = mcp_server_meshcore.send_message(target="ch:4", message="Hello Channel 4")
         self.assertIn("Message queued", res)
         self.mock_app._send_message_mcp.assert_called_with(target="ch:4", message="Hello Channel 4")
+
+    def test_mcp_get_repeaters_and_rooms(self):
+        self.mock_handler.get_repeaters.return_value = "MeshCore Contacts (1, filter: repeater):\n- LN4CY Repeater [Repeater]"
+        self.mock_handler.get_rooms.return_value = "MeshCore Contacts (1, filter: room):\n- East Raleigh Room [Room]"
+
+        rep_res = mcp_server_meshcore.get_meshcore_repeaters()
+        self.assertIn("LN4CY Repeater", rep_res)
+
+        room_res = mcp_server_meshcore.get_meshcore_rooms()
+        self.assertIn("East Raleigh Room", room_res)
+
+    def test_mcp_get_status(self):
+        self.mock_handler.request_status.return_value = {
+            'bat': 4150,
+            'uptime': 86400,
+            'noise_floor': -115,
+            'last_snr': 9.5,
+            'nb_sent': 42,
+            'nb_recv': 105
+        }
+        res = mcp_server_meshcore.get_meshcore_status("LN4CY Repeater")
+        self.assertIn("4.15V", res)
+        self.assertIn("24h 0m", res)
+        self.assertIn("9.5 dB", res)
 
 
 class TestMeshCoreAdminResolution(unittest.TestCase):

@@ -50,17 +50,67 @@ def get_meshcore_self_info() -> Dict[str, Any]:
 
 @mcp.tool()
 def get_meshcore_contacts() -> str:
-    """Get the authoritative list of active MeshCore contacts and neighbors, including names and hop distances."""
+    """Get the authoritative list of active MeshCore contacts and neighbors, including node types (Repeater, Room, Chat) and hop distances."""
     if not responder_app or not getattr(responder_app, 'meshcore', None):
         return "Error: MeshCore handler unavailable"
     return responder_app.meshcore.get_node_list_summary()
 
 @mcp.tool()
+def get_meshcore_repeaters(max_results: int = 25) -> str:
+    """
+    Get the list of discovered MeshCore Repeaters on the mesh with names, IDs, and hop counts.
+    Call this when the user asks about repeaters, routers, infrastructure nodes, or network hops.
+    """
+    if not responder_app or not getattr(responder_app, 'meshcore', None):
+        return "Error: MeshCore handler unavailable"
+    return responder_app.meshcore.get_repeaters(max_nodes=max_results)
+
+@mcp.tool()
+def get_meshcore_rooms() -> str:
+    """
+    Get the list of active MeshCore Rooms and BBS servers.
+    Call this when the user asks about rooms, chat rooms, bulletin boards, or community servers.
+    """
+    if not responder_app or not getattr(responder_app, 'meshcore', None):
+        return "Error: MeshCore handler unavailable"
+    return responder_app.meshcore.get_rooms()
+
+@mcp.tool()
 def get_meshcore_contact_details(contact_id_or_name: str) -> str:
-    """Get detailed telemetry, public key, hops, and coordinates for a specific MeshCore contact."""
+    """Get detailed telemetry, type (Repeater/Room/Chat), public key, hops, and coordinates for a specific MeshCore contact."""
     if not responder_app or not getattr(responder_app, 'meshcore', None):
         return "Error: MeshCore handler unavailable"
     return responder_app.meshcore.get_node_metadata(contact_id_or_name)
+
+@mcp.tool()
+def get_meshcore_status(contact_id_or_name: str) -> str:
+    """
+    Request live over-the-air status from a MeshCore repeater, room server, or contact.
+    Returns battery voltage, uptime, noise floor, SNR, and packet counters.
+    """
+    if not responder_app or not getattr(responder_app, 'meshcore', None):
+        return "Error: MeshCore handler unavailable"
+    status = responder_app.meshcore.request_status(contact_id_or_name)
+    if not status:
+        return f"Could not retrieve live status for '{contact_id_or_name}'. The node may be unreachable or out of range."
+
+    bat_v = f"{status.get('bat', 0) / 1000.0:.2f}V" if status.get('bat') else "unknown"
+    uptime_sec = status.get('uptime', 0)
+    uptime_str = f"{uptime_sec // 3600}h {(uptime_sec % 3600) // 60}m" if uptime_sec else "unknown"
+    noise = status.get('noise_floor')
+    snr = status.get('last_snr')
+    sent = status.get('nb_sent', 0)
+    recv = status.get('nb_recv', 0)
+
+    lines = [
+        f"📊 Live Status for {contact_id_or_name}:",
+        f"- Battery: {bat_v}",
+        f"- Uptime: {uptime_str}",
+        f"- Noise Floor: {noise} dBm" if noise is not None else "- Noise Floor: unknown",
+        f"- Last SNR: {snr} dB" if snr is not None else "- Last SNR: unknown",
+        f"- Packets: Sent={sent}, Recv={recv}"
+    ]
+    return "\n".join(lines)
 
 @mcp.tool()
 def send_meshcore_message(destination: str, text: str, channel: int = 0) -> str:

@@ -760,46 +760,93 @@ class MeshCoreHandler:
         }
 
     def get_all_nodes(self) -> List[Dict[str, Any]]:
-        """Get a list of all known contacts formatted like Meshtastic nodes."""
+        """Get a list of all known contacts formatted like Meshtastic nodes, including MeshCore node type."""
         if not self.meshcore or not hasattr(self.meshcore, 'contacts'):
             return []
+
+        TYPE_MAP = {
+            0: 'Unknown',
+            1: 'Chat',
+            2: 'Repeater',
+            3: 'Room',
+            4: 'Sensor'
+        }
 
         nodes = []
         for pubkey, contact in self.meshcore.contacts.items():
             name = contact.get('adv_name') or contact.get('name', 'Unknown')
             short_name = name[:4].upper()
+            raw_type = contact.get('type', 0)
+            type_str = TYPE_MAP.get(raw_type, 'Chat' if raw_type == 1 else 'Unknown')
+            if type_str in ('Unknown', 'Chat'):
+                name_lower = name.lower()
+                if 'repeater' in name_lower or 'rptr' in name_lower:
+                    type_str = 'Repeater'
+                elif 'room' in name_lower or 'bbs' in name_lower:
+                    type_str = 'Room'
+
+            raw_hops = contact.get('out_path_len', -1)
             nodes.append({
                 'id': f"!{pubkey[:12]}",
                 'full_id': pubkey,
                 'longName': name,
                 'shortName': short_name,
+                'type': type_str,
+                'raw_type': raw_type,
                 'lat': contact.get('adv_lat'),
                 'lon': contact.get('adv_lon'),
-                'hops': contact.get('out_path_len', 0),
+                'hops': raw_hops,
                 'last_advert': contact.get('last_advert', 0)
             })
         return nodes
 
-    def get_node_list_summary(self, max_nodes: int = 8) -> str:
-        """Get a concise summary of active contacts for AI prompt context."""
+    def get_node_list_summary(self, max_nodes: int = 40, filter_type: str = None) -> str:
+        """
+        Get a concise summary of active contacts for AI prompt context.
+        
+        Args:
+            max_nodes: Maximum nodes to return.
+            filter_type: Optional filter: 'repeater', 'room', 'chat', 'sensor'.
+        """
         nodes = self.get_all_nodes()
         if not nodes:
             return "No contacts detected on MeshCore network."
 
-        lines = [f"MeshCore Contacts ({len(nodes)} total):"]
+        if filter_type:
+            ft = filter_type.strip().lower()
+            nodes = [n for n in nodes if n.get('type', '').lower() == ft]
+            if not nodes:
+                return f"No MeshCore contacts found matching type '{filter_type}'."
+
+        title = f"MeshCore Contacts ({len(nodes)} total"
+        if filter_type:
+            title += f", filter: {filter_type}"
+        title += "):"
+        lines = [title]
+
         for node in nodes[:max_nodes]:
             name = node.get('longName', 'Unknown')
             nid = node.get('id', '')
-            hops = node.get('hops', 0)
-            lines.append(f"- {name} ({nid}): {hops} hops")
+            node_type = node.get('type', 'Chat')
+            hops = node.get('hops', -1)
+            hops_str = "direct" if hops == 0 else ("flood" if hops in (-1, 255) else f"{hops} hops")
+            lines.append(f"- {name} ({nid}) [{node_type}] | {hops_str}")
 
         if len(nodes) > max_nodes:
             lines.append(f"... and {len(nodes) - max_nodes} more contacts.")
 
         return "\n".join(lines)
 
+    def get_repeaters(self, max_nodes: int = 30) -> str:
+        """Get a list of all known MeshCore repeaters."""
+        return self.get_node_list_summary(max_nodes=max_nodes, filter_type='repeater')
+
+    def get_rooms(self, max_nodes: int = 30) -> str:
+        """Get a list of all known MeshCore rooms/servers."""
+        return self.get_node_list_summary(max_nodes=max_nodes, filter_type='room')
+
     def get_node_metadata(self, node_id: str) -> str:
-        """Get detailed metadata for a specific contact."""
+        """Get detailed metadata for a specific contact including type and hops."""
         if not node_id:
             return ""
 
@@ -811,14 +858,44 @@ class MeshCoreHandler:
         if not contact:
             return f"Node {node_id} not found in MeshCore contacts."
 
+        TYPE_MAP = {0: 'Unknown', 1: 'Chat', 2: 'Repeater', 3: 'Room', 4: 'Sensor'}
+        raw_type = contact.get('type', 0)
+        type_str = TYPE_MAP.get(raw_type, 'Unknown')
         name = contact.get('adv_name') or contact.get('name', 'Unknown')
+        if type_str in ('Unknown', 'Chat'):
+            name_lower = name.lower()
+            if 'repeater' in name_lower or 'rptr' in name_lower:
+                type_str = 'Repeater'
+            elif 'room' in name_lower or 'bbs' in name_lower:
+                type_str = 'Room'
+
         pubkey = contact.get('public_key', clean_id)
-        hops = contact.get('out_path_len', 'unknown')
+        hops = contact.get('out_path_len', -1)
+        hops_str = "direct (0 hops)" if hops == 0 else ("flood / unknown path" if hops in (-1, 255) else f"{hops} hops")
         lat = contact.get('adv_lat')
         lon = contact.get('adv_lon')
 
         pos_str = f"Lat: {lat}, Lon: {lon}" if lat is not None and lon is not None else "Position unknown"
-        return f"[Node: {name} ({pubkey[:12]}) | Hops: {hops} | {pos_str}]"
+        return f"[Node: {name} ({pubkey[:12]}) | Type: {type_str} | Path: {hops_str} | {pos_str}]"
+
+    def request_status(self, destination_id: str) -> Optional[Dict[str, Any]]:
+        """Request live status OTA from a contact (repeater, room, or client). Synchronous wrapper."""
+        if not self.is_connected() or not self._loop:
+            return None
+        try:
+            target = destination_id[1:] if destination_id.startswith('!') else destination_id
+            contact = self.find_contact_by_name(target)
+            if not contact and self.meshcore and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
+                contact = self.meshcore.get_contact_by_key_prefix(target)
+            dest = contact if contact else target
+            future = asyncio.run_coroutine_threadsafe(
+                self.meshcore.commands.req_status_sync(dest, timeout=10),
+                self._loop
+            )
+            return future.result(timeout=12)
+        except Exception as e:
+            logger.debug(f"[MeshCore] Failed requesting status from {destination_id}: {e}")
+            return None
 
     def get_channels(self) -> List[Dict[str, Any]]:
         """Get list of active / allowed channels."""

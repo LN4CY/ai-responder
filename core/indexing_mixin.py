@@ -413,6 +413,13 @@ class IndexingMixin:
                         "predicate": "is_a",
                         "object": "MeshNode"
                     })
+                    node_type = n.get('type')
+                    if node_type and node_type in ('Repeater', 'Room', 'Chat', 'Sensor'):
+                        self.mcp_client.call_tool("memory_add_fact", {
+                            "subject": nid,
+                            "predicate": "is_a",
+                            "object": node_type
+                        })
                     if n.get('longName'):
                         self.mcp_client.call_tool("memory_add_fact", {
                             "subject": nid,
@@ -424,6 +431,13 @@ class IndexingMixin:
                             "subject": nid,
                             "predicate": "has_short_name",
                             "object": str(n.get('shortName'))
+                        })
+                    hops = n.get('hops')
+                    if hops is not None and hops != 'unknown' and hops != -1:
+                        self.mcp_client.call_tool("memory_add_fact", {
+                            "subject": nid,
+                            "predicate": "has_hops",
+                            "object": str(hops)
                         })
 
             # 2. Sync active proactive tasks

@@ -190,7 +190,10 @@ TOOL USAGE PROTOCOL:
      * "request_node_telemetry(node_id_or_name, telemetry_type)": Force OTA sensor refresh.
    - FOR MESHCORE:
      * "get_meshcore_self_info": Local MeshCore bot identity (public key, name, radio settings).
-     * "get_meshcore_contacts": "Who is online" / active MeshCore contacts and neighbor hops.
+     * "get_meshcore_contacts": "Who is online" / active MeshCore contacts, node types (Repeater, Room, Chat), and neighbor hops.
+     * "get_meshcore_repeaters": Discover MeshCore Repeaters on the mesh, with IDs, hops, and locations.
+     * "get_meshcore_rooms": Discover MeshCore Room servers and BBS communities.
+     * "get_meshcore_status(contact_id_or_name)": Request live OTA status (battery voltage, uptime, noise floor, SNR, packet stats) from a repeater, room, or client.
      * "get_meshcore_contact_details(contact_id_or_name)": View MeshCore contact telemetry, hops, and GPS coordinates.
      * "send_meshcore_message(destination, text, channel)": Send an outbound message on MeshCore.
 
