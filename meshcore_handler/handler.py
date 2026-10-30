@@ -510,10 +510,21 @@ class MeshCoreHandler:
             if destination_id == '^all' or destination_id == 'broadcast':
                 # Group channel broadcast (unacknowledged flood)
                 logger.info(f"📤 [MeshCore] Broadcasting to channel {channel_index}: {text[:50]}...")
-                result = await self.meshcore.commands.send_chan_msg(channel_index, text)
-                if result and result.type == EventType.ERROR:
-                    logger.warning(f"[MeshCore] Error sending chan msg: {result.payload}")
-                    return False
+                max_send_attempts = 3
+                result = None
+                for send_attempt in range(max_send_attempts):
+                    result = await self.meshcore.commands.send_chan_msg(channel_index, text)
+                    if result and result.type == EventType.ERROR:
+                        err_code = getattr(result, 'payload', {}).get('error_code') if isinstance(result.payload, dict) else None
+                        code_str = getattr(result, 'payload', {}).get('code_string', str(result.payload))
+                        logger.warning(f"[MeshCore] Error sending chan msg (attempt {send_attempt + 1}/{max_send_attempts}): {code_str}")
+                        if err_code == 4 and send_attempt < max_send_attempts - 1:
+                            retry_delay = 1.5 * (send_attempt + 1)
+                            logger.info(f"[MeshCore] Radio reported BAD_STATE (busy). Retrying in {retry_delay:.1f}s...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return False
+                    break
                 return True
             else:
                 # Direct message to contact
@@ -532,10 +543,22 @@ class MeshCoreHandler:
 
                 dest_param = contact if contact else target
                 logger.info(f"📤 [MeshCore] Sending DM to {destination_id}: {text[:50]}...")
-                result = await self.meshcore.commands.send_msg(dest_param, text)
-                if result and result.type == EventType.ERROR:
-                    logger.warning(f"[MeshCore] Error sending DM: {result.payload}")
-                    return False
+
+                max_send_attempts = 3
+                result = None
+                for send_attempt in range(max_send_attempts):
+                    result = await self.meshcore.commands.send_msg(dest_param, text)
+                    if result and result.type == EventType.ERROR:
+                        err_code = getattr(result, 'payload', {}).get('error_code') if isinstance(result.payload, dict) else None
+                        code_str = getattr(result, 'payload', {}).get('code_string', str(result.payload))
+                        logger.warning(f"[MeshCore] Radio error sending DM (attempt {send_attempt + 1}/{max_send_attempts}): {code_str}")
+                        if err_code == 4 and send_attempt < max_send_attempts - 1:
+                            retry_delay = 1.5 * (send_attempt + 1)
+                            logger.info(f"[MeshCore] Radio reported BAD_STATE (busy). Retrying in {retry_delay:.1f}s...")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        return False
+                    break
 
                 # Extract expected ACK CRC from firmware response
                 expected_ack = None
@@ -561,7 +584,7 @@ class MeshCoreHandler:
 
                 # Timeout calculation: allow suggested timeout with padding, bounded by ack_timeout
                 suggested_sec = (suggested_timeout_ms / 1000.0) if suggested_timeout_ms else 10.0
-                timeout_sec = min(max(suggested_sec * 1.5, 6.0), float(self.ack_timeout))
+                timeout_sec = min(max(suggested_sec * 3.5, 15.0), float(self.ack_timeout))
 
                 try:
                     logger.debug(f"[MeshCore] Awaiting RF ACK for {expected_ack} (timeout: {timeout_sec:.1f}s)...")

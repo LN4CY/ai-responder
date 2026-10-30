@@ -282,6 +282,42 @@ class TestMeshCoreHandler(unittest.TestCase):
         self.assertTrue(res)
         self.assertEqual(len(self.handler._pending_acks), 0)
 
+    def test_async_send_chunk_retries_on_bad_state(self):
+        """Test that send_msg retries automatically when radio reports ERR_CODE_BAD_STATE."""
+        from meshcore_handler.handler import EventType
+        mock_meshcore = MagicMock()
+        mock_meshcore.contacts = {}
+
+        mock_err_result = MagicMock()
+        mock_err_result.type = EventType.ERROR
+        mock_err_result.payload = {'error_code': 4, 'code_string': 'ERR_CODE_BAD_STATE'}
+
+        mock_ok_result = MagicMock()
+        mock_ok_result.type = getattr(EventType, 'MSG_SENT', 'MSG_SENT')
+        mock_ok_result.payload = {
+            'expected_ack': b'\x11\x22\x33\x44',
+            'suggested_timeout': 1000
+        }
+
+        call_count = 0
+        async def fake_send_msg(dest, text):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return mock_err_result
+            asyncio.create_task(self._fire_delayed_ack("11223344", 400))
+            return mock_ok_result
+
+        mock_meshcore.commands.send_msg.side_effect = fake_send_msg
+        self.handler.meshcore = mock_meshcore
+
+        with patch('asyncio.sleep') as mock_sleep:
+            mock_sleep.return_value = None
+            res = asyncio.run(self.handler._async_send_chunk("Retry test", "Alice", 0))
+            self.assertTrue(res)
+            self.assertEqual(call_count, 2)
+            mock_sleep.assert_called_with(1.5)
+
 
 class TestMeshCoreMCP(unittest.TestCase):
     """Test suite for FastMCP MeshCore tool functions."""
