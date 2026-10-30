@@ -52,5 +52,36 @@ class TestSessionManagement(unittest.TestCase):
         self.assertTrue(os.path.exists(expected_path), f"Sanitized file not found at {expected_path}")
         self.assertFalse(os.path.exists(os.path.join(self.test_dir, "passwd")), "Directory traversal detected!")
 
+    def test_session_manager_thread_safe_timeout_no_duplicates(self):
+        """Test that SessionManager handles timeouts atomically and never produces duplicate timeouts."""
+        from conversation.session import SessionManager
+        import time
+
+        sm = SessionManager(self.manager, session_timeout=1)
+        user = "!44444444"
+
+        # Start session
+        success, start_msg, name = sm.start_session(user, "test_session")
+        self.assertTrue(success)
+        self.assertTrue(sm.is_active(user))
+
+        # Backdate session activity
+        sm.active_sessions[user]['last_activity'] = time.time() - 10
+
+        # Run concurrent checks
+        t1_timed_out, t1_msg, _, _ = sm.check_timeout(user)
+        self.assertTrue(t1_timed_out)
+        self.assertIn("ended (timeout", t1_msg)
+        self.assertFalse(sm.is_active(user))
+
+        # Second check immediately after must NOT fire timeout again
+        t2_timed_out, t2_msg, _, _ = sm.check_timeout(user)
+        self.assertFalse(t2_timed_out)
+        self.assertIsNone(t2_msg)
+
+        # check_all_timeouts must also return empty
+        timeouts = sm.check_all_timeouts()
+        self.assertEqual(len(timeouts), 0)
+
 if __name__ == '__main__':
     unittest.main()

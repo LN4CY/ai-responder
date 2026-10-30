@@ -1,3 +1,44 @@
+# Release Notes v2.2.0
+
+This release introduces **MeshCore Support**, a **Protocol-Isolated Architecture**, **First-Class Repeaters & Rooms Awareness**, **Adaptive RF ACK Delivery Tracking**, and full **Proactive Agent Parity** across both Meshtastic and MeshCore mesh networks.
+
+## Major Features & Enhancements 🚀
+
+### 📡 First-Class MeshCore Protocol Support & Isolation
+- **Dedicated Protocol Implementations (`responders/meshcore_responder.py` & `responders/meshtastic_responder.py`)**: Clean architectural isolation between protocols with shared base mixins (`core/base_responder.py`).
+- **Flexible Hardware Interfaces**: Standalone serial interface (`MESHCORE_INTERFACE=serial`) or TCP companion interface to MeshMonitor Virtual Nodes (`MESHCORE_INTERFACE=tcp`, port `5000`).
+- **Protocol-Specific Admin & Channel Isolation**: `MESHCORE_ADMIN_NODE_ID` and `MESHCORE_ALLOWED_CHANNELS` provide independent permissions for MeshCore contacts (display names and 12-char hex public key prefixes) and channels (e.g. Channel 4).
+
+### 🏰 Repeaters & Room Servers Support
+- **Protocol Type Extraction**: Decodes MeshCore 1-byte advertisement headers into first-class entity types: `Repeater` (`0x02`), `Room` (`0x03`), `Chat` (`0x01`), and `Sensor` (`0x04`).
+- **Automated Knowledge Graph Semantic Indexing**: Contacts are automatically classified into the SQLite Knowledge Graph (`is_a Repeater`, `is_a Room`, `has_hops`), enabling natural language semantic recall for queries like *"what repeaters are near me?"* or *"what rooms are available?"*.
+- **Dedicated MeshCore MCP Tools**:
+  - `get_meshcore_repeaters`: Lists discovered repeaters, hop distances, and coordinates.
+  - `get_meshcore_rooms`: Lists active community rooms and BBS servers.
+  - `get_meshcore_status`: Requests live over-the-air status (`req_status_sync`) reporting battery voltage, uptime, noise floor, last SNR, and packet counters.
+
+### ⏱️ Adaptive RF ACK Tracking & Airtime Optimization
+- **Physical RF ACK Waiter**: Subscribes to `EventType.ACK` and captures the 4-byte CRC `expected_ack` from firmware responses, awaiting confirmed remote delivery rather than arbitrary fixed delays.
+- **Dynamic Pacing Buffer**: Adaptive settling buffer (`MESHCORE_POST_ACK_DELAY=2.0s`) drastically speeds up multi-chunk deliveries while preventing channel collisions.
+- **LoRa Thinking Packet Suppression**: Suppresses initial `"Thinking... 🤖"` packets on MeshCore (`MESHCORE_SEND_THINKING=false`) to conserve channel bandwidth and eliminate duplicate retries.
+- **Automatic BAD_STATE Recovery**: Automatically retries transmission with exponential backoff when the radio firmware reports `ERR_CODE_BAD_STATE` (busy state).
+
+### 💬 Channel Message Sender Parsing
+- **Companion Header Parsing**: Automatically parses companion broadcast messages formatted as `<SenderName>: <Message>` on group channels (e.g. Channel 4).
+- **Identity & Trigger Resolution**: Strips sender prefixes to trigger `!ai` commands reliably, resolves public key prefixes from contacts, and correctly attributes conversation turns and admin permissions.
+
+### 🤖 Proactive & Autonomous Agent Parity
+- **Full MCP Parity in `mcp_server_meshcore.py`**: Added `schedule_message`, `watch_condition`, `watch_node_online`, `list_proactive_tasks`, `cancel_proactive_task`, and `send_message`.
+- **Bi-directional Identity Matching**: Watchers seamlessly match against contact display names (`LN4CY_TDeck`), public key prefixes (`!12a1b2dd1de3`), and resolved node IDs.
+
+## Reliability, Session Management & Firmware Hardening 🛠️
+- **Radio Payload Safety (`ERR_CODE_BAD_STATE` Fix)**: Implemented UTF-8 byte-aware chunking (`prepare_chunks` and `split_message_utf8`) ensuring each packet stays $\le 152$ bytes under the MeshCore firmware 160-byte limit (`MAX_TEXT_LEN`), with dedicated reservation for session indicators and chunk counters.
+- **Intuitive Session Close Commands**: Added support for `!ai end`, `!ai -end`, `!ai close`, `!ai exit`, and `!ai quit`, as well as plain `end`/`exit`/`quit` within active DM sessions, closing sessions cleanly without unwanted LLM query routing.
+- **Thread-Safe Session Timeout Deduplication**: Added re-entrant lock synchronization (`RLock`) across all `SessionManager` methods, eliminating race conditions between the main health loop and incoming packet callbacks and preventing duplicate timeout messages.
+- **Radio Health Watchdog Link Stability**: Updated `MeshCoreHandler.send_probe()` and message transmissions to refresh radio `last_activity`, preventing false-positive watchdog kills and restart loops during low RF traffic periods.
+
+---
+
 # Release Notes v2.1.0
 
 This release introduces the **Modular Model Context Protocol (MCP) Architecture**, a **built-in zero-dependency SQLite FTS5 + Knowledge Graph Memory Server**, **Dynamic Model Switching** (Fast vs. Thinking models), and comprehensive reliability & privacy fixes across the entire codebase.

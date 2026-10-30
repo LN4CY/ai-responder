@@ -1,14 +1,16 @@
 # Architecture
 
-The `ai-responder` is a Python-based service designed to act as an autonomous agent on a Meshtastic network. It connects to the mesh via a TCP interface (typically provided by MeshMonitor) and processes messages addressed to it or broadcast commands.
+The `ai-responder` is a Python-based service designed to act as an autonomous agent on **Meshtastic** and **MeshCore** mesh networks. It connects to the mesh directly via Serial/USB or via TCP interfaces (typically provided by MeshMonitor's Virtual Node servers) and processes messages addressed to it or broadcast commands.
 
 ## System Overview
 
 ```mermaid
 graph TD
-    subgraph Mesh Network
-        Radio[LoRa Radio]
-        Nodes[Mesh Nodes]
+    subgraph Mesh Networks
+        RadioMesh["Meshtastic LoRa Radio"]
+        RadioCore["MeshCore LoRa Radio"]
+        NodesMesh["Meshtastic Nodes"]
+        NodesCore["MeshCore Companions & Repeaters"]
     end
 
     subgraph Host / Docker
@@ -16,7 +18,9 @@ graph TD
         AI[AI Responder Router]
         
         subgraph MCP Servers
-            Internal[Internal Meshtastic & SQLite Memory]
+            InternalMesh[Internal Meshtastic MCP]
+            InternalCore[Internal MeshCore MCP]
+            InternalMem[SQLite Memory & Knowledge Graph]
             External[External MCP Plugins]
         end
         
@@ -28,21 +32,38 @@ graph TD
         end
     end
 
-    Radio <--> MM
-    MM <-->|TCP :4404| AI
+    RadioMesh <--> MM
+    RadioCore <--> MM
+    MM <-->|TCP :4404 Meshtastic| AI
+    MM <-->|TCP :5000 MeshCore| AI
     AI <--> MCP Servers
     AI <--Multi-Turn Loop-->|REST API| Gemini
     AI <--Multi-Turn Loop-->|HTTP API| Ollama
-    Nodes <--> Radio
+    NodesMesh <--> RadioMesh
+    NodesCore <--> RadioCore
 ```
 
 ## Core Components
 
-### 1. Meshtastic Interface (`MeshtasticHandler`)
-The application abstracts the connection to the radio via the `MeshtasticHandler` class. It supports:
-- **Serial Connection**: Connects directly to a radio via USB.
-- **Telemetry Caching**: Subscribes to telemetry events to cache environmental metrics (Temp, Humidity, etc.) from remote nodes.
-- **On-Demand Request**: Proactively triggers empty telemetry packets with `wantResponse=True` to fetch fresh data for context awareness.
+### 1. Protocol-Isolated Responders & Handlers
+The application abstracts the connection to mesh hardware across protocols with strict architectural isolation:
+- **`MeshtasticAIResponder` (`responders/meshtastic_responder.py`)**:
+  - Dedicated responder instance for the Meshtastic protocol.
+  - Connects via `MeshtasticHandler` (Serial or TCP via MeshMonitor port 4404).
+  - Uses Google Protocol Buffers (`mesh_pb2`) and PyPubSub.
+  - Registers `mcp_server_meshtastic` tools and manages Meshtastic 4-byte hex admin identities (`!1234abcd`).
+- **`MeshCoreAIResponder` (`responders/meshcore_responder.py`)**:
+  - Dedicated responder instance for the MeshCore protocol.
+  - Connects via `MeshCoreHandler` (TCP port 5000 for MeshMonitor Virtual Node or Serial for standalone).
+  - Uses the official `meshcore` library with an asynchronous event loop in a dedicated background worker thread.
+  - **Repeaters & Rooms Awareness**: Discovers node types from 1-byte advertisement headers (`Repeater`, `Room`, `Chat`, `Sensor`), indexes them into the Knowledge Graph, and supports live OTA status queries (`req_status_sync`).
+  - **Physical RF ACK Tracking**: Awaits remote node ACK (`EventType.ACK` matching `expected_ack` CRC) with configurable settling delay (`MESHCORE_POST_ACK_DELAY=2.0s`) and automatic backoff retry on `ERR_CODE_BAD_STATE`.
+  - **Channel Broadcast Parsing**: Parses `<SenderName>: <Message>` companion packets on group channels (e.g. Channel 4), resolving sender contact identities.
+  - Registers `mcp_server_meshcore` tools and manages MeshCore-specific admin identities (contact names and 12-char hex public key prefixes).
+- **`BaseAIResponder` (`core/base_responder.py`)**:
+  - Common foundation providing shared mixins: `HistoryMixin`, `IndexingMixin`, `ProactiveMixin`, `CommandsMixin`, and `QueryMixin`.
+- **Dual-Mesh Routing**:
+  - In `dual` mode, both responders can run concurrently in their respective containers or processes, sharing SQLite graph memory while maintaining independent radio loops.
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:
@@ -123,6 +144,11 @@ ai-responder/
 │   └── session.py     # Session logic
 ├── meshtastic_handler/# Meshtastic interface
 │   └── handler.py     # Message sending & rate limiting
+├── meshcore_handler/  # MeshCore interface
+│   └── handler.py     # Asyncio bridge, companion protocol, & queueing
+├── mcp_server_meshtastic.py # FastMCP tools for Meshtastic
+├── mcp_server_meshcore.py   # FastMCP tools for MeshCore
+├── mcp_server_memory.py     # SQLite Knowledge Graph & FTS5
 ├── requirements.txt   # Python dependencies
 ├── Dockerfile         # Container definition
 ├── README.md          # User documentation

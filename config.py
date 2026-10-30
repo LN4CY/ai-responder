@@ -12,15 +12,37 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.1.3"
+VERSION = "2.2.0"
+MESH_TYPE = os.getenv('MESH_NETWORK_TYPE', os.getenv('MESH_TYPE', 'meshtastic')).lower()  # 'meshtastic', 'meshcore', 'dual'
+
+# Meshtastic Configuration
 INTERFACE_TYPE = os.getenv('INTERFACE_TYPE', 'tcp')
 SERIAL_PORT = os.getenv('SERIAL_PORT', '/dev/ttyUSB0')
 MESHTASTIC_HOST = os.getenv('MESHTASTIC_HOST', 'meshtastic.local')
 MESHTASTIC_PORT = int(os.getenv('MESHTASTIC_PORT', '4403'))
-ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')
+MESHTASTIC_ADMIN_NODE_ID = os.getenv('MESHTASTIC_ADMIN_NODE_ID', '')
+ENV_ADMIN_NODE_ID = os.getenv('ADMIN_NODE_ID', '')  # global / fallback
 AI_PROVIDER = os.getenv('AI_PROVIDER', '')
-ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')
+MESHTASTIC_ALLOWED_CHANNELS = os.getenv('MESHTASTIC_ALLOWED_CHANNELS', '')
+ALLOWED_CHANNELS = os.getenv('ALLOWED_CHANNELS', '')  # global / fallback
 MESHTASTIC_AWARENESS = os.getenv('MESHTASTIC_AWARENESS', 'true').lower() == 'true'
+
+# MeshCore Configuration (Standalone or via MeshMonitor Virtual Node)
+MESHCORE_INTERFACE = os.getenv('MESHCORE_INTERFACE', 'tcp').lower()  # 'tcp' or 'serial'
+MESHCORE_HOST = os.getenv('MESHCORE_HOST', '127.0.0.1')
+MESHCORE_PORT = int(os.getenv('MESHCORE_PORT', '5000'))  # Default MeshMonitor MeshCore Virtual Node port
+MESHCORE_SERIAL_PORT = os.getenv('MESHCORE_SERIAL_PORT', '/dev/ttyUSB1')
+MESHCORE_BAUDRATE = int(os.getenv('MESHCORE_BAUDRATE', '115200'))
+MESHCORE_AUTO_RECONNECT = os.getenv('MESHCORE_AUTO_RECONNECT', 'true').lower() == 'true'
+MESHCORE_RECONNECT_INTERVAL = int(os.getenv('MESHCORE_RECONNECT_INTERVAL', '10'))
+MESHCORE_ACK_TIMEOUT = int(os.getenv('MESHCORE_ACK_TIMEOUT', '30'))
+MESHCORE_ADMIN_NODE_ID = os.getenv('MESHCORE_ADMIN_NODE_ID', '')
+MESHCORE_ALLOWED_CHANNELS = os.getenv('MESHCORE_ALLOWED_CHANNELS', '')
+MESHCORE_AWARENESS = os.getenv('MESHCORE_AWARENESS', 'true').lower() == 'true'
+MESHCORE_SEND_THINKING = os.getenv('MESHCORE_SEND_THINKING', 'false').lower() == 'true'
+MESHCORE_WAIT_FOR_ACK = os.getenv('MESHCORE_WAIT_FOR_ACK', 'true').lower() == 'true'
+MESHCORE_POST_ACK_DELAY = float(os.getenv('MESHCORE_POST_ACK_DELAY', '2.0'))
+MESHCORE_MAX_CHUNK_BYTES = int(os.getenv('MESHCORE_MAX_CHUNK_BYTES', '152'))
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')
@@ -75,6 +97,66 @@ PROACTIVE_TASKS_FILE = "proactive_tasks.json"
 SYSTEM_PROMPT_LOCAL_FILE = os.getenv('SYSTEM_PROMPT_LOCAL_FILE', 'system_prompt_local.txt')
 SYSTEM_PROMPT_ONLINE_FILE = os.getenv('SYSTEM_PROMPT_ONLINE_FILE', 'system_prompt_online.txt')
 
+DEFAULT_SYSTEM_PROMPT_LOCAL_MESHCORE = """You are a helpful AI assistant on the MeshCore mesh network.
+CONTEXT ISOLATION:
+- Each conversation is a separate sandbox. Never leak data between them.
+- Current Context ID: {context_id}
+
+TIME AWARENESS:
+- Your internal clock runs on **UTC**: {current_time}
+
+PERSONA:
+- You receive [Node ID / Contact Name] and minimal environment metadata with user messages.
+- Keep responses concise, direct, and under 160 characters suitable for LoRa packet transmission.
+"""
+
+DEFAULT_SYSTEM_PROMPT_ONLINE_MESHCORE = """You are a helpful AI assistant on the MeshCore mesh network.
+CONTEXT ISOLATION:
+- Each conversation is a separate sandbox. Never leak data between them.
+- Current Context ID: {context_id}
+
+TIME AWARENESS & SCHEDULING:
+- Your internal clock runs on **UTC**: {current_time}
+- Users will often request alarms or schedules in their local time.
+- To determine their local time, check the `Location` coordinates in their `[User: ...]` metadata block to infer their timezone.
+- Calculate the offset from UTC, and use that to pass the correct relative `delay_seconds` to the scheduling tool.
+
+TOOL USAGE PROTOCOL:
+1. MESHCORE TOOLS (Data Gathering Only):
+   - Use these to inspect contacts and interact with the MeshCore network.
+   - "get_meshcore_self_info": View local MeshCore bot identity (public key, name, radio settings).
+   - "get_meshcore_contacts": "Who is online" / active MeshCore contacts and neighbor hops.
+   - "get_meshcore_contact_details(contact_id_or_name)": View MeshCore contact telemetry, hops, and GPS coordinates.
+   - "send_meshcore_message(destination, text, channel)": Send an outbound message or alert on MeshCore.
+
+2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
+   - You have persistent long-term memory via built-in memory tools. Use them proactively.
+   - "memory_search(query)": Recall past facts, user preferences, or prior conversations using full-text search. Call this FIRST when a user asks about something you may have seen before.
+   - "memory_query_facts(entity)": Look up a specific person, contact, or topic and all its known relationships in the Knowledge Graph.
+   - "memory_add_fact(subject, predicate, object)": Store a new fact. Call this whenever you learn something worth remembering (user preferences, callsigns, roles, hardware, locations, relationships, events).
+   - Store proactively: if a user tells you their name, callsign, location, preferences, or hardware setup — store it immediately with memory_add_fact.
+   - Recall proactively: before answering questions about past events or users, search memory first.
+
+3. INTERNAL REASONING (Calculations & Logic):
+   - You MUST use your own internal capabilities for math, analysis, and logic.
+   - DO NOT look for tools to calculate distance, convert units, or format data.
+   - Example: If you have two sets of coordinates from tool outputs, YOU calculate the distance yourself.
+
+4. LOCATION RESOLUTION:
+   - "get_location_address(lat, lon)": Use this to convert raw latitude/longitude coordinates into a human-readable street address, city, and state.
+   - MAP LINKS: If the user asks for directions or to see a location, generate a clickable Google Maps URL. You MUST NOT use spaces in the URL. Either URL-encode the addresses (using '+' or '%20') or use pure coordinates. Example: `https://www.google.com/maps/dir/[start_lat],[start_lon]/[end_lat],[end_lon]`
+
+5. GOOGLE SEARCH & MAPS (New/External Info & Places):
+   - "google_search_stub(query)": Use this to search the web for real-time info (weather, news), OR to find nearby places/businesses (e.g., "closest pharmacy to [Address]").
+   - If you only have coordinates, use `get_location_address` FIRST to get a readable address, then use `google_search_stub` with that address to find nearby places.
+   - DO NOT use search for general knowledge (history, science, definitions). Use your internal model for that.
+
+RESPONSE GUIDELINES:
+- Output only the final message for LoRa transmission.
+- Be concise, direct, helpful, and under 160 characters when possible for single packet efficiency.
+- Omit markdown headers (#), bullet points, and verbose filler.
+"""
+
 DEFAULT_SYSTEM_PROMPT_LOCAL = """You are a helpful AI assistant on the Meshtastic mesh network.
 CONTEXT ISOLATION:
 - Each conversation is a separate sandbox. Never leak data between them.
@@ -100,12 +182,21 @@ TIME AWARENESS & SCHEDULING:
 - Calculate the offset from UTC, and use that to pass the correct relative `delay_seconds` to the scheduling tool.
 
 TOOL USAGE PROTOCOL:
-1. MESHTASTIC TOOLS (Data Gathering Only):
-   - Use these ONLY to fetch raw data from the mesh (nodes, telemetry, status).
-   - "get_my_info": Call for your own identity/status.
-    - "get_mesh_nodes": "Who is online" or find Node IDs. Includes calculated distances from the bot.
-    - "get_node_details(node_id_or_name)": Meshtastic Data (Cached). View last known identity, signal (SNR), and ALL sensor data (Battery, Temp, Hum, Air Quality, etc). CALL THIS FIRST.
-    - "request_node_telemetry(node_id_or_name, telemetry_type)": Meshtastic Refresh (Active). Force an over-the-air update for a specific sensor type (device, environment, local_stats, air_quality, power, health, host). CALL ONLY if data is missing or stale. If it times out, a deferred callback is registered automatically—no need to tell the user to ask again.
+1. MESH NETWORK TOOLS (Data Gathering Only):
+   - You operate across Meshtastic and/or MeshCore mesh networks. Check the user's `[Network: Meshtastic]` or `[Network: MeshCore]` context tag to select the appropriate toolset:
+   - FOR MESHTASTIC:
+     * "get_my_info": Local Meshtastic bot identity and settings.
+     * "get_mesh_nodes": "Who is online" on Meshtastic, lists hardware IDs (!xxxxx) and distances.
+     * "get_node_details(node_id_or_name)": View Meshtastic SNR, battery, and telemetry. CALL THIS FIRST.
+     * "request_node_telemetry(node_id_or_name, telemetry_type)": Force OTA sensor refresh.
+   - FOR MESHCORE:
+     * "get_meshcore_self_info": Local MeshCore bot identity (public key, name, radio settings).
+     * "get_meshcore_contacts": "Who is online" / active MeshCore contacts, node types (Repeater, Room, Chat), and neighbor hops.
+     * "get_meshcore_repeaters": Discover MeshCore Repeaters on the mesh, with IDs, hops, and locations.
+     * "get_meshcore_rooms": Discover MeshCore Room servers and BBS communities.
+     * "get_meshcore_status(contact_id_or_name)": Request live OTA status (battery voltage, uptime, noise floor, SNR, packet stats) from a repeater, room, or client.
+     * "get_meshcore_contact_details(contact_id_or_name)": View MeshCore contact telemetry, hops, and GPS coordinates.
+     * "send_meshcore_message(destination, text, channel)": Send an outbound message on MeshCore.
 
 2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
    - You have persistent long-term memory via built-in memory tools. Use them proactively.
@@ -200,13 +291,14 @@ CONFIG_FILE = os.getenv('CONFIG_FILE', '/app/data/config.json')
 
 
 def load_system_prompt(provider, context_id="Unknown"):
-    """Load system prompt from file based on provider type."""
+    """Load system prompt from file based on provider type and active mesh protocol."""
+    is_meshcore = (MESH_TYPE == 'meshcore')
     if provider in ['ollama', 'local']:
         prompt_file = SYSTEM_PROMPT_LOCAL_FILE
-        default = DEFAULT_SYSTEM_PROMPT_LOCAL
+        default = DEFAULT_SYSTEM_PROMPT_LOCAL_MESHCORE if is_meshcore else DEFAULT_SYSTEM_PROMPT_LOCAL
     else:
         prompt_file = SYSTEM_PROMPT_ONLINE_FILE
-        default = DEFAULT_SYSTEM_PROMPT_ONLINE
+        default = DEFAULT_SYSTEM_PROMPT_ONLINE_MESHCORE if is_meshcore else DEFAULT_SYSTEM_PROMPT_ONLINE
     
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -220,7 +312,7 @@ def load_system_prompt(provider, context_id="Unknown"):
     except Exception as e:
         logger.warning(f"Failed to load system prompt from {prompt_file}: {e}")
     
-    logger.info(f"Using default system prompt for {provider}")
+    logger.info(f"Using default system prompt for {provider} ({'MeshCore' if is_meshcore else 'Meshtastic'})")
     try:
         return default.format(context_id=context_id, current_time=current_time)
     except Exception:
@@ -248,10 +340,16 @@ class Config:
         
         # Default configuration
         return {
+            'mesh_type': 'meshtastic',
             'allowed_channels': [0],
+            'meshtastic_allowed_channels': [0],
+            'meshcore_allowed_channels': [0],
             'admin_nodes': [],
+            'meshtastic_admin_nodes': [],
+            'meshcore_admin_nodes': [],
             'current_provider': 'ollama',
             'meshtastic_awareness': True,
+            'meshcore_awareness': True,
             'mcp_servers': {}
         }
     

@@ -10,10 +10,22 @@ The application is configured primarily via environment variables passed to the 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `INTERFACE_TYPE` | `tcp` | Connection type: `tcp` or `serial`. |
-| `SERIAL_PORT` | `/dev/ttyACM0` | Serial device path (e.g., `COM3` on Windows). |
+| `MESH_NETWORK_TYPE` | `meshtastic` | Network type to operate on: `meshtastic`, `meshcore`, or `dual` (both active concurrently). (Alias: `MESH_TYPE`). |
+| `INTERFACE_TYPE` | `tcp` | Meshtastic connection type: `tcp` or `serial`. |
+| `SERIAL_PORT` | `/dev/ttyACM0` | Meshtastic serial device path (e.g., `COM3` on Windows). |
 | `MESHTASTIC_HOST` | `meshmonitor` | Hostname of the Meshtastic TCP interface. |
-| `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface. |
+| `MESHTASTIC_PORT` | `4404` | Port of the Meshtastic TCP interface (MeshMonitor Meshtastic Virtual Node). |
+| `MESHCORE_INTERFACE` | `tcp` | MeshCore connection type: `tcp` (for MeshMonitor Virtual Node or WiFi companion) or `serial` (for standalone radio). |
+| `MESHCORE_HOST` | `127.0.0.1` | Hostname/IP for MeshCore TCP connection (e.g. `meshmonitor` in Docker). |
+| `MESHCORE_PORT` | `5000` | Port for MeshCore TCP connection (default MeshMonitor MeshCore Virtual Node port). |
+| `MESHCORE_SERIAL_PORT` | `/dev/ttyUSB1` | Serial device path for standalone MeshCore hardware. |
+| `MESHCORE_BAUDRATE` | `115200` | Baudrate for standalone MeshCore serial interface. |
+| `MESHCORE_AUTO_RECONNECT` | `true` | Automatically reconnect to MeshCore if connection drops. |
+| `MESHCORE_ADMIN_NODE_ID` | *(empty)* | MeshCore admin contact name (e.g. `LN4CY_TDeck`) or 12-char hex prefix (e.g. `!12a1b2dd1de3`). Supports comma-separated list. |
+| `MESHCORE_ALLOWED_CHANNELS` | `0` | Comma-separated list of channel indices allowed for MeshCore public broadcast responses. |
+| `MESHCORE_WAIT_FOR_ACK` | `true` | Wait for physical RF ACK on MeshCore DMs before sending next chunk. |
+| `MESHCORE_POST_ACK_DELAY` | `2.0` | Seconds to settle after physical RF ACK before transmitting next chunk. |
+| `MESHCORE_SEND_THINKING` | `false` | Send initial "Thinking... 🤖" LoRa packet on MeshCore (default: false to conserve airtime). |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds to wait between reconnection attempts. |
 | `CONNECTION_MAX_RETRIES` | `3` | Number of initial connection attempts before switching to watchdog loop. |
 | `MESHTASTIC_AWARENESS` | `true` | Enable/Disable all mesh context injection (metadata & tools). |
@@ -87,6 +99,16 @@ System prompts are loaded from external text files, allowing easy customization 
   - Params: `node_id_or_name`, `context_note`, `notify_targets` (opt).
 - **`list_proactive_tasks`**: Lists all active tasks registered by the **calling user**.
 - **`cancel_proactive_task`**: Cancels a task by ID (e.g., `sched-1`) or `all` to wipe the caller's tasks.
+
+**MeshCore MCP Tools (`mcp_server_meshcore.py`):**
+- **`get_meshcore_self_info`**: Retrieves the local MeshCore bot identity (public key, name, radio settings).
+- **`get_meshcore_contacts`**: Returns active MeshCore contacts and neighbors, including their node types (Repeater, Room, Chat) and hop paths.
+- **`get_meshcore_repeaters`**: Lists all discovered MeshCore repeaters, hop distances, and coordinates.
+- **`get_meshcore_rooms`**: Lists active MeshCore room servers and BBS communities.
+- **`get_meshcore_status`**: Requests live OTA status (`req_status_sync`) reporting battery voltage, uptime, noise floor, SNR, and packet counters.
+- **`get_meshcore_contact_details`**: Fetches detailed metadata, type, hops, and coordinates for a specific MeshCore contact.
+- **`send_meshcore_message`**: Sends an outbound message to a contact name/prefix or channel broadcast (`^all`).
+- *Note: Proactive tools (`schedule_message`, `watch_condition`, `watch_node_online`, `list_proactive_tasks`, `cancel_proactive_task`, `send_message`) are fully active on MeshCore with multi-form contact name/prefix resolution.*
 
 **Adaptive Fallback Logic:**
 If `MESHTASTIC_AWARENESS` is enabled but the model doesn't support tools, the system automatically injects:
@@ -208,26 +230,90 @@ In addition to the built-in Meshtastic and SQLite Memory MCP servers, the respon
 > - Values in `config.json` take precedence over environment variables if the file already exists.
 > - `admin_nodes` must be an array of individual hex IDs. The application auto-repairs any comma-concatenated strings (e.g., from `ADMIN_NODE_ID=!a,!b`) into a clean array on startup.
 
-## Docker Compose Example
+## Docker Compose Examples
 
+### Example 1: MeshCore with MeshMonitor Virtual Node
 ```yaml
+services:
   ai-responder:
     image: ghcr.io/ln4cy/ai-responder:latest
-    container_name: meshmonitor-ai-responder
+    container_name: meshmonitor-ai-responder-meshcore
     restart: unless-stopped
     environment:
+      - MESH_TYPE=meshcore
+      - MESHCORE_INTERFACE=tcp
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck        # Admin contact name or hex prefix
+      - MESHCORE_ALLOWED_CHANNELS=0,4             # Channels allowed for public !ai responses
+      - MESHCORE_WAIT_FOR_ACK=true                # Wait for physical RF ACK
+      - MESHCORE_POST_ACK_DELAY=2.0               # Settle buffer between multi-chunk DMs
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-meshcore-data:/app/data
+      # Optional: Custom prompts
+      # - ./system_prompt_online.txt:/app/system_prompt_online.txt
+      # Optional: External MCP servers
+      # - ./mcp_servers.json:/app/data/mcp_servers.json
+    networks:
+      - mesh_net
+
+volumes:
+  ai-meshcore-data:
+```
+
+### Example 2: Meshtastic with MeshMonitor Virtual Node
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-meshtastic
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=meshtastic
       - MESHTASTIC_HOST=meshmonitor
       - MESHTASTIC_PORT=4404
-      - AI_PROVIDER=ollama
-      - OLLAMA_HOST=ollama
-      - OLLAMA_MODEL=llama3.2:1b
-      - ALLOWED_CHANNELS=0,1,2
-      - ADMIN_NODE_ID=!myadminid
+      - ADMIN_NODE_ID=!1234abcd
+      - ALLOWED_CHANNELS=0,3
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
     volumes:
-      - ai-responder-data:/app/data
-      # Optional: Map custom external MCP tools configuration
-      # - ./mcp_servers.json:/app/data/mcp_servers.json
-    depends_on:
-      - meshmonitor
-      - ollama
+      - ai-meshtastic-data:/app/data
+    networks:
+      - mesh_net
+
+volumes:
+  ai-meshtastic-data:
+```
+
+### Example 3: Dual-Mesh (Meshtastic + MeshCore Simultaneously)
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-dual
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=dual
+      # Meshtastic Protocol
+      - MESHTASTIC_HOST=meshmonitor
+      - MESHTASTIC_PORT=4404
+      - MESHTASTIC_ADMIN_NODE_ID=!1234abcd
+      - MESHTASTIC_ALLOWED_CHANNELS=0,3
+      # MeshCore Protocol
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck
+      - MESHCORE_ALLOWED_CHANNELS=0,4
+      # Shared AI Provider
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-dual-data:/app/data
+    networks:
+      - mesh_net
+
+volumes:
+  ai-dual-data:
 ```

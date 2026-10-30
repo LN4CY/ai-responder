@@ -36,6 +36,14 @@ The AI doesn't just respond; it understands its environment:
 - **Precise Location Tracking**: The AI can map out neighbors, complete with exact coordinates, altitude, and calculated distance from the bot.
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
+### 🌐 Multi-Protocol Mesh Support (Meshtastic & MeshCore)
+Operate seamlessly across Meshtastic and MeshCore networks with dedicated protocol-isolated responders:
+- **Dedicated Protocol Responders**: Isolated `MeshtasticAIResponder` and `MeshCoreAIResponder` instances with shared base mixins.
+- **Repeaters & Room Servers (MeshCore)**: First-class awareness and discovery of Repeaters (`0x02`), Room/BBS servers (`0x03`), and Chat clients (`0x01`).
+- **Adaptive RF ACK Delivery Tracking**: Dynamic physical ACK confirmation (`EventType.ACK`) with settling buffers (`MESHCORE_POST_ACK_DELAY`) and automatic backoff on `ERR_CODE_BAD_STATE`.
+- **Channel Broadcast Parsing**: Clean parsing of `<SenderName>: <Message>` companion packets on MeshCore group channels (e.g. Channel 4).
+- **Standalone or MeshMonitor Virtual Nodes**: Connect directly via Serial or attach to MeshMonitor's Virtual Node TCP ports (4404 for Meshtastic, 5000 for MeshCore).
+
 ### 🤖 Proactive Agent Architecture
 The AI can now spontaneously send messages to users or manage its own future behavior without being asked:
 - **Chainable & Stateful Tasks**: Ask the AI to "ping me every 15 seconds with the SNR and an incrementing count." The AI uses its **Conversation History** to maintain state (like counts) across turns and can recursively schedule its own future updates.
@@ -80,83 +88,251 @@ The AI can now spontaneously send messages to users or manage its own future beh
 
 ## Installation
 
-### Kubernetes / Docker Compose (Recommended)
+### Docker Compose (Recommended)
 
-Add to your `docker-compose.yml`:
+Choose the deployment configuration that matches your setup and add it to your `docker-compose.yml`:
 
+#### Option 1: MeshCore via MeshMonitor Virtual Node
+Connects to a MeshCore radio (e.g. Heltec, T-Deck, T-Echo) managed by MeshMonitor on port `5000`:
 ```yaml
-   ai-responder:
-     image: ghcr.io/ln4cy/ai-responder:latest
-     environment:
-       - MESHTASTIC_HOST=meshmonitor
-       - MESHTASTIC_PORT=4404
-       - AI_PROVIDER=gemini
-       - GEMINI_API_KEY=your_key_here
-       - ADMIN_NODE_ID=!your_admin_id
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-meshcore
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=meshcore
+      - MESHCORE_INTERFACE=tcp
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck        # Admin contact name or hex prefix (e.g. !12a1b2dd1de3)
+      - MESHCORE_ALLOWED_CHANNELS=0,4             # Channels allowed for public !ai responses
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-meshcore-data:/app/data
+    networks:
+      - mesh_net
+
+volumes:
+  ai-meshcore-data:
 ```
 
-### Ollama Setup (Local AI)
+#### Option 2: Meshtastic via MeshMonitor Virtual Node
+Connects to MeshMonitor's Meshtastic Virtual Node on TCP port `4404`:
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-meshtastic
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=meshtastic
+      - MESHTASTIC_HOST=meshmonitor
+      - MESHTASTIC_PORT=4404
+      - ADMIN_NODE_ID=!1234abcd
+      - ALLOWED_CHANNELS=0,3
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-meshtastic-data:/app/data
+    networks:
+      - mesh_net
 
-If using the `ollama` provider, you must run the Ollama container and pull a model before the bot can respond.
+volumes:
+  ai-meshtastic-data:
+```
 
-1.  **Start the stack**: `docker-compose up -d`
-2.  **Pull the model**:
-    ```bash
-    docker exec -it ollama ollama pull llama3.2:1b
-    ```
-    *Note: The default model is `llama3.2:1b`. If you change `OLLAMA_MODEL` in env, pull that one instead.*
+#### Option 3: Dual-Mesh (Meshtastic + MeshCore Concurrently)
+Listens on both networks simultaneously from a single container, routing replies back to the originating protocol:
+```yaml
+services:
+  ai-responder:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    container_name: meshmonitor-ai-responder-dual
+    restart: unless-stopped
+    environment:
+      - MESH_TYPE=dual
+      # Meshtastic Settings
+      - MESHTASTIC_HOST=meshmonitor
+      - MESHTASTIC_PORT=4404
+      - MESHTASTIC_ADMIN_NODE_ID=!1234abcd
+      - MESHTASTIC_ALLOWED_CHANNELS=0,3
+      # MeshCore Settings
+      - MESHCORE_HOST=meshmonitor
+      - MESHCORE_PORT=5000
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck
+      - MESHCORE_ALLOWED_CHANNELS=0,4
+      # AI Provider
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-dual-data:/app/data
+    networks:
+      - mesh_net
 
-### Connecting to MeshMonitor
+volumes:
+  ai-dual-data:
+```
 
-The `ai-responder` acts as a "client" to [MeshMonitor](https://github.com/yeraze/meshmonitor).
-- The `ai-responder` connects to MeshMonitor's Virtual Node TCP port (default `4404`).
-- This allows the AI bot to "see" chat messages on the mesh without needing its own dedicated LoRa radio hardware, leveraging the radio connected to MeshMonitor.
+#### Option 4: Standalone Radio via USB Serial
+Direct connection to physical LoRa hardware plugged into the host without MeshMonitor:
+```yaml
+services:
+  # Standalone Meshtastic Hardware (e.g. /dev/ttyACM0)
+  ai-responder-meshtastic:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    restart: unless-stopped
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+    environment:
+      - MESH_TYPE=meshtastic
+      - INTERFACE_TYPE=serial
+      - SERIAL_PORT=/dev/ttyACM0
+      - ADMIN_NODE_ID=!1234abcd
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-serial-data:/app/data
 
-**Enabling the Virtual Node in MeshMonitor:**
+  # Standalone MeshCore Hardware (e.g. /dev/ttyUSB1)
+  ai-responder-meshcore:
+    image: ghcr.io/ln4cy/ai-responder:latest
+    restart: unless-stopped
+    devices:
+      - /dev/ttyUSB1:/dev/ttyUSB1
+    environment:
+      - MESH_TYPE=meshcore
+      - MESHCORE_INTERFACE=serial
+      - MESHCORE_SERIAL_PORT=/dev/ttyUSB1
+      - MESHCORE_BAUDRATE=115200
+      - MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck
+      - AI_PROVIDER=gemini
+      - GEMINI_API_KEY=your_gemini_api_key
+    volumes:
+      - ai-meshcore-serial-data:/app/data
+```
 
-| Version | How to enable |
-|---------|---------------|
-| **v4.0+** | Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404` |
-| **v3.x** | Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars |
+### Standalone Docker Run Commands
 
-61
-62
-### Standalone Docker Container
-
-You can run the responder as a standalone container without Docker Compose:
+Run immediately from the command line without Docker Compose:
 
 ```bash
+# MeshCore via MeshMonitor Virtual Node (TCP)
 docker run -d \
-  --name ai-responder \
+  --name ai-responder-meshcore \
   --restart unless-stopped \
-  -e MESHTASTIC_HOST=192.168.1.100 \
-  -e MESHTASTIC_PORT=4403 \
+  -v ai-meshcore-data:/app/data \
+  -e MESH_TYPE=meshcore \
+  -e MESHCORE_HOST=192.168.1.100 \
+  -e MESHCORE_PORT=5000 \
+  -e MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck \
   -e AI_PROVIDER=gemini \
-  -e GEMINI_API_KEY=your_api_key_here \
+  -e GEMINI_API_KEY=your_gemini_api_key \
+  ghcr.io/ln4cy/ai-responder:latest
+
+# Meshtastic via TCP (Radio IP or MeshMonitor Virtual Node)
+docker run -d \
+  --name ai-responder-meshtastic \
+  --restart unless-stopped \
+  -v ai-meshtastic-data:/app/data \
+  -e MESH_TYPE=meshtastic \
+  -e MESHTASTIC_HOST=192.168.1.100 \
+  -e MESHTASTIC_PORT=4404 \
+  -e ADMIN_NODE_ID=!1234abcd \
+  -e AI_PROVIDER=gemini \
+  -e GEMINI_API_KEY=your_gemini_api_key \
+  ghcr.io/ln4cy/ai-responder:latest
+
+# Standalone MeshCore via USB Serial
+docker run -d \
+  --name ai-responder-meshcore \
+  --restart unless-stopped \
+  --device=/dev/ttyUSB1:/dev/ttyUSB1 \
+  -v ai-meshcore-data:/app/data \
+  -e MESH_TYPE=meshcore \
+  -e MESHCORE_INTERFACE=serial \
+  -e MESHCORE_SERIAL_PORT=/dev/ttyUSB1 \
+  -e MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck \
+  -e AI_PROVIDER=gemini \
+  -e GEMINI_API_KEY=your_gemini_api_key \
   ghcr.io/ln4cy/ai-responder:latest
 ```
 
-### Integration with MeshMonitor
+### Connecting to MeshMonitor Virtual Nodes
 
-To use with [MeshMonitor](https://github.com/Yeraze/meshmonitor), first enable the Virtual Node in MeshMonitor:
+The `ai-responder` pairs directly with [MeshMonitor](https://github.com/yeraze/meshmonitor):
+- **MeshCore**: Connects to MeshMonitor's MeshCore Virtual Node TCP port (default `5000`, companion protocol).
+- **Meshtastic**: Connects to MeshMonitor's Meshtastic Virtual Node TCP port (default `4404`).
+- **Multi-Client Multiplexing**: MeshMonitor holds the single physical USB radio link and safely multiplexes traffic between MeshMonitor's web UI, mobile apps, and `ai-responder`.
 
-- **v4.0+**: Dashboard → **Edit Source** → **Virtual Node** → toggle on, set port `4404`
-- **v3.x**: Set `ENABLE_VIRTUAL_NODE=true` in MeshMonitor's docker-compose env vars
+**Enabling Virtual Nodes in MeshMonitor:**
 
-Then configure ai-responder:
+| Network | Configuration in MeshMonitor | Default Port |
+|---------|------------------------------|--------------|
+| **MeshCore** | Dashboard → **Sources** → **Edit MeshCore Source** → **Virtual Node** → toggle **ON** | `5000` |
+| **Meshtastic** | Dashboard → **Sources** → **Edit Meshtastic Source** → **Virtual Node** → toggle **ON** | `4404` |
 
-1.  Add `ai-responder` to your `docker-compose.yml` (see installation above).
-2.  Set `MESHTASTIC_HOST=meshmonitor` (container name).
-3.  Set `MESHTASTIC_PORT=4404` (MeshMonitor virtual node port).
+### Local AI Setup with Ollama
 
-This allows the AI to "piggyback" on the radio connected to MeshMonitor.
+If using the local `ollama` provider instead of cloud APIs:
 
-## Multi-Platform Native Execution
+1. **Start Ollama** (e.g. `docker run -d --name ollama -p 11434:11434 -v ollama:/root/.ollama ollama/ollama`)
+2. **Pull the model**:
+   ```bash
+   docker exec -it ollama ollama pull llama3.2:1b
+   ```
+3. Set `AI_PROVIDER=ollama` and `OLLAMA_HOST=ollama` in your environment.
 
-The AI Responder is fully portable and runs on Windows, macOS, or Linux. 
+### Native Python Execution (Bare-Metal / Development)
 
-> [!TIP]
-> **Upcoming**: We are building a **Universal Web Management Dashboard** to replace all manual setup steps. For now, use the CLI as described in [CONFIG.md](CONFIG.md).
+The AI Responder runs directly on Windows, macOS, or Linux without Docker:
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/LN4CY/ai-responder.git
+   cd ai-responder
+   ```
+
+2. **Create and activate a virtual environment**:
+   ```bash
+   # Linux / macOS
+   python3 -m venv .venv
+   source .venv/bin/activate
+
+   # Windows (PowerShell)
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   ```
+
+3. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Configure environment variables**:
+   Set environment variables in your shell (or create a `.env` file):
+   ```bash
+   # Example: MeshCore via TCP Virtual Node
+   export MESH_TYPE=meshcore
+   export MESHCORE_INTERFACE=tcp
+   export MESHCORE_HOST=127.0.0.1
+   export MESHCORE_PORT=5000
+   export MESHCORE_ADMIN_NODE_ID=LN4CY_TDeck
+   export AI_PROVIDER=gemini
+   export GEMINI_API_KEY=your_api_key_here
+
+   # Set data directory for local storage (defaults to /app/data in Docker)
+   export CONFIG_FILE=./data/config.json
+   export MEMORY_DB_PATH=./data/memory.db
+   export HISTORY_DIR=./data/history
+   export CONVERSATIONS_DIR=./data/conversations
+   ```
+
+5. **Start the responder**:
+   ```bash
+   python ai_responder.py
+   ```
 
 ## Configuration
 
@@ -164,17 +340,28 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
-| `INTERFACE_TYPE` | `tcp` | `tcp` or `serial` |
-| `SERIAL_PORT` | `/dev/ttyACM0` | Serial port (e.g. `COM3`) |
-| `MESHTASTIC_HOST` | `meshmonitor` | Hostname of TCP interface |
-| `MESHTASTIC_PORT` | `4404` | Port of TCP interface |
+| `MESH_NETWORK_TYPE` | `meshtastic` | Network type: `meshtastic`, `meshcore`, or `dual` (both active). (Alias: `MESH_TYPE`). |
+| `INTERFACE_TYPE` | `tcp` | Meshtastic connection type: `tcp` or `serial`. |
+| `SERIAL_PORT` | `/dev/ttyACM0` | Meshtastic serial port (e.g. `COM3` on Windows). |
+| `MESHTASTIC_HOST` | `meshmonitor` | Hostname of Meshtastic TCP interface. |
+| `MESHTASTIC_PORT` | `4404` | Port of Meshtastic TCP interface. |
+| `MESHCORE_INTERFACE` | `tcp` | MeshCore connection type: `tcp` or `serial`. |
+| `MESHCORE_HOST` | `127.0.0.1` | Hostname/IP for MeshCore TCP connection. |
+| `MESHCORE_PORT` | `5000` | Port for MeshCore TCP connection (default MeshMonitor Virtual Node port). |
+| `MESHCORE_SERIAL_PORT` | `/dev/ttyUSB1` | Serial device path for standalone MeshCore hardware. |
+| `MESHCORE_BAUDRATE` | `115200` | Baudrate for standalone MeshCore serial interface. |
+| `MESHCORE_WAIT_FOR_ACK` | `true` | Wait for physical RF ACK on MeshCore DMs before sending next chunk. |
+| `MESHCORE_POST_ACK_DELAY` | `2.0` | Seconds to settle after physical RF ACK before transmitting next chunk. |
+| `MESHCORE_SEND_THINKING` | `false` | Send initial "Thinking... 🤖" LoRa packet on MeshCore (default: false to conserve airtime). |
+| `MESHCORE_ADMIN_NODE_ID` | - | MeshCore admin contact name (e.g. `LN4CY_TDeck`) or hex key prefix (`!12a1b2dd1de3`). |
+| `MESHCORE_ALLOWED_CHANNELS` | `0` | CSV list of channel indices allowed for MeshCore (e.g. `0,4`). |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds between reconnect attempts |
 | `CHUNK_DELAY` | `15` | Seconds to wait before sending the next chunk of a split message |
 | `AI_PROVIDER` | `ollama` | Initial provider (`ollama`, `gemini`, `openai`, `anthropic`) |
 | `OLLAMA_HOST` | `ollama` | Hostname for Ollama service |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
-| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands. Supports comma-separated list (e.g. `!1234abcd,!9e044360`) |
-| `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
+| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (global fallback). |
+| `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on (global fallback). |
 | `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
 | `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
 | `OLLAMA_MAX_MESSAGES` | `10` | Max messages sent to Ollama (Context) |
