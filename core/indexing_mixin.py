@@ -221,7 +221,7 @@ class IndexingMixin:
                 ref_id = token.lower()
             elif hasattr(self.meshtastic, 'find_node_by_name'):
                 found = self.meshtastic.find_node_by_name(token)
-                if found and found.lower() != node_id.lower():
+                if isinstance(found, str) and found.lower() != node_id.lower():
                     ref_id = found.lower()
 
             if ref_id:
@@ -342,7 +342,9 @@ class IndexingMixin:
                 if str(raw_tgt).startswith('!'):
                     target_node_id = str(raw_tgt).lower()
                 elif hasattr(self.meshtastic, 'find_node_by_name'):
-                    target_node_id = self.meshtastic.find_node_by_name(raw_tgt)
+                    res = self.meshtastic.find_node_by_name(raw_tgt)
+                    if isinstance(res, str):
+                        target_node_id = res.lower()
 
             # Scan context note for destination node
             if not target_node_id and context_note:
@@ -352,8 +354,8 @@ class IndexingMixin:
                         break
                     elif hasattr(self.meshtastic, 'find_node_by_name'):
                         found = self.meshtastic.find_node_by_name(token)
-                        if found and str(found).lower() != str(from_node).lower():
-                            target_node_id = str(found).lower()
+                        if isinstance(found, str) and found.lower() != str(from_node).lower():
+                            target_node_id = found.lower()
                             break
 
             if target_node_id:

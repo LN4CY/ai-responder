@@ -38,7 +38,7 @@ class MeshCoreMessageQueue:
     Features:
     - Thread-safe queueing
     - Handling of long messages (chunking)
-    - Rate limiting between chunks
+    - Rate limiting and pacing between all transmissions
     - Sending to channels (send_chan_msg) or direct contacts (send_msg)
     """
 
@@ -49,6 +49,7 @@ class MeshCoreMessageQueue:
         self.processing = False
         self.thread = None
         self.last_heartbeat = time.time()
+        self.last_send_time = 0.0
         self.start()
 
     def start(self):
@@ -59,6 +60,13 @@ class MeshCoreMessageQueue:
         self.thread = threading.Thread(target=self._process_loop, daemon=True, name="MeshCore_MessageQueue")
         self.thread.start()
         logger.info("MeshCore MessageQueue processor started")
+
+    def stop(self):
+        """Stop the processing thread."""
+        self.processing = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        logger.info("MeshCore MessageQueue processor stopped")
 
     def enqueue(self, text: str, destination_id: str, channel_index: int, session_indicator: str = "") -> bool:
         """Add a message to the queue."""
@@ -84,21 +92,25 @@ class MeshCoreMessageQueue:
 
     def _process_loop(self):
         """Main processing loop."""
-        while self.processing and self.handler.running:
+        import config
+        while self.processing:
             item = None
             with self.lock:
                 if self.queue:
                     item = self.queue.pop(0)
 
             if item:
+                # Enforce pacing between distinct message items
+                chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
+                elapsed = time.time() - self.last_send_time
+                if self.last_send_time > 0 and elapsed < chunk_delay:
+                    sleep_time = chunk_delay - elapsed
+                    logger.debug(f"[MeshCore] Pacing: Waiting {sleep_time:.1f}s before sending next message item...")
+                    time.sleep(sleep_time)
+
                 self._send_item(item)
-                with self.lock:
-                    has_more = len(self.queue) > 0
-                if has_more:
-                    import config
-                    chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
-                    logger.debug(f"[MeshCore] Pacing: Waiting {chunk_delay}s before next message item...")
-                    time.sleep(chunk_delay)
+                self.last_send_time = time.time()
+                self.last_heartbeat = time.time()
             else:
                 self.last_heartbeat = time.time()
                 time.sleep(0.5)
@@ -117,6 +129,11 @@ class MeshCoreMessageQueue:
         total_chunks = len(chunks)
 
         for i, chunk in enumerate(chunks):
+            self.last_heartbeat = time.time()
+            if i > 0:
+                chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
+                time.sleep(chunk_delay)
+
             # Prepend session indicator to first chunk if present
             if i == 0 and session_indicator:
                 chunk = f"{session_indicator} {chunk}"
@@ -126,12 +143,10 @@ class MeshCoreMessageQueue:
                 chunk = f"{chunk} [{i+1}/{total_chunks}]"
 
             success = self.handler._send_chunk_sync(chunk, destination, channel)
+            self.last_send_time = time.time()
             if not success:
                 logger.warning(f"[MeshCore] Failed sending chunk {i+1}/{total_chunks} to {destination}")
-
-            if i < total_chunks - 1:
-                chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
-                time.sleep(chunk_delay)
+                break
 
 
 class MeshCoreHandler:
@@ -214,6 +229,8 @@ class MeshCoreHandler:
         success = self._ready_event.wait(timeout=15.0)
         if success and self.connection_healthy:
             self.running = True
+            if hasattr(self, '_message_queue') and self._message_queue:
+                self._message_queue.start()
             logger.info("✅ MeshCore connection established and active.")
             return True
         else:
@@ -465,7 +482,7 @@ class MeshCoreHandler:
                 contact = None
                 if hasattr(self.meshcore, 'contacts'):
                     # Try finding by name first
-                    contact = self.find_node_by_name(target)
+                    contact = self.find_contact_by_name(target)
                     if not contact and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
                         contact = self.meshcore.get_contact_by_key_prefix(target)
 
@@ -550,8 +567,8 @@ class MeshCoreHandler:
             }
         }
 
-    def find_node_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """Find a contact by matching long/short/adv_name (case-insensitive)."""
+    def find_contact_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Find a contact dict by matching long/short/adv_name (case-insensitive) or prefix."""
         if not self.meshcore or not hasattr(self.meshcore, 'contacts'):
             return None
 
@@ -564,6 +581,42 @@ class MeshCoreHandler:
             if pubkey.lower().startswith(name_lower):
                 return contact
         return None
+
+    def find_node_by_name(self, name: str) -> Optional[str]:
+        """
+        Find a contact node ID by matching name (case-insensitive).
+
+        Returns:
+            str or None: Node ID formatted as '!<pubkey[:12]>' if found, otherwise None.
+        """
+        contact = self.find_contact_by_name(name)
+        if not contact:
+            return None
+        pubkey = contact.get('public_key', '')
+        if pubkey:
+            return f"!{pubkey[:12]}"
+        return None
+
+    def _get_node_by_id(self, node_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve node info dict by ID or prefix."""
+        if not node_id:
+            return None
+        clean_id = node_id.lstrip('!').lower()
+        contact = self.find_contact_by_name(clean_id)
+        if not contact and self.meshcore and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
+            contact = self.meshcore.get_contact_by_key_prefix(clean_id)
+        if not contact:
+            return None
+        name = contact.get('adv_name') or contact.get('name', 'Unknown')
+        pubkey = contact.get('public_key', clean_id)
+        short_name = name[:4].upper() if name else pubkey[:4].upper()
+        return {
+            'user': {
+                'id': f"!{pubkey[:12]}",
+                'longName': name,
+                'shortName': short_name
+            }
+        }
 
     def get_all_nodes(self) -> List[Dict[str, Any]]:
         """Get a list of all known contacts formatted like Meshtastic nodes."""
@@ -610,7 +663,7 @@ class MeshCoreHandler:
             return ""
 
         clean_id = node_id[1:] if node_id.startswith('!') else node_id
-        contact = self.find_node_by_name(clean_id)
+        contact = self.find_contact_by_name(clean_id)
         if not contact and self.meshcore and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
             contact = self.meshcore.get_contact_by_key_prefix(clean_id)
 
@@ -651,7 +704,7 @@ class MeshCoreHandler:
             return False
         try:
             target = destination_id[1:] if destination_id.startswith('!') else destination_id
-            contact = self.find_node_by_name(target)
+            contact = self.find_contact_by_name(target)
             dest = contact if contact else target
             future = asyncio.run_coroutine_threadsafe(
                 self.meshcore.commands.req_telemetry(dest),
@@ -679,6 +732,8 @@ class MeshCoreHandler:
         """Close connection and clean up asyncio loop thread."""
         self.running = False
         self.connection_healthy = False
+        if hasattr(self, '_message_queue') and self._message_queue:
+            self._message_queue.stop()
 
         if self._loop and self._loop.is_running():
             try:

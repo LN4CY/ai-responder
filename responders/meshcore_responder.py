@@ -182,6 +182,19 @@ class MeshCoreAIResponder(BaseAIResponder):
 
         self.meshcore.send_message(text, destination, channel, session_indicator)
 
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
+        """
+        Handle an AI query for MeshCore.
+
+        By default, suppresses initial 'Thinking... 🤖' transmission over LoRa
+        to preserve channel bandwidth and prevent ACK collisions / duplicate retries.
+        """
+        config = get_config_module()
+        send_thinking = getattr(config, 'MESHCORE_SEND_THINKING', False)
+        if not send_thinking:
+            initial_msg = None
+        super()._handle_ai_query(query, from_node, to_node, channel, is_dm=is_dm, initial_msg=initial_msg)
+
     # ==================== Protocol-Specific Admin Commands ====================
 
     def _handle_channel_command(self, args, from_node, to_node, channel):

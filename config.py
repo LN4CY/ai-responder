@@ -39,6 +39,7 @@ MESHCORE_ACK_TIMEOUT = int(os.getenv('MESHCORE_ACK_TIMEOUT', '30'))
 MESHCORE_ADMIN_NODE_ID = os.getenv('MESHCORE_ADMIN_NODE_ID', '')
 MESHCORE_ALLOWED_CHANNELS = os.getenv('MESHCORE_ALLOWED_CHANNELS', '')
 MESHCORE_AWARENESS = os.getenv('MESHCORE_AWARENESS', 'true').lower() == 'true'
+MESHCORE_SEND_THINKING = os.getenv('MESHCORE_SEND_THINKING', 'false').lower() == 'true'
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')

@@ -85,15 +85,30 @@ class TestMeshCoreHandler(unittest.TestCase):
         }
         self.handler.meshcore = mock_meshcore
 
-        # Look up by name
-        contact = self.handler.find_node_by_name("AliceRadio")
+        # Look up contact dict by name
+        contact = self.handler.find_contact_by_name("AliceRadio")
         self.assertIsNotNone(contact)
         self.assertEqual(contact["adv_name"], "AliceRadio")
 
-        # Case-insensitive lookup
-        contact_bob = self.handler.find_node_by_name("bobnode")
+        # Case-insensitive contact lookup
+        contact_bob = self.handler.find_contact_by_name("bobnode")
         self.assertIsNotNone(contact_bob)
         self.assertEqual(contact_bob["adv_name"], "BobNode")
+
+        # Look up node ID string (duck-typed with MeshtasticHandler contract)
+        node_id_alice = self.handler.find_node_by_name("AliceRadio")
+        self.assertEqual(node_id_alice, "!a1b2c3d4e5f6")
+
+        node_id_bob = self.handler.find_node_by_name("bobnode")
+        self.assertEqual(node_id_bob, "!b2c3d4e5f6a1")
+
+        self.assertIsNone(self.handler.find_node_by_name("UnknownNode"))
+
+        # Look up node dict by ID
+        node_info = self.handler._get_node_by_id("!a1b2c3d4e5f6")
+        self.assertIsNotNone(node_info)
+        self.assertEqual(node_info['user']['longName'], 'AliceRadio')
+        self.assertEqual(node_info['user']['id'], '!a1b2c3d4e5f6')
 
         # Lookup summary list
         summary = self.handler.get_node_list_summary()
@@ -290,6 +305,36 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
             self.assertFalse(msh_app.is_channel_allowed(0))
             self.assertTrue(mc_app.is_channel_allowed(0))
             self.assertFalse(mc_app.is_channel_allowed(3))
+
+    def test_meshcore_handle_ai_query_suppresses_thinking(self):
+        from responders import MeshCoreAIResponder
+        with patch('ai_responder.Config') as MockConfig, \
+             patch('ai_responder.UnifiedMCPClient'):
+            cfg = {
+                'meshcore_admin_nodes': ['LN4CY_TDeck'],
+                'meshcore_allowed_channels': [0]
+            }
+            MockConfig.return_value.get.side_effect = lambda k, default=None: cfg.get(k, default)
+            app = MeshCoreAIResponder.__new__(MeshCoreAIResponder)
+            app.config = MockConfig.return_value
+            app.meshcore = MagicMock()
+
+            # By default MESHCORE_SEND_THINKING is False -> initial_msg suppressed
+            with patch.object(MeshCoreAIResponder, 'send_response') as mock_send, \
+                 patch('threading.Thread') as mock_thread, \
+                 patch('responders.meshcore_responder.get_config_module') as mock_conf:
+                mock_conf.return_value.MESHCORE_SEND_THINKING = False
+                app._handle_ai_query("tell me a joke", "LN4CY_TDeck", "LN4CY_T1000E", 0)
+                mock_send.assert_not_called()
+                mock_thread.assert_called_once()
+
+            # When MESHCORE_SEND_THINKING is True -> sends thinking message
+            with patch.object(MeshCoreAIResponder, 'send_response') as mock_send, \
+                 patch('threading.Thread') as mock_thread, \
+                 patch('responders.meshcore_responder.get_config_module') as mock_conf:
+                mock_conf.return_value.MESHCORE_SEND_THINKING = True
+                app._handle_ai_query("tell me a joke", "LN4CY_TDeck", "LN4CY_T1000E", 0)
+                mock_send.assert_called_once_with("Thinking... 🤖", "LN4CY_TDeck", "LN4CY_T1000E", 0, is_admin_cmd=False)
 
 
 if __name__ == '__main__':
