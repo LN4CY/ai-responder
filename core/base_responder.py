@@ -241,7 +241,13 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
                 timed_out, message, session_channel, session_to_node = self.session_manager.check_timeout(from_node)
                 if timed_out:
                     self.send_response(message, from_node, session_to_node, session_channel, is_admin_cmd=False)
+                    return
                 else:
+                    clean_text = text.strip().lower()
+                    if clean_text in ('end', 'exit', 'quit', 'close', '-end'):
+                        success, end_msg, _, _ = self.session_manager.end_session(from_node)
+                        self.send_response(end_msg, from_node, to_node, channel, is_admin_cmd=False)
+                        return
                     if not text.startswith('!ai'):
                         self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm)
                         return

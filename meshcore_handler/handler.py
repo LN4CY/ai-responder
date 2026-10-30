@@ -117,16 +117,16 @@ class MeshCoreMessageQueue:
                 time.sleep(0.5)
 
     def _send_item(self, item: Dict[str, Any]):
-        """Send a single queued message item, splitting into chunks if needed."""
+        """Send a single queued message item, splitting into byte-safe chunks if needed."""
         text = item['text']
         destination = item['dest']
         channel = item['chan']
         session_indicator = item.get('sess', '')
 
-        # Chunk the text
+        # Chunk the text into byte-safe packets <= 152 bytes (MeshCore firmware limit: 160 bytes)
         import config
-        max_chunk_length = getattr(config, 'MESSAGE_CHUNK_SIZE', 160)
-        chunks = self.handler._split_message(text, max_length=max_chunk_length)
+        max_bytes = getattr(config, 'MESHCORE_MAX_CHUNK_BYTES', 152)
+        chunks = self.handler.prepare_chunks(text, session_indicator=session_indicator, max_bytes=max_bytes)
         total_chunks = len(chunks)
         is_dm = (destination != '^all' and destination != 'broadcast')
 
@@ -140,14 +140,6 @@ class MeshCoreMessageQueue:
                 else:
                     chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
                     time.sleep(chunk_delay)
-
-            # Prepend session indicator to first chunk if present
-            if i == 0 and session_indicator:
-                chunk = f"{session_indicator} {chunk}"
-
-            # Append chunk counter if multi-part
-            if total_chunks > 1:
-                chunk = f"{chunk} [{i+1}/{total_chunks}]"
 
             success = self.handler._send_chunk_sync(chunk, destination, channel)
             self.last_send_time = time.time()
@@ -560,6 +552,7 @@ class MeshCoreHandler:
                             continue
                         return False
                     break
+                self.last_activity = time.time()
                 return True
             else:
                 # Direct message to contact
@@ -611,6 +604,7 @@ class MeshCoreHandler:
                         expected_ack = str(raw_ack).lower()
 
                 if not wait_for_ack or not expected_ack:
+                    self.last_activity = time.time()
                     return True
 
                 # Wait for remote device's RF ACK
@@ -627,6 +621,7 @@ class MeshCoreHandler:
                     ack_info = self._ack_results.pop(expected_ack, {})
                     rtt = ack_info.get('trip_time', 0)
                     logger.info(f"✅ [MeshCore] Delivery confirmed by remote node (ACK {expected_ack}, RTT: {rtt}ms)")
+                    self.last_activity = time.time()
                     return True
                 except asyncio.TimeoutError:
                     logger.warning(f"⚠️ [MeshCore] Timed out waiting for RF ACK ({expected_ack}) after {timeout_sec:.1f}s")
@@ -639,42 +634,98 @@ class MeshCoreHandler:
             logger.error(f"[MeshCore] Exception during message transmission: {e}")
             return False
 
-    def _split_message(self, text: str, max_length: int = 160) -> List[str]:
-        """Split a long message into readable chunks at newline/sentence/word boundaries."""
-        if len(text) <= max_length:
+    def split_message_utf8(self, text: str, max_bytes: int = 150) -> List[str]:
+        """
+        Split text into chunks such that len(chunk.encode('utf-8')) <= max_bytes.
+        Prefers splitting at newlines, then sentence boundaries (. ! ?), then spaces.
+        Never splits across multi-byte UTF-8 character boundaries.
+        """
+        if len(text.encode('utf-8')) <= max_bytes:
             return [text]
 
         chunks = []
-        remaining_text = text
+        remaining = text.strip()
 
-        while remaining_text:
-            if len(remaining_text) <= max_length:
-                chunks.append(remaining_text)
+        while remaining:
+            raw_bytes = remaining.encode('utf-8')
+            if len(raw_bytes) <= max_bytes:
+                chunks.append(remaining)
                 break
 
-            chunk = remaining_text[:max_length]
-            split_point = -1
+            truncated = raw_bytes[:max_bytes].decode('utf-8', errors='ignore')
+            split_char_idx = -1
 
             # 1. Newline (preserve formatting)
-            last_newline = chunk.rfind('\n')
-            if last_newline > max_length * 0.3:
-                split_point = last_newline + 1
+            last_nl = truncated.rfind('\n')
+            if last_nl > len(truncated) * 0.3:
+                split_char_idx = last_nl + 1
 
             # 2. Sentence boundary
-            if split_point == -1:
-                last_sentence_end = max(chunk.rfind('. '), chunk.rfind('! '), chunk.rfind('? '))
-                if last_sentence_end > max_length * 0.5:
-                    split_point = last_sentence_end + 2
+            if split_char_idx == -1:
+                last_sent = max(truncated.rfind('. '), truncated.rfind('! '), truncated.rfind('? '))
+                if last_sent > len(truncated) * 0.5:
+                    split_char_idx = last_sent + 2
 
             # 3. Word boundary
-            if split_point == -1:
-                last_space = chunk.rfind(' ')
-                split_point = last_space if last_space > 0 else max_length
+            if split_char_idx == -1:
+                last_space = truncated.rfind(' ')
+                if last_space > 0:
+                    split_char_idx = last_space
+                else:
+                    split_char_idx = len(truncated)
 
-            chunks.append(remaining_text[:split_point].strip())
-            remaining_text = remaining_text[split_point:].strip()
+            chunk = remaining[:split_char_idx].strip()
+            if not chunk:
+                chunk = remaining[:len(truncated)].strip()
+                split_char_idx = len(truncated)
+
+            chunks.append(chunk)
+            remaining = remaining[split_char_idx:].strip()
 
         return chunks
+
+    def prepare_chunks(self, text: str, session_indicator: str = "", max_bytes: int = 152) -> List[str]:
+        """
+        Format message chunks with session_indicator and [i/total] suffixes
+        such that EVERY resulting chunk's UTF-8 byte length <= max_bytes (MeshCore firmware limit: 160 bytes).
+        """
+        clean_sess = session_indicator.strip()
+        prefix = f"{clean_sess} " if clean_sess else ""
+        single_full = f"{prefix}{text}" if prefix else text
+        if len(single_full.encode('utf-8')) <= max_bytes:
+            return [single_full]
+
+        suffix_reserve = 8  # Reserve space for ' [i/total]'
+        first_budget = max(max_bytes - len(prefix.encode('utf-8')) - suffix_reserve, 30)
+        other_budget = max(max_bytes - suffix_reserve, 30)
+
+        body_chunks = []
+        rem = text.strip()
+
+        first_split = self.split_message_utf8(rem, max_bytes=first_budget)
+        if not first_split:
+            return [single_full]
+
+        body_chunks.append(first_split[0])
+        rem = rem[len(first_split[0]):].strip()
+
+        if rem:
+            other_splits = self.split_message_utf8(rem, max_bytes=other_budget)
+            body_chunks.extend(other_splits)
+
+        total = len(body_chunks)
+        result = []
+        for i, b in enumerate(body_chunks):
+            p = prefix if i == 0 else ""
+            s = f" [{i+1}/{total}]" if total > 1 else ""
+            final_chunk = f"{p}{b}{s}".strip()
+            result.append(final_chunk)
+
+        return result
+
+    def _split_message(self, text: str, max_length: int = 152) -> List[str]:
+        """Split a long message into byte-safe chunks at newline/sentence/word boundaries."""
+        return self.split_message_utf8(text, max_bytes=max_length)
 
     # ==================== State & Contact Inspection ====================
 
@@ -927,7 +978,11 @@ class MeshCoreHandler:
                 self.meshcore.commands.send_advert(),
                 self._loop
             )
-            return future.result(timeout=5) is not None
+            res = future.result(timeout=5)
+            if res is not None and getattr(res, 'type', None) != EventType.ERROR:
+                self.last_activity = time.time()
+                return True
+            return False
         except Exception as e:
             logger.debug(f"[MeshCore] Failed sending probe: {e}")
             return False

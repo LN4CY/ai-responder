@@ -64,6 +64,56 @@ class TestMeshCoreHandler(unittest.TestCase):
         self.assertEqual(chunks[0], line1)
         self.assertEqual(chunks[1], line2)
 
+    def test_prepare_chunks_utf8_byte_limit_with_emojis(self):
+        """Test that prepare_chunks never exceeds max_bytes in UTF-8 even with multi-byte emojis and session indicator."""
+        long_text = (
+            "🌐 In Wadamesh (Settings > GPS), you can set a public displacement offset. "
+            "When sharing location with specific nodes over LoRa, use encrypted contact channels or direct messages. "
+            "For precision tracking, configure interval reporting."
+        )
+        sess = "[🟢 moonlight_chat]"
+        chunks = self.handler.prepare_chunks(long_text, session_indicator=sess, max_bytes=152)
+        
+        self.assertGreater(len(chunks), 1)
+        # First chunk must contain session indicator
+        self.assertTrue(chunks[0].startswith(sess))
+
+        total = len(chunks)
+        for i, chunk in enumerate(chunks):
+            byte_len = len(chunk.encode('utf-8'))
+            self.assertLessEqual(byte_len, 152, f"Chunk {i+1} has {byte_len} bytes (> 152 limit)")
+            self.assertTrue(chunk.endswith(f"[{i+1}/{total}]"))
+
+    def test_send_probe_updates_last_activity(self):
+        """Test that send_probe updates last_activity when radio acknowledges advert."""
+        self.handler.running = True
+        self.handler.connection_healthy = True
+        self.handler.last_activity = 100.0
+
+        mock_meshcore = MagicMock()
+        mock_result = MagicMock()
+        mock_result.type = "OK"
+        
+        async def fake_advert():
+            return mock_result
+
+        mock_meshcore.commands.send_advert.side_effect = fake_advert
+        self.handler.meshcore = mock_meshcore
+
+        loop = asyncio.new_event_loop()
+        self.handler._loop = loop
+        import threading
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            success = self.handler.send_probe()
+            self.assertTrue(success)
+            self.assertGreater(self.handler.last_activity, 100.0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=1.0)
+            loop.close()
+
     def test_contact_lookup(self):
         """Test finding nodes by name or prefix in contacts cache."""
         mock_meshcore = MagicMock()

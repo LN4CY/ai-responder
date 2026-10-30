@@ -99,7 +99,7 @@ class CommandsMixin:
                     self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
         
-        if cmd == '-end':
+        if cmd in ('-end', 'end', 'close', 'exit', 'quit'):
             if is_dm:
                 success, message, _, _ = self.session_manager.end_session(from_node)
                 self.send_response(message, from_node, to_node, channel, is_admin_cmd=False)

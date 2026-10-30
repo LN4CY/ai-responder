@@ -42,6 +42,7 @@ MESHCORE_AWARENESS = os.getenv('MESHCORE_AWARENESS', 'true').lower() == 'true'
 MESHCORE_SEND_THINKING = os.getenv('MESHCORE_SEND_THINKING', 'false').lower() == 'true'
 MESHCORE_WAIT_FOR_ACK = os.getenv('MESHCORE_WAIT_FOR_ACK', 'true').lower() == 'true'
 MESHCORE_POST_ACK_DELAY = float(os.getenv('MESHCORE_POST_ACK_DELAY', '2.0'))
+MESHCORE_MAX_CHUNK_BYTES = int(os.getenv('MESHCORE_MAX_CHUNK_BYTES', '152'))
 
 # AI Provider Configuration
 OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'ollama')

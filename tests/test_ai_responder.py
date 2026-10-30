@@ -657,6 +657,41 @@ class TestSessionNotifications(unittest.TestCase):
                 mock_send.assert_called_once()
                 self.assertIn("Session ended", mock_send.call_args[0][0])
 
+    def test_end_session_command_variants(self):
+        """Test that !ai end, !ai exit, !ai quit, !ai close all end the session."""
+        from_node = "!sender"
+        to_node = "!bot"
+        for variant in ["!ai end", "!ai exit", "!ai quit", "!ai close", "!ai -end"]:
+            with patch.object(self.session_manager, 'end_session') as mock_end, \
+                 patch.object(self.responder, 'send_response') as mock_send:
+                mock_end.return_value = (True, "Session ended.", 0, "!bot")
+                self.responder.process_command(variant, from_node, to_node, 0)
+                mock_end.assert_called_once_with(from_node)
+                mock_send.assert_called_once()
+                self.assertIn("Session ended.", mock_send.call_args[0][0])
+
+    def test_active_session_dm_plain_end_closes_session(self):
+        """Test that typing plain 'end' or 'exit' in active DM session closes it without querying AI."""
+        from_node = "!sender"
+        to_node = "!bot"
+        self.responder.session_manager.active_sessions = {from_node: {'name': 'my_chat'}}
+
+        for word in ["end", "END", "exit", "quit", "close"]:
+            with patch.object(self.session_manager, 'check_timeout', return_value=(False, None, 0, None)), \
+                 patch.object(self.session_manager, 'end_session') as mock_end, \
+                 patch.object(self.responder, 'send_response') as mock_send, \
+                 patch.object(self.responder, '_handle_ai_query') as mock_ai:
+                mock_end.return_value = (True, "Session 'my_chat' ended.", 0, "!bot")
+                self.responder.on_receive({
+                    'fromId': from_node,
+                    'toId': to_node,
+                    'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': word}
+                }, None)
+                mock_end.assert_called_once_with(from_node)
+                mock_send.assert_called_once()
+                self.assertIn("Session 'my_chat' ended.", mock_send.call_args[0][0])
+                mock_ai.assert_not_called()
+
     @patch('time.sleep', return_value=None)
     def test_location_query_injects_metadata(self, _):
         """Test that location-related queries trigger metadata injection."""
