@@ -45,21 +45,25 @@ graph TD
 
 ## Core Components
 
-### 1. Mesh Interfaces
-The application abstracts the connection to mesh hardware across protocols:
-- **`MeshtasticHandler`**:
-  - Connects via Serial or TCP (MeshMonitor port 4404).
+### 1. Protocol-Isolated Responders & Handlers
+The application abstracts the connection to mesh hardware across protocols with strict architectural isolation:
+- **`MeshtasticAIResponder` (`responders/meshtastic_responder.py`)**:
+  - Dedicated responder instance for the Meshtastic protocol.
+  - Connects via `MeshtasticHandler` (Serial or TCP via MeshMonitor port 4404).
   - Uses Google Protocol Buffers (`mesh_pb2`) and PyPubSub.
-  - Telemetry caching and on-demand polling.
-- **`MeshCoreHandler`**:
-  - Connects via TCP (MeshMonitor Virtual Node port 5000) or Serial (standalone).
-  - Uses the official `meshcore` library with an asynchronous event loop running in a dedicated worker thread.
-  - Subscribes to `CONTACT_MSG_RECV` (DMs) and `CHANNEL_MSG_RECV` (channel broadcasts).
-  - Automatically fetches waiting messages via `start_auto_message_fetching()`.
-  - Normalizes events into the standard packet dictionary expected by `AIResponder.on_receive`.
+  - Registers `mcp_server_meshtastic` tools and manages Meshtastic 4-byte hex admin identities (`!1234abcd`).
+- **`MeshCoreAIResponder` (`responders/meshcore_responder.py`)**:
+  - Dedicated responder instance for the MeshCore protocol.
+  - Connects via `MeshCoreHandler` (TCP port 5000 for MeshMonitor Virtual Node or Serial for standalone).
+  - Uses the official `meshcore` library with an asynchronous event loop in a dedicated background worker thread.
+  - **Repeaters & Rooms Awareness**: Discovers node types from 1-byte advertisement headers (`Repeater`, `Room`, `Chat`, `Sensor`), indexes them into the Knowledge Graph, and supports live OTA status queries (`req_status_sync`).
+  - **Physical RF ACK Tracking**: Awaits remote node ACK (`EventType.ACK` matching `expected_ack` CRC) with configurable settling delay (`MESHCORE_POST_ACK_DELAY=2.0s`) and automatic backoff retry on `ERR_CODE_BAD_STATE`.
+  - **Channel Broadcast Parsing**: Parses `<SenderName>: <Message>` companion packets on group channels (e.g. Channel 4), resolving sender contact identities.
+  - Registers `mcp_server_meshcore` tools and manages MeshCore-specific admin identities (contact names and 12-char hex public key prefixes).
+- **`BaseAIResponder` (`core/base_responder.py`)**:
+  - Common foundation providing shared mixins: `HistoryMixin`, `IndexingMixin`, `ProactiveMixin`, `CommandsMixin`, and `QueryMixin`.
 - **Dual-Mesh Routing**:
-  - In `dual` mode, both handlers run concurrently.
-  - AI Responder identifies the incoming packet's source network and automatically routes replies back through the corresponding mesh handler.
+  - In `dual` mode, both responders can run concurrently in their respective containers or processes, sharing SQLite graph memory while maintaining independent radio loops.
 
 ### 2. Conversation & Session Management
 Stateful interactions are managed by two core components:

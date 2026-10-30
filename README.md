@@ -36,6 +36,14 @@ The AI doesn't just respond; it understands its environment:
 - **Precise Location Tracking**: The AI can map out neighbors, complete with exact coordinates, altitude, and calculated distance from the bot.
 - **Grounding (Gemini)**: Optional Google Search and Maps integration to provide real-world context for location-based queries.
 
+### 🌐 Multi-Protocol Mesh Support (Meshtastic & MeshCore)
+Operate seamlessly across Meshtastic and MeshCore networks with dedicated protocol-isolated responders:
+- **Dedicated Protocol Responders**: Isolated `MeshtasticAIResponder` and `MeshCoreAIResponder` instances with shared base mixins.
+- **Repeaters & Room Servers (MeshCore)**: First-class awareness and discovery of Repeaters (`0x02`), Room/BBS servers (`0x03`), and Chat clients (`0x01`).
+- **Adaptive RF ACK Delivery Tracking**: Dynamic physical ACK confirmation (`EventType.ACK`) with settling buffers (`MESHCORE_POST_ACK_DELAY`) and automatic backoff on `ERR_CODE_BAD_STATE`.
+- **Channel Broadcast Parsing**: Clean parsing of `<SenderName>: <Message>` companion packets on MeshCore group channels (e.g. Channel 4).
+- **Standalone or MeshMonitor Virtual Nodes**: Connect directly via Serial or attach to MeshMonitor's Virtual Node TCP ports (4404 for Meshtastic, 5000 for MeshCore).
+
 ### 🤖 Proactive Agent Architecture
 The AI can now spontaneously send messages to users or manage its own future behavior without being asked:
 - **Chainable & Stateful Tasks**: Ask the AI to "ping me every 15 seconds with the SNR and an incrementing count." The AI uses its **Conversation History** to maintain state (like counts) across turns and can recursively schedule its own future updates.
@@ -184,17 +192,28 @@ See [CONFIG.md](CONFIG.md) for a complete reference of all environment variables
 
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
-| `INTERFACE_TYPE` | `tcp` | `tcp` or `serial` |
-| `SERIAL_PORT` | `/dev/ttyACM0` | Serial port (e.g. `COM3`) |
-| `MESHTASTIC_HOST` | `meshmonitor` | Hostname of TCP interface |
-| `MESHTASTIC_PORT` | `4404` | Port of TCP interface |
+| `MESH_NETWORK_TYPE` | `meshtastic` | Network type: `meshtastic`, `meshcore`, or `dual` (both active). (Alias: `MESH_TYPE`). |
+| `INTERFACE_TYPE` | `tcp` | Meshtastic connection type: `tcp` or `serial`. |
+| `SERIAL_PORT` | `/dev/ttyACM0` | Meshtastic serial port (e.g. `COM3` on Windows). |
+| `MESHTASTIC_HOST` | `meshmonitor` | Hostname of Meshtastic TCP interface. |
+| `MESHTASTIC_PORT` | `4404` | Port of Meshtastic TCP interface. |
+| `MESHCORE_INTERFACE` | `tcp` | MeshCore connection type: `tcp` or `serial`. |
+| `MESHCORE_HOST` | `127.0.0.1` | Hostname/IP for MeshCore TCP connection. |
+| `MESHCORE_PORT` | `5000` | Port for MeshCore TCP connection (default MeshMonitor Virtual Node port). |
+| `MESHCORE_SERIAL_PORT` | `/dev/ttyUSB1` | Serial device path for standalone MeshCore hardware. |
+| `MESHCORE_BAUDRATE` | `115200` | Baudrate for standalone MeshCore serial interface. |
+| `MESHCORE_WAIT_FOR_ACK` | `true` | Wait for physical RF ACK on MeshCore DMs before sending next chunk. |
+| `MESHCORE_POST_ACK_DELAY` | `2.0` | Seconds to settle after physical RF ACK before transmitting next chunk. |
+| `MESHCORE_SEND_THINKING` | `false` | Send initial "Thinking... 🤖" LoRa packet on MeshCore (default: false to conserve airtime). |
+| `MESHCORE_ADMIN_NODE_ID` | - | MeshCore admin contact name (e.g. `LN4CY_TDeck`) or hex key prefix (`!12a1b2dd1de3`). |
+| `MESHCORE_ALLOWED_CHANNELS` | `0` | CSV list of channel indices allowed for MeshCore (e.g. `0,4`). |
 | `CONNECTION_RETRY_INTERVAL` | `10` | Seconds between reconnect attempts |
 | `CHUNK_DELAY` | `15` | Seconds to wait before sending the next chunk of a split message |
 | `AI_PROVIDER` | `ollama` | Initial provider (`ollama`, `gemini`, `openai`, `anthropic`) |
 | `OLLAMA_HOST` | `ollama` | Hostname for Ollama service |
 | `GEMINI_API_KEY` | - | API Key for Google Gemini |
-| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands. Supports comma-separated list (e.g. `!1234abcd,!9e044360`) |
-| `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on |
+| `ADMIN_NODE_ID` | - | Node ID authorized for admin commands (global fallback). |
+| `ALLOWED_CHANNELS` | `0,3` | CSV list of channel indices to listen on (global fallback). |
 | `HISTORY_MAX_MESSAGES` | `1000` | Max messages to store per user history (Storage) |
 | `HISTORY_MAX_BYTES` | `2097152` | Max size in bytes for history file (Storage) |
 | `OLLAMA_MAX_MESSAGES` | `10` | Max messages sent to Ollama (Context) |
