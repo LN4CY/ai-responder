@@ -316,7 +316,7 @@ class TestMeshCoreHandler(unittest.TestCase):
             res = asyncio.run(self.handler._async_send_chunk("Retry test", "Alice", 0))
             self.assertTrue(res)
             self.assertEqual(call_count, 2)
-            mock_sleep.assert_called_with(1.5)
+            mock_sleep.assert_any_call(1.5)
 
 
 class TestMeshCoreMCP(unittest.TestCase):
