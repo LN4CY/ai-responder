@@ -196,8 +196,75 @@ class TestMeshCoreHandler(unittest.TestCase):
         self.assertEqual(pkt['toId'], '^all')
         self.assertEqual(pkt['channel'], 0)
         self.assertEqual(pkt['decoded']['text'], '!ai ping')
+        self.assertEqual(pkt['fromId'], 'channel_sender')
         self.assertEqual(pkt['network'], 'meshcore')
         self.assertFalse(pkt['is_dm'])
+
+    def test_incoming_channel_message_with_sender_prefix(self):
+        """Test parsing `<SenderName>: <Message>` on group channels."""
+        received_packets = []
+        def mock_callback(packet, interface):
+            received_packets.append(packet)
+
+        self.handler.on_receive_callback = mock_callback
+
+        mock_meshcore = MagicMock()
+        mock_meshcore.contacts = {
+            "12a1b2dd1de30000000000000000000000000000000000000000000000000000": {
+                "public_key": "12a1b2dd1de30000000000000000000000000000000000000000000000000000",
+                "adv_name": "LN4CY_TDeck"
+            }
+        }
+        self.handler.meshcore = mock_meshcore
+
+        mock_event = MagicMock()
+        mock_event.payload = {
+            'type': 'CHAN',
+            'channel_idx': 4,
+            'text': 'LN4CY_TDeck: !ai what do you know of LN4CY nodes...'
+        }
+
+        asyncio.run(self.handler._handle_channel_msg_event(mock_event))
+
+        self.assertEqual(len(received_packets), 1)
+        pkt = received_packets[0]
+        self.assertEqual(pkt['fromId'], 'LN4CY_TDeck')
+        self.assertEqual(pkt['toId'], '^all')
+        self.assertEqual(pkt['channel'], 4)
+        self.assertEqual(pkt['decoded']['text'], '!ai what do you know of LN4CY nodes...')
+        self.assertEqual(pkt['raw_pubkey_prefix'], '12a1b2dd1de3')
+        self.assertEqual(pkt['network'], 'meshcore')
+        self.assertFalse(pkt['is_dm'])
+
+    def test_incoming_channel_message_url_not_treated_as_sender(self):
+        """Test that URL schemes like http:// are not parsed as sender names."""
+        received_packets = []
+        def mock_callback(packet, interface):
+            received_packets.append(packet)
+
+        self.handler.on_receive_callback = mock_callback
+        mock_event = MagicMock()
+        mock_event.payload = {
+            'type': 'CHAN',
+            'channel_idx': 0,
+            'text': 'https://example.com/test'
+        }
+
+        asyncio.run(self.handler._handle_channel_msg_event(mock_event))
+
+        self.assertEqual(len(received_packets), 1)
+        pkt = received_packets[0]
+        self.assertEqual(pkt['fromId'], 'channel_sender')
+        self.assertEqual(pkt['decoded']['text'], 'https://example.com/test')
+
+    def test_get_channels_dynamic(self):
+        """Test that get_channels reflects MESHCORE_ALLOWED_CHANNELS configuration."""
+        import config
+        with patch.object(config, 'MESHCORE_ALLOWED_CHANNELS', '4'):
+            channels = self.handler.get_channels()
+            self.assertEqual(len(channels), 1)
+            self.assertEqual(channels[0]['index'], 4)
+            self.assertEqual(channels[0]['name'], 'Channel 4')
 
     def test_handle_ack_event(self):
         """Test that incoming RF ACK events set the corresponding pending event."""
@@ -345,6 +412,34 @@ class TestMeshCoreMCP(unittest.TestCase):
         res = mcp_server_meshcore.send_meshcore_message("Alice", "Hello", 0)
         self.assertIn("Message queued", res)
         self.mock_handler.send_message.assert_called_with(text="Hello", destination_id="Alice", channel_index=0)
+
+    def test_mcp_proactive_schedule_message(self):
+        self.mock_app._schedule_mcp_task.return_value = "✅ [sched-1] Reminder scheduled"
+        res = mcp_server_meshcore.schedule_message(delay_seconds=60, context_note="Test note")
+        self.assertIn("Reminder scheduled", res)
+        self.mock_app._schedule_mcp_task.assert_called()
+
+    def test_mcp_proactive_watch_node_online(self):
+        self.mock_app._watch_node_online_mcp.return_value = "✅ [node-1] Watching for Alice"
+        res = mcp_server_meshcore.watch_node_online(node_id_or_name="Alice", context_note="Notify when seen")
+        self.assertIn("Watching for Alice", res)
+        self.mock_app._watch_node_online_mcp.assert_called()
+
+    def test_mcp_proactive_list_tasks(self):
+        self.mock_app._list_proactive_tasks_mcp.return_value = "📋 Your active tasks: none"
+        res = mcp_server_meshcore.list_proactive_tasks()
+        self.assertIn("Your active tasks", res)
+
+    def test_mcp_proactive_cancel_task(self):
+        self.mock_app._cancel_proactive_task_mcp.return_value = "✅ Cancelled: [sched-1]"
+        res = mcp_server_meshcore.cancel_proactive_task("sched-1")
+        self.assertIn("Cancelled", res)
+
+    def test_mcp_proactive_send_message(self):
+        self.mock_app._send_message_mcp.return_value = "✅ Message queued for ch:4."
+        res = mcp_server_meshcore.send_message(target="ch:4", message="Hello Channel 4")
+        self.assertIn("Message queued", res)
+        self.mock_app._send_message_mcp.assert_called_with(target="ch:4", message="Hello Channel 4")
 
 
 class TestMeshCoreAdminResolution(unittest.TestCase):

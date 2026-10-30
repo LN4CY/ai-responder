@@ -14,6 +14,7 @@ import time
 import logging
 import threading
 import asyncio
+import re
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -439,19 +440,53 @@ class MeshCoreHandler:
         if not text:
             return
 
+        # MeshCore companion clients (T-Deck, web app, mobile) prepend '<SenderName>: <Message>'.
+        # Parse the sender prefix so '!ai' commands trigger correctly, admin verification
+        # succeeds, and semantic memory associates turns with the actual sender node.
+        sender_id = 'channel_sender'
+        pubkey_prefix = ''
+        cleaned_text = text
+
+        match = re.match(r"^([A-Za-z0-9_\-\. ]{1,32}):\s*(.*)$", text, re.DOTALL)
+        if match:
+            candidate = match.group(1).strip()
+            rest = match.group(2).strip()
+            # Avoid URL schemes (http:, https:, etc.)
+            if candidate.lower() not in ('http', 'https', 'ftp', 'mailto', 'file', 'ws', 'wss') and rest:
+                sender_id = candidate
+                cleaned_text = rest
+                # Check if candidate maps to a known contact to resolve pubkey_prefix
+                if self.meshcore:
+                    contact = self.find_contact_by_name(candidate)
+                    if not contact and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
+                        clean_candidate = candidate.lstrip('!').lower()
+                        contact = self.meshcore.get_contact_by_key_prefix(clean_candidate)
+                    if contact:
+                        name = contact.get('adv_name') or contact.get('name')
+                        if name:
+                            sender_id = name
+                        pubkey = contact.get('public_key', '')
+                        if pubkey:
+                            pubkey_prefix = pubkey[:12]
+
+        display_from = sender_id
+        if pubkey_prefix and sender_id == pubkey_prefix:
+            display_from = f"!{pubkey_prefix}"
+
         normalized_packet = {
-            'fromId': 'channel_sender',
+            'fromId': display_from,
             'toId': '^all',
             'channel': channel_idx,
             'is_dm': False,
             'network': 'meshcore',
+            'raw_pubkey_prefix': pubkey_prefix,
             'decoded': {
                 'portnum': 'TEXT_MESSAGE_APP',
-                'text': text
+                'text': cleaned_text
             }
         }
 
-        logger.info(f"📨 [MeshCore Ch:{channel_idx}] {text[:50]}...")
+        logger.info(f"📨 [MeshCore Ch:{channel_idx}] from {display_from}: {cleaned_text[:50]}...")
         if self.on_receive_callback:
             try:
                 self.on_receive_callback(normalized_packet, self)
@@ -786,9 +821,25 @@ class MeshCoreHandler:
         return f"[Node: {name} ({pubkey[:12]}) | Hops: {hops} | {pos_str}]"
 
     def get_channels(self) -> List[Dict[str, Any]]:
-        """Get list of active channels."""
-        # MeshCore companion channels typically range 0-7 with primary at 0
-        return [{'index': 0, 'name': 'Primary'}]
+        """Get list of active / allowed channels."""
+        import config
+        channels = []
+        raw_channels = getattr(config, 'MESHCORE_ALLOWED_CHANNELS', None)
+        if not raw_channels:
+            raw_channels = getattr(config, 'ALLOWED_CHANNELS', None)
+
+        if raw_channels:
+            try:
+                indices = [int(x.strip()) for x in str(raw_channels).split(',') if x.strip().isdigit()]
+                for idx in indices:
+                    name = "Primary" if idx == 0 else f"Channel {idx}"
+                    channels.append({'index': idx, 'name': name})
+            except Exception:
+                pass
+
+        if not channels:
+            channels = [{'index': 0, 'name': 'Primary'}]
+        return channels
 
     def send_probe(self) -> bool:
         """Send an active probe/advert to verify radio link."""

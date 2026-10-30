@@ -116,9 +116,13 @@ class ProactiveMixin:
         if target.startswith('ch:'):
             try:
                 _ch = int(target[3:])
-                allowed_channels = self.config.get('allowed_channels', [])
-                if _ch not in allowed_channels:
-                    return f"Error: Channel {_ch} is not in the allowed_channels list."
+                if hasattr(self, 'is_channel_allowed'):
+                    if not self.is_channel_allowed(_ch):
+                        return f"Error: Channel {_ch} is not in the allowed channels list."
+                else:
+                    allowed_channels = self.config.get('meshcore_allowed_channels') or self.config.get('allowed_channels', [])
+                    if _ch not in allowed_channels:
+                        return f"Error: Channel {_ch} is not in the allowed_channels list."
             except ValueError:
                 return f"Error: Invalid channel format '{target}'. Use 'ch:N'."
         else:
@@ -486,10 +490,29 @@ class ProactiveMixin:
                 'data': metric_values
             })
 
+            # Build set of matching ID representations
+            raw_prefix = str(packet.get('raw_pubkey_prefix', '')).lower()
+            alt_ids = {from_id, from_id.lstrip('!')}
+            if raw_prefix:
+                alt_ids.add(raw_prefix)
+                alt_ids.add(f"!{raw_prefix}")
+
+            radio = getattr(self, 'meshtastic', None)
+            if radio and hasattr(radio, 'find_node_by_name'):
+                try:
+                    resolved = radio.find_node_by_name(from_id)
+                    if resolved and isinstance(resolved, str):
+                        alt_ids.add(resolved.lower())
+                        alt_ids.add(resolved.lower().lstrip('!'))
+                except Exception:
+                    pass
+
             with self._condition_watchers_lock:
                 triggered = []
                 for w in self.condition_watchers:
-                    if w['node_id'] != from_id:
+                    wid = str(w['node_id']).lower()
+                    wid_clean = wid.lstrip('!')
+                    if wid not in alt_ids and wid_clean not in alt_ids:
                         continue
                     
                     if now - w.get('last_fired_at', 0) < 60:

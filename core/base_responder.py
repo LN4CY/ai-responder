@@ -182,8 +182,30 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
                 else:
                     from_id_check = str(from_id_raw).lower()
 
+                # Build set of matching ID representations (name, hex ID, pubkey prefix)
+                raw_prefix = str(packet.get('raw_pubkey_prefix', '')).lower()
+                alt_ids = {from_id_check, from_id_check.lstrip('!')}
+                if raw_prefix:
+                    alt_ids.add(raw_prefix)
+                    alt_ids.add(f"!{raw_prefix}")
+
+                radio = getattr(self, 'meshtastic', None)
+                if radio and hasattr(radio, 'find_node_by_name'):
+                    try:
+                        resolved = radio.find_node_by_name(from_id_check)
+                        if resolved and isinstance(resolved, str):
+                            alt_ids.add(resolved.lower())
+                            alt_ids.add(resolved.lower().lstrip('!'))
+                    except Exception:
+                        pass
+
                 with self._node_online_watchers_lock:
-                    triggered = [w for w in self.node_online_watchers if str(w.get('node_id', '')).lower() == from_id_check]
+                    triggered = []
+                    for w in self.node_online_watchers:
+                        wid = str(w.get('node_id', '')).lower()
+                        wid_clean = wid.lstrip('!')
+                        if wid in alt_ids or wid_clean in alt_ids:
+                            triggered.append(w)
                     for w in triggered:
                         if not w.get('is_persistent', False):
                             self.node_online_watchers.remove(w)
