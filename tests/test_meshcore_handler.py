@@ -199,6 +199,89 @@ class TestMeshCoreHandler(unittest.TestCase):
         self.assertEqual(pkt['network'], 'meshcore')
         self.assertFalse(pkt['is_dm'])
 
+    def test_handle_ack_event(self):
+        """Test that incoming RF ACK events set the corresponding pending event."""
+        pending_event = asyncio.Event()
+        self.handler._pending_acks["1234abcd"] = pending_event
+
+        mock_event = MagicMock()
+        mock_event.payload = {
+            "code": "1234abcd",
+            "trip_time": 850
+        }
+
+        asyncio.run(self.handler._handle_ack_event(mock_event))
+
+        self.assertTrue(pending_event.is_set())
+        self.assertIn("1234abcd", self.handler._ack_results)
+        self.assertEqual(self.handler._ack_results["1234abcd"]["trip_time"], 850)
+
+    def test_async_send_chunk_with_ack(self):
+        """Test sending a DM chunk and receiving the expected RF ACK."""
+        mock_meshcore = MagicMock()
+        mock_meshcore.contacts = {}
+
+        mock_send_result = MagicMock()
+        mock_send_result.type = "MSG_SENT"
+        mock_send_result.payload = {
+            "expected_ack": b"\xab\xcd\xef\x01",
+            "suggested_timeout": 2000
+        }
+
+        async def fake_send_msg(dest, text):
+            asyncio.create_task(self._fire_delayed_ack("abcdef01", 350))
+            return mock_send_result
+
+        mock_meshcore.commands.send_msg.side_effect = fake_send_msg
+        self.handler.meshcore = mock_meshcore
+
+        res = asyncio.run(self.handler._async_send_chunk("Hello", "Alice", 0))
+        self.assertTrue(res)
+
+    async def _fire_delayed_ack(self, code, trip_time):
+        await asyncio.sleep(0.05)
+        mock_ack = MagicMock()
+        mock_ack.payload = {"code": code, "trip_time": trip_time}
+        await self.handler._handle_ack_event(mock_ack)
+
+    def test_async_send_chunk_ack_timeout(self):
+        """Test that DM chunk send gracefully times out when no RF ACK is received."""
+        mock_meshcore = MagicMock()
+        mock_meshcore.contacts = {}
+
+        mock_send_result = MagicMock()
+        mock_send_result.type = "MSG_SENT"
+        mock_send_result.payload = {
+            "expected_ack": b"\x99\x88\x77\x66",
+            "suggested_timeout": 100
+        }
+
+        async def fake_send_msg(dest, text):
+            return mock_send_result
+
+        mock_meshcore.commands.send_msg.side_effect = fake_send_msg
+        self.handler.meshcore = mock_meshcore
+        self.handler.ack_timeout = 0.2  # fast test timeout
+
+        res = asyncio.run(self.handler._async_send_chunk("Hello", "Alice", 0))
+        self.assertFalse(res)
+
+    def test_async_send_chunk_broadcast_skips_ack(self):
+        """Test that channel broadcasts do not wait for ACKs."""
+        mock_meshcore = MagicMock()
+        mock_send_chan_result = MagicMock()
+        mock_send_chan_result.type = "OK"
+
+        async def fake_send_chan(chan, text):
+            return mock_send_chan_result
+
+        mock_meshcore.commands.send_chan_msg.side_effect = fake_send_chan
+        self.handler.meshcore = mock_meshcore
+
+        res = asyncio.run(self.handler._async_send_chunk("Broadcast ping", "^all", 0))
+        self.assertTrue(res)
+        self.assertEqual(len(self.handler._pending_acks), 0)
+
 
 class TestMeshCoreMCP(unittest.TestCase):
     """Test suite for FastMCP MeshCore tool functions."""

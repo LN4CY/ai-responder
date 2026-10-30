@@ -101,10 +101,10 @@ class MeshCoreMessageQueue:
 
             if item:
                 # Enforce pacing between distinct message items
-                chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
+                min_delay = getattr(config, 'MESHCORE_POST_ACK_DELAY', 2.0)
                 elapsed = time.time() - self.last_send_time
-                if self.last_send_time > 0 and elapsed < chunk_delay:
-                    sleep_time = chunk_delay - elapsed
+                if self.last_send_time > 0 and elapsed < min_delay:
+                    sleep_time = min_delay - elapsed
                     logger.debug(f"[MeshCore] Pacing: Waiting {sleep_time:.1f}s before sending next message item...")
                     time.sleep(sleep_time)
 
@@ -127,12 +127,18 @@ class MeshCoreMessageQueue:
         max_chunk_length = getattr(config, 'MESSAGE_CHUNK_SIZE', 160)
         chunks = self.handler._split_message(text, max_length=max_chunk_length)
         total_chunks = len(chunks)
+        is_dm = (destination != '^all' and destination != 'broadcast')
 
         for i, chunk in enumerate(chunks):
             self.last_heartbeat = time.time()
             if i > 0:
-                chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
-                time.sleep(chunk_delay)
+                if is_dm:
+                    post_ack_delay = getattr(config, 'MESHCORE_POST_ACK_DELAY', 2.0)
+                    logger.debug(f"[MeshCore] Settling: Waiting {post_ack_delay}s after ACK before chunk {i+1}/{total_chunks}...")
+                    time.sleep(post_ack_delay)
+                else:
+                    chunk_delay = getattr(config, 'CHUNK_DELAY', 5)
+                    time.sleep(chunk_delay)
 
             # Prepend session indicator to first chunk if present
             if i == 0 and session_indicator:
@@ -145,7 +151,7 @@ class MeshCoreMessageQueue:
             success = self.handler._send_chunk_sync(chunk, destination, channel)
             self.last_send_time = time.time()
             if not success:
-                logger.warning(f"[MeshCore] Failed sending chunk {i+1}/{total_chunks} to {destination}")
+                logger.warning(f"[MeshCore] Delivery unconfirmed or failed for chunk {i+1}/{total_chunks} to {destination}. Aborting remaining chunks.")
                 break
 
 
@@ -193,6 +199,11 @@ class MeshCoreHandler:
         self.telemetry_cache = {}
         self.telemetry_timestamps = {}
         self.interesting_nodes = set()
+
+        # Pending RF ACKs tracking: expected_ack (hex string) -> asyncio.Event
+        self._pending_acks: Dict[str, asyncio.Event] = {}
+        self._ack_results: Dict[str, Dict[str, Any]] = {}
+        self._last_ack_time: float = 0.0
 
         # Outgoing message queue
         self._message_queue = MeshCoreMessageQueue(self)
@@ -288,12 +299,14 @@ class MeshCoreHandler:
                     max_reconnect_attempts=5
                 )
 
-            # Subscribe to messaging and connection events
+            # Subscribe to messaging, connection, and delivery ACK events
             self.meshcore.subscribe(EventType.CONTACT_MSG_RECV, self._handle_contact_msg_event)
             self.meshcore.subscribe(EventType.CHANNEL_MSG_RECV, self._handle_channel_msg_event)
             self.meshcore.subscribe(EventType.CONNECTED, self._handle_connected_event)
             self.meshcore.subscribe(EventType.DISCONNECTED, self._handle_disconnected_event)
             self.meshcore.subscribe(EventType.SELF_INFO, self._handle_self_info_event)
+            if hasattr(EventType, 'ACK'):
+                self.meshcore.subscribe(EventType.ACK, self._handle_ack_event)
 
             # Start background message fetching (pulls messages when MESSAGES_WAITING fires)
             try:
@@ -335,6 +348,34 @@ class MeshCoreHandler:
         """Fires when SELF_INFO is received."""
         self.last_activity = time.time()
         logger.debug(f"[MeshCore] Self info updated: {getattr(event, 'payload', {})}")
+
+    async def _handle_ack_event(self, event):
+        """Fires when an RF ACK is received from the mesh network."""
+        self.last_activity = time.time()
+        self._last_ack_time = time.time()
+        payload = getattr(event, 'payload', {}) or {}
+        code = None
+        if isinstance(payload, dict):
+            code = payload.get('code')
+        if not code and hasattr(event, 'attributes') and isinstance(event.attributes, dict):
+            code = event.attributes.get('code')
+
+        if not code:
+            logger.debug(f"[MeshCore] Received ACK event without code: {payload}")
+            return
+
+        code_str = str(code).lower().strip()
+        trip_time = payload.get('trip_time', 0) if isinstance(payload, dict) else 0
+        logger.info(f"🎯 [MeshCore] Received RF ACK for {code_str} (RTT: {trip_time}ms)")
+
+        # Wake up waiting sender coroutine if matching CRC is pending
+        if code_str in self._pending_acks:
+            self._ack_results[code_str] = {
+                'success': True,
+                'trip_time': trip_time,
+                'time': time.time()
+            }
+            self._pending_acks[code_str].set()
 
     async def _handle_contact_msg_event(self, event):
         """Fires when a private DM from a contact is received."""
@@ -457,14 +498,17 @@ class MeshCoreHandler:
             return False
 
     async def _async_send_chunk(self, text: str, destination_id: str, channel_index: int) -> bool:
-        """Asynchronously send a single chunk to the MeshCore radio."""
+        """Asynchronously send a single chunk to the MeshCore radio, awaiting RF ACK if DM."""
         if not self.meshcore:
             logger.warning("[MeshCore] Mock send: meshcore instance not active.")
             return True
 
+        import config
+        wait_for_ack = getattr(config, 'MESHCORE_WAIT_FOR_ACK', True)
+
         try:
             if destination_id == '^all' or destination_id == 'broadcast':
-                # Group channel broadcast
+                # Group channel broadcast (unacknowledged flood)
                 logger.info(f"📤 [MeshCore] Broadcasting to channel {channel_index}: {text[:50]}...")
                 result = await self.meshcore.commands.send_chan_msg(channel_index, text)
                 if result and result.type == EventType.ERROR:
@@ -492,7 +536,46 @@ class MeshCoreHandler:
                 if result and result.type == EventType.ERROR:
                     logger.warning(f"[MeshCore] Error sending DM: {result.payload}")
                     return False
-                return True
+
+                # Extract expected ACK CRC from firmware response
+                expected_ack = None
+                suggested_timeout_ms = 10000
+                if result and hasattr(result, 'payload') and isinstance(result.payload, dict):
+                    raw_ack = result.payload.get('expected_ack')
+                    if isinstance(raw_ack, bytes):
+                        expected_ack = raw_ack.hex().lower()
+                    elif isinstance(raw_ack, str):
+                        expected_ack = raw_ack.lower()
+                    suggested_timeout_ms = result.payload.get('suggested_timeout', 10000)
+                if not expected_ack and hasattr(result, 'attributes') and isinstance(result.attributes, dict):
+                    raw_ack = result.attributes.get('expected_ack')
+                    if raw_ack:
+                        expected_ack = str(raw_ack).lower()
+
+                if not wait_for_ack or not expected_ack:
+                    return True
+
+                # Wait for remote device's RF ACK
+                ack_event = asyncio.Event()
+                self._pending_acks[expected_ack] = ack_event
+
+                # Timeout calculation: allow suggested timeout with padding, bounded by ack_timeout
+                suggested_sec = (suggested_timeout_ms / 1000.0) if suggested_timeout_ms else 10.0
+                timeout_sec = min(max(suggested_sec * 1.5, 6.0), float(self.ack_timeout))
+
+                try:
+                    logger.debug(f"[MeshCore] Awaiting RF ACK for {expected_ack} (timeout: {timeout_sec:.1f}s)...")
+                    await asyncio.wait_for(ack_event.wait(), timeout=timeout_sec)
+                    ack_info = self._ack_results.pop(expected_ack, {})
+                    rtt = ack_info.get('trip_time', 0)
+                    logger.info(f"✅ [MeshCore] Delivery confirmed by remote node (ACK {expected_ack}, RTT: {rtt}ms)")
+                    return True
+                except asyncio.TimeoutError:
+                    logger.warning(f"⚠️ [MeshCore] Timed out waiting for RF ACK ({expected_ack}) after {timeout_sec:.1f}s")
+                    return False
+                finally:
+                    self._pending_acks.pop(expected_ack, None)
+                    self._ack_results.pop(expected_ack, None)
 
         except Exception as e:
             logger.error(f"[MeshCore] Exception during message transmission: {e}")
@@ -734,6 +817,14 @@ class MeshCoreHandler:
         self.connection_healthy = False
         if hasattr(self, '_message_queue') and self._message_queue:
             self._message_queue.stop()
+
+        # Clean up any pending ACKs
+        for ev in getattr(self, '_pending_acks', {}).values():
+            ev.set()
+        if hasattr(self, '_pending_acks'):
+            self._pending_acks.clear()
+        if hasattr(self, '_ack_results'):
+            self._ack_results.clear()
 
         if self._loop and self._loop.is_running():
             try:
