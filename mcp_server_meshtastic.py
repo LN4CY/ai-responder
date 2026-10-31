@@ -46,6 +46,19 @@ def get_my_info() -> Dict[str, Any]:
     return _sanitize_for_json(info) if info else {"error": "Failed to get node info"}
 
 @mcp.tool()
+def get_packet_info() -> Dict[str, Any]:
+    """
+    Get live RF telemetry for the incoming packet that triggered this query.
+    Returns hops count, SNR, RSSI, relay node (if available), and transport method (LoRa RF vs MQTT).
+    Use this when the user asks how their message reached the bot, what path it took, or what its signal strength was.
+    """
+    thread_local = getattr(threading.current_thread(), "ai_context", {})
+    pkt = thread_local.get('packet_metadata')
+    if not pkt:
+        return {"info": "No live inbound packet telemetry recorded for this interaction (e.g. system trigger or proactive task)."}
+    return _sanitize_for_json(pkt)
+
+@mcp.tool()
 def get_mesh_nodes() -> str:
     """CRITICAL: ALWAYS USE THIS TOOL FIRST to get the authoritative list of all currently active mesh nodes, their names, and hardware IDs (!xxxxx). Use this instead of memory tools for live node discovery."""
     if not responder_app or not responder_app.meshtastic:

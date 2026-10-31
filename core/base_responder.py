@@ -234,6 +234,31 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
 
             logger.info(f"📨 [{self.mesh_type.upper()}] Message from {from_node} to {to_node} on channel {channel}: {text[:50]}...")
 
+            # Extract live packet telemetry
+            hops = packet.get('hops')
+            if hops is None:
+                hop_start = packet.get('hopStart', packet.get('hop_start'))
+                hop_limit = packet.get('hopLimit', packet.get('hop_limit'))
+                if hop_start is not None and hop_limit is not None:
+                    hops = max(0, hop_start - hop_limit)
+
+            snr = packet.get('snr', packet.get('rxSnr', packet.get('rx_snr')))
+            rssi = packet.get('rssi', packet.get('rxRssi', packet.get('rx_rssi')))
+            path = packet.get('path')
+            relay_node = packet.get('relayNode', packet.get('relay_node'))
+            via_mqtt = packet.get('viaMqtt', packet.get('via_mqtt', False))
+            rx_time = packet.get('recv_time', packet.get('rxTime', packet.get('rx_time', packet.get('sender_timestamp'))))
+
+            packet_metadata = {
+                'hops': hops,
+                'path': path,
+                'snr': snr,
+                'rssi': rssi,
+                'relay_node': relay_node,
+                'via_mqtt': via_mqtt,
+                'rx_time': rx_time,
+            }
+
             is_dm = self._is_dm(to_node)
 
             # Check if user is in an active session (DM only)
@@ -249,11 +274,11 @@ class BaseAIResponder(HistoryMixin, IndexingMixin, ProactiveMixin, CommandsMixin
                         self.send_response(end_msg, from_node, to_node, channel, is_admin_cmd=False)
                         return
                     if not text.startswith('!ai'):
-                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm)
+                        self._handle_ai_query(text, from_node, to_node, channel, is_dm=is_dm, packet_metadata=packet_metadata)
                         return
 
             if text.lower().startswith('!ai'):
-                self.process_command(text, from_node, to_node, channel)
+                self.process_command(text, from_node, to_node, channel, packet_metadata=packet_metadata)
 
         except Exception as e:
             logger.error(f"Error in on_receive: {e}", exc_info=True)

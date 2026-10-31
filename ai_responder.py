@@ -71,7 +71,7 @@ logging.getLogger('meshcore_handler').setLevel(getattr(logging, log_level, loggi
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('httpcore').setLevel(logging.WARNING)
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # Backward-compatible alias for Meshtastic AI Responder
 AIResponder = MeshtasticAIResponder

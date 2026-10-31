@@ -10,7 +10,7 @@ from core._compat import get_time, get_config_module, get_logger
 class CommandsMixin:
     """Mixin for handling !ai commands, help, conversations, providers, and scheduler."""
 
-    def process_command(self, text, from_node, to_node, channel):
+    def process_command(self, text, from_node, to_node, channel, packet_metadata=None):
         """
         Process AI commands and queries.
         
@@ -22,6 +22,7 @@ class CommandsMixin:
             from_node: Source node ID
             to_node: Destination node ID
             channel: Channel index
+            packet_metadata: Optional telemetry dictionary for the incoming packet
         """
         # Track node for telemetry logging of active users
         try:
@@ -94,7 +95,7 @@ class CommandsMixin:
                 self.clear_history(channel_key)
                 if args:
                     # Treat args as a fresh query after reset
-                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖")
+                    self._handle_ai_query(args, from_node, to_node, channel, is_dm=False, initial_msg="Thinking (New Conversation)... 🤖", packet_metadata=packet_metadata)
                 else:
                     self.send_response(f"✨ Channel {channel} window reset. (History archived in Graph)", from_node, to_node, channel, is_admin_cmd=False)
             return
@@ -140,7 +141,7 @@ class CommandsMixin:
         # If no command matched, treat the entire text (minus !ai) as a query
         query = ' '.join(parts[1:]) if len(parts) > 1 else ''
         if query:
-            self._handle_ai_query(query, from_node, to_node, channel)
+            self._handle_ai_query(query, from_node, to_node, channel, packet_metadata=packet_metadata)
     
     def _handle_help_command(self, from_node, to_node, channel, is_dm, is_admin):
         """Send expanded categorized multi-message help."""

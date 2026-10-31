@@ -292,7 +292,7 @@ class MeshCoreHandler:
                     max_reconnect_attempts=5
                 )
 
-            # Subscribe to messaging, connection, and delivery ACK events
+            # Subscribe to messaging, connection, discovery, and delivery ACK events
             self.meshcore.subscribe(EventType.CONTACT_MSG_RECV, self._handle_contact_msg_event)
             self.meshcore.subscribe(EventType.CHANNEL_MSG_RECV, self._handle_channel_msg_event)
             self.meshcore.subscribe(EventType.CONNECTED, self._handle_connected_event)
@@ -300,6 +300,12 @@ class MeshCoreHandler:
             self.meshcore.subscribe(EventType.SELF_INFO, self._handle_self_info_event)
             if hasattr(EventType, 'ACK'):
                 self.meshcore.subscribe(EventType.ACK, self._handle_ack_event)
+            if hasattr(EventType, 'NEW_CONTACT'):
+                self.meshcore.subscribe(EventType.NEW_CONTACT, self._handle_new_contact_event)
+            if hasattr(EventType, 'PATH_UPDATE'):
+                self.meshcore.subscribe(EventType.PATH_UPDATE, self._handle_path_update_event)
+            if hasattr(EventType, 'ADVERT_PATH'):
+                self.meshcore.subscribe(EventType.ADVERT_PATH, self._handle_advert_path_event)
 
             # Start background message fetching (pulls messages when MESSAGES_WAITING fires)
             try:
@@ -370,6 +376,29 @@ class MeshCoreHandler:
             }
             self._pending_acks[code_str].set()
 
+    async def _handle_new_contact_event(self, event):
+        """Fires when a new contact advertisement is received."""
+        self.last_activity = time.time()
+        contact = getattr(event, 'payload', {}) or {}
+        pubkey = contact.get('public_key')
+        if pubkey and self.meshcore and hasattr(self.meshcore, 'contacts'):
+            self.meshcore.contacts[pubkey] = contact
+            name = contact.get('adv_name') or contact.get('name', 'Unknown')
+            logger.info(f"🆕 [MeshCore] Discovered contact: {name} ({pubkey[:12]})")
+
+    async def _handle_path_update_event(self, event):
+        """Fires when a contact's routing path updates."""
+        self.last_activity = time.time()
+        data = getattr(event, 'payload', {}) or {}
+        pubkey = data.get('public_key')
+        if pubkey and self.meshcore and hasattr(self.meshcore, 'contacts') and pubkey in self.meshcore.contacts:
+            self.meshcore.contacts[pubkey].update(data)
+            logger.debug(f"🛣️ [MeshCore] Updated routing path for {pubkey[:12]}")
+
+    async def _handle_advert_path_event(self, event):
+        """Fires when a path advertisement is heard."""
+        self.last_activity = time.time()
+
     async def _handle_contact_msg_event(self, event):
         """Fires when a private DM from a contact is received."""
         self.last_activity = time.time()
@@ -400,6 +429,18 @@ class MeshCoreHandler:
             my_info = self.meshcore.self_info or {}
             my_id = my_info.get('name') or my_info.get('public_key', 'bot')[:12]
 
+        # Extract live RF packet telemetry
+        plen = payload.get('path_len')
+        hops = None
+        if plen == 255:
+            hops = 0
+        elif plen is not None and isinstance(plen, int) and 0 <= plen < 255:
+            hops = plen
+
+        raw_path = payload.get('path')
+        hash_mode = payload.get('path_hash_mode', 0)
+        formatted_path = self.format_path_hashes(raw_path, hash_mode=hash_mode) if raw_path else None
+
         normalized_packet = {
             'fromId': display_from,
             'toId': my_id,
@@ -407,13 +448,22 @@ class MeshCoreHandler:
             'is_dm': True,
             'network': 'meshcore',
             'raw_pubkey_prefix': pubkey_prefix,
+            'hops': hops,
+            'path_len': plen,
+            'path': formatted_path or raw_path,
+            'snr': payload.get('SNR'),
+            'rssi': payload.get('RSSI'),
+            'sender_timestamp': payload.get('sender_timestamp'),
+            'recv_time': payload.get('recv_time'),
+            'via_mqtt': False,
             'decoded': {
                 'portnum': 'TEXT_MESSAGE_APP',
                 'text': text
             }
         }
 
-        logger.info(f"📨 [MeshCore DM] from {display_from} ({pubkey_prefix}): {text[:50]}...")
+        hop_info = f" ({hops} hops)" if hops is not None else ""
+        logger.info(f"📨 [MeshCore DM] from {display_from} ({pubkey_prefix}){hop_info}: {text[:50]}...")
         if self.on_receive_callback:
             try:
                 self.on_receive_callback(normalized_packet, self)
@@ -465,6 +515,18 @@ class MeshCoreHandler:
         if pubkey_prefix and sender_id == pubkey_prefix:
             display_from = f"!{pubkey_prefix}"
 
+        # Extract live RF packet telemetry
+        plen = payload.get('path_len')
+        hops = None
+        if plen == 255:
+            hops = 0
+        elif plen is not None and isinstance(plen, int) and 0 <= plen < 255:
+            hops = plen
+
+        raw_path = payload.get('path')
+        hash_mode = payload.get('path_hash_mode', 0)
+        formatted_path = self.format_path_hashes(raw_path, hash_mode=hash_mode) if raw_path else None
+
         normalized_packet = {
             'fromId': display_from,
             'toId': '^all',
@@ -472,13 +534,22 @@ class MeshCoreHandler:
             'is_dm': False,
             'network': 'meshcore',
             'raw_pubkey_prefix': pubkey_prefix,
+            'hops': hops,
+            'path_len': plen,
+            'path': formatted_path or raw_path,
+            'snr': payload.get('SNR'),
+            'rssi': payload.get('RSSI'),
+            'sender_timestamp': payload.get('sender_timestamp'),
+            'recv_time': payload.get('recv_time'),
+            'via_mqtt': False,
             'decoded': {
                 'portnum': 'TEXT_MESSAGE_APP',
                 'text': cleaned_text
             }
         }
 
-        logger.info(f"📨 [MeshCore Ch:{channel_idx}] from {display_from}: {cleaned_text[:50]}...")
+        hop_info = f" ({hops} hops)" if hops is not None else ""
+        logger.info(f"📨 [MeshCore Ch:{channel_idx}] from {display_from}{hop_info}: {cleaned_text[:50]}...")
         if self.on_receive_callback:
             try:
                 self.on_receive_callback(normalized_packet, self)
@@ -810,6 +881,58 @@ class MeshCoreHandler:
             }
         }
 
+    def resolve_repeater_hash(self, hash_hex: str) -> str:
+        """Resolve a repeater hash (1 or 2 bytes hex) to its contact name if known."""
+        if not hash_hex or not self.meshcore or not hasattr(self.meshcore, 'contacts'):
+            return hash_hex
+        clean_hash = str(hash_hex).lower().strip()
+        for pubkey, contact in self.meshcore.contacts.items():
+            name = contact.get('adv_name') or contact.get('name')
+            if not name:
+                continue
+            pk_lower = pubkey.lower()
+            if pk_lower.startswith(clean_hash):
+                return f"{hash_hex} [{name}]"
+        try:
+            import hashlib
+            for pubkey, contact in self.meshcore.contacts.items():
+                name = contact.get('adv_name') or contact.get('name')
+                if not name:
+                    continue
+                pub_bytes = bytes.fromhex(pubkey)
+                sha = hashlib.sha256(pub_bytes).hexdigest()
+                if sha.startswith(clean_hash):
+                    return f"{hash_hex} [{name}]"
+        except Exception:
+            pass
+        return hash_hex
+
+    def format_path_hashes(self, path_data, hash_mode: int = 0) -> Optional[str]:
+        """Format path hashes into a readable string like '4161 [Wolf Repeater] → f3ed [LN4CY Repeater]'."""
+        if not path_data:
+            return None
+        hashes = []
+        if isinstance(path_data, list):
+            for item in path_data:
+                if isinstance(item, dict):
+                    h = item.get('hash')
+                    if h:
+                        hashes.append(str(h))
+                elif isinstance(item, str) and item:
+                    hashes.append(item)
+        elif isinstance(path_data, str):
+            clean_str = path_data.strip()
+            if clean_str:
+                char_len = 4 if hash_mode == 1 else 2
+                for i in range(0, len(clean_str), char_len):
+                    segment = clean_str[i:i + char_len]
+                    if len(segment) == char_len:
+                        hashes.append(segment)
+        if not hashes:
+            return None
+        resolved = [self.resolve_repeater_hash(h) for h in hashes]
+        return " → ".join(resolved)
+
     def get_all_nodes(self) -> List[Dict[str, Any]]:
         """Get a list of all known contacts formatted like Meshtastic nodes, including MeshCore node type."""
         if not self.meshcore or not hasattr(self.meshcore, 'contacts'):
@@ -897,11 +1020,33 @@ class MeshCoreHandler:
         return self.get_node_list_summary(max_nodes=max_nodes, filter_type='room')
 
     def get_node_metadata(self, node_id: str) -> str:
-        """Get detailed metadata for a specific contact including type and hops."""
+        """Get detailed metadata for a specific contact including type, stored route, and position."""
         if not node_id:
             return ""
 
         clean_id = node_id[1:] if node_id.startswith('!') else node_id
+
+        # Check if node_id refers to the local bot itself
+        if self.meshcore and hasattr(self.meshcore, 'self_info'):
+            self_info = self.meshcore.self_info or {}
+            my_pubkey = str(self_info.get('public_key', ''))
+            my_name = str(self_info.get('name', ''))
+            is_self = (
+                clean_id.lower() in ('bot', my_name.lower())
+                or (my_pubkey and clean_id.lower().startswith(my_pubkey.lower()[:len(clean_id)]))
+                or node_id.lower() in ('!bot', f"!{my_name.lower()}", f"!{my_pubkey.lower()[:12]}")
+            )
+            if is_self:
+                freq = self_info.get('radio_freq')
+                bw = self_info.get('radio_bw')
+                sf = self_info.get('radio_sf')
+                tx_pwr = self_info.get('tx_power')
+                radio_str = f"Radio: {freq}MHz SF{sf} BW{bw} {tx_pwr}dBm" if freq else "Radio active"
+                lat = self_info.get('adv_lat')
+                lon = self_info.get('adv_lon')
+                pos_str = f"Lat: {lat}, Lon: {lon}" if lat is not None and lon is not None else "Position unknown"
+                return f"[Node: {my_name} ({my_pubkey[:12]}) | Role: Local Bot | {radio_str} | {pos_str}]"
+
         contact = self.find_contact_by_name(clean_id)
         if not contact and self.meshcore and hasattr(self.meshcore, 'get_contact_by_key_prefix'):
             contact = self.meshcore.get_contact_by_key_prefix(clean_id)
@@ -922,12 +1067,22 @@ class MeshCoreHandler:
 
         pubkey = contact.get('public_key', clean_id)
         hops = contact.get('out_path_len', -1)
-        hops_str = "direct (0 hops)" if hops == 0 else ("flood / unknown path" if hops in (-1, 255) else f"{hops} hops")
+        raw_out_path = contact.get('out_path', '')
+        hash_mode = contact.get('out_path_hash_mode', 0)
+        formatted_out_path = self.format_path_hashes(raw_out_path, hash_mode=hash_mode) if raw_out_path else None
+
+        if hops == 0:
+            route_str = "direct (0 hops)"
+        elif hops in (-1, 255):
+            route_str = "flood / unrouted"
+        else:
+            route_str = f"{hops} hops" + (f" ({formatted_out_path})" if formatted_out_path else "")
+
         lat = contact.get('adv_lat')
         lon = contact.get('adv_lon')
 
         pos_str = f"Lat: {lat}, Lon: {lon}" if lat is not None and lon is not None else "Position unknown"
-        return f"[Node: {name} ({pubkey[:12]}) | Type: {type_str} | Path: {hops_str} | {pos_str}]"
+        return f"[Node: {name} ({pubkey[:12]}) | Type: {type_str} | Stored Outbound Route: {route_str} | {pos_str}]"
 
     def request_status(self, destination_id: str) -> Optional[Dict[str, Any]]:
         """Request live status OTA from a contact (repeater, room, or client). Synchronous wrapper."""

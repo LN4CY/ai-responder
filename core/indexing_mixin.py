@@ -202,6 +202,52 @@ class IndexingMixin:
             "object": "MeshNode"
         })
 
+        # Index live packet telemetry facts into Knowledge Graph
+        pkt = payload.get('packet_metadata') or {}
+        if pkt:
+            hops = pkt.get('hops')
+            if hops is not None:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "last_heard_hops",
+                    "object": str(hops)
+                })
+            path = pkt.get('path')
+            if path:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "heard_via_route",
+                    "object": str(path)
+                })
+            snr = pkt.get('snr')
+            if snr is not None:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "last_heard_snr",
+                    "object": f"{snr:.1f}dB" if isinstance(snr, (int, float)) else f"{snr}dB"
+                })
+            rssi = pkt.get('rssi')
+            if rssi is not None:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "last_heard_rssi",
+                    "object": f"{rssi}dBm"
+                })
+            relay = pkt.get('relay_node')
+            if relay:
+                self.mcp_client.call_tool("memory_add_fact", {
+                    "subject": node_id,
+                    "predicate": "heard_via_relay",
+                    "object": str(relay)
+                })
+            via_mqtt = pkt.get('via_mqtt')
+            transport = "MQTT" if via_mqtt else "LoRa_RF"
+            self.mcp_client.call_tool("memory_add_fact", {
+                "subject": node_id,
+                "predicate": "last_heard_transport",
+                "object": transport
+            })
+
         # Link task execution if this is a system proactive turn
         if is_system:
             t_match = re.search(r"\[?(sched-\d+|cond-\d+|node-\d+)\]?", prompt, re.IGNORECASE)
