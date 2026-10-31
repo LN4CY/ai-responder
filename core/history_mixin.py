@@ -130,7 +130,7 @@ class HistoryMixin:
             self.save_history(user_id)
             logger.info(f"Cleared history for {user_id}")
     
-    def _format_dual_metadata(self, local_metadata, remote_metadata, network=None):
+    def _format_dual_metadata(self, local_metadata, remote_metadata, network=None, packet_metadata=None):
         """
         Format dual metadata with clear labels for AI context.
         
@@ -138,6 +138,7 @@ class HistoryMixin:
             local_metadata: Bot's own status metadata
             remote_metadata: User's environmental metadata
             network: Optional originating network ('meshtastic' or 'meshcore')
+            packet_metadata: Optional live inbound packet telemetry dictionary
             
         Returns:
             str: Combined metadata string or None
@@ -145,6 +146,34 @@ class HistoryMixin:
         parts = []
         if network:
             parts.append(f"[Network: {network.capitalize()}]")
+        if packet_metadata:
+            pkt_parts = []
+            hops = packet_metadata.get('hops')
+            if hops is not None:
+                if hops == 0:
+                    pkt_parts.append("Hops: 0 (direct RF)")
+                else:
+                    pkt_parts.append(f"Hops: {hops}")
+            path = packet_metadata.get('path')
+            if path:
+                pkt_parts.append(f"Route: {path}")
+            relay = packet_metadata.get('relay_node')
+            if relay:
+                pkt_parts.append(f"Relayed by: {relay}")
+            snr = packet_metadata.get('snr')
+            if snr is not None:
+                pkt_parts.append(f"SNR: {snr:.1f}dB" if isinstance(snr, (int, float)) else f"SNR: {snr}dB")
+            rssi = packet_metadata.get('rssi')
+            if rssi is not None:
+                pkt_parts.append(f"RSSI: {rssi}dBm")
+            via_mqtt = packet_metadata.get('via_mqtt')
+            if via_mqtt:
+                pkt_parts.append("Transport: MQTT")
+            elif hops is not None or snr is not None or rssi is not None:
+                pkt_parts.append("Transport: LoRa RF")
+            
+            if pkt_parts:
+                parts.append(f"[Live Inbound Packet: {' | '.join(pkt_parts)}]")
         if remote_metadata:
             parts.append(f"[User: {remote_metadata}]")
         if local_metadata:

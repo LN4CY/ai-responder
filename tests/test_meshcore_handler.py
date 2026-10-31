@@ -667,5 +667,159 @@ class TestMeshCoreAdminResolution(unittest.TestCase):
                 mock_send.assert_called_once_with("Thinking... 🤖", "LN4CY_TDeck", "LN4CY_T1000E", 0, is_admin_cmd=False)
 
 
+class TestPacketTelemetryAndRouteAwareness(unittest.TestCase):
+    """Test suite for live packet telemetry preservation and hop/route awareness."""
+
+    def setUp(self):
+        self.handler = MeshCoreHandler(
+            interface_type='tcp',
+            tcp_host='127.0.0.1',
+            tcp_port=5000,
+            ack_timeout=5
+        )
+        self.handler.meshcore = MagicMock()
+        self.handler.meshcore.contacts = {
+            '4161abcdef012345': {'adv_name': 'Wolf Repeater', 'name': 'Wolf Repeater', 'public_key': '4161abcdef012345'},
+            'f3ed998877665544': {'adv_name': 'LN4CY Repeater', 'name': 'LN4CY Repeater', 'public_key': 'f3ed998877665544'},
+            '12a1b2dd1de34455': {'adv_name': 'LN4CY_TDeck', 'name': 'LN4CY_TDeck', 'public_key': '12a1b2dd1de34455', 'out_path_len': 0, 'out_path': ''}
+        }
+        self.handler.meshcore.self_info = {
+            'public_key': '27f0984d5035abcdef',
+            'name': 'LN4CY_T1000E',
+            'radio_freq': 906.875,
+            'radio_bw': 250,
+            'radio_sf': 11,
+            'tx_power': 22,
+            'adv_lat': 35.123,
+            'adv_lon': -80.456
+        }
+
+    def tearDown(self):
+        self.handler.disconnect()
+
+    def test_resolve_repeater_hash(self):
+        # Matching 2-byte prefix
+        resolved = self.handler.resolve_repeater_hash('4161')
+        self.assertEqual(resolved, '4161 [Wolf Repeater]')
+
+        # Unknown hash returns as-is
+        self.assertEqual(self.handler.resolve_repeater_hash('9999'), '9999')
+
+    def test_format_path_hashes(self):
+        # Concatenated 2-byte hashes (hash_mode=1)
+        res = self.handler.format_path_hashes('4161f3ed', hash_mode=1)
+        self.assertEqual(res, '4161 [Wolf Repeater] → f3ed [LN4CY Repeater]')
+
+        # List of hashes
+        res_list = self.handler.format_path_hashes(['4161', 'f3ed'])
+        self.assertEqual(res_list, '4161 [Wolf Repeater] → f3ed [LN4CY Repeater]')
+
+        # Empty or None
+        self.assertIsNone(self.handler.format_path_hashes(None))
+        self.assertIsNone(self.handler.format_path_hashes(''))
+
+    def test_get_node_metadata_self(self):
+        # Querying the bot itself via !bot, bot name, or public key prefix
+        meta_bot = self.handler.get_node_metadata('!bot')
+        self.assertIn('LN4CY_T1000E', meta_bot)
+        self.assertIn('Role: Local Bot', meta_bot)
+        self.assertIn('906.875MHz', meta_bot)
+        self.assertIn('Lat: 35.123, Lon: -80.456', meta_bot)
+
+        meta_name = self.handler.get_node_metadata('LN4CY_T1000E')
+        self.assertIn('Role: Local Bot', meta_name)
+
+        meta_key = self.handler.get_node_metadata('!27f0984d5035')
+        self.assertIn('Role: Local Bot', meta_key)
+
+    def test_get_node_metadata_stored_outbound_route(self):
+        meta = self.handler.get_node_metadata('LN4CY_TDeck')
+        self.assertIn('Stored Outbound Route: direct (0 hops)', meta)
+
+    def test_contact_msg_telemetry_extraction(self):
+        received_packets = []
+        self.handler.on_receive_callback = lambda pkt, h: received_packets.append(pkt)
+
+        event = MagicMock()
+        event.payload = {
+            'pubkey_prefix': '12a1b2dd1de3',
+            'text': 'Hello from 2 hops away',
+            'path_len': 2,
+            'path': '4161f3ed',
+            'path_hash_mode': 1,
+            'SNR': 6.5,
+            'RSSI': -88,
+            'sender_timestamp': 1730000000
+        }
+
+        asyncio.run(self.handler._handle_contact_msg_event(event))
+
+        self.assertEqual(len(received_packets), 1)
+        pkt = received_packets[0]
+        self.assertEqual(pkt['hops'], 2)
+        self.assertEqual(pkt['snr'], 6.5)
+        self.assertEqual(pkt['rssi'], -88)
+        self.assertEqual(pkt['via_mqtt'], False)
+        self.assertIn('4161 [Wolf Repeater] → f3ed [LN4CY Repeater]', pkt['path'])
+
+    def test_contact_msg_direct_plen_255(self):
+        received_packets = []
+        self.handler.on_receive_callback = lambda pkt, h: received_packets.append(pkt)
+
+        event = MagicMock()
+        event.payload = {
+            'pubkey_prefix': '12a1b2dd1de3',
+            'text': 'Direct message',
+            'path_len': 255,
+            'SNR': 10.0,
+            'RSSI': -65
+        }
+
+        asyncio.run(self.handler._handle_contact_msg_event(event))
+
+        self.assertEqual(len(received_packets), 1)
+        pkt = received_packets[0]
+        self.assertEqual(pkt['hops'], 0)
+        self.assertEqual(pkt['snr'], 10.0)
+
+    def test_mcp_get_meshcore_packet_info(self):
+        import threading
+        thread = threading.current_thread()
+        thread.ai_context = {
+            'from_node': 'LN4CY_TDeck',
+            'packet_metadata': {
+                'hops': 2,
+                'path': '4161 [Wolf Repeater] → f3ed [LN4CY Repeater]',
+                'snr': 7.5,
+                'rssi': -85,
+                'via_mqtt': False
+            }
+        }
+        info = mcp_server_meshcore.get_meshcore_packet_info()
+        self.assertEqual(info['hops'], 2)
+        self.assertEqual(info['snr'], 7.5)
+        self.assertEqual(info['rssi'], -85)
+        self.assertIn('Wolf Repeater', info['path'])
+
+    def test_mcp_get_packet_info_meshtastic(self):
+        import mcp_server_meshtastic
+        import threading
+        thread = threading.current_thread()
+        thread.ai_context = {
+            'from_node': '!12345678',
+            'packet_metadata': {
+                'hops': 1,
+                'snr': 9.2,
+                'rssi': -70,
+                'via_mqtt': False,
+                'relay_node': '!abcdef12'
+            }
+        }
+        info = mcp_server_meshtastic.get_packet_info()
+        self.assertEqual(info['hops'], 1)
+        self.assertEqual(info['relay_node'], '!abcdef12')
+        self.assertEqual(info['via_mqtt'], False)
+
+
 if __name__ == '__main__':
     unittest.main()

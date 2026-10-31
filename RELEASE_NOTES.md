@@ -1,3 +1,29 @@
+# Release Notes v2.3.0
+
+This release introduces **Full Packet Telemetry Preservation & Route/Hop Awareness**, **Live Inbound Route vs. Stored Outbound Cache Disambiguation**, **Dynamic MeshCore Routing Event Subscriptions**, **Self-Node Identity Introspection**, and **Packet Telemetry Memory Indexing** across both MeshCore and Meshtastic networks.
+
+## Major Features & Enhancements 🚀
+
+### 📡 Live Packet Telemetry Preservation & Hop/Route Awareness
+- **Live Inbound Packet Route Tracking**: Inbound packets across both MeshCore and Meshtastic now preserve RF telemetry: hop distance (`hops`), repeater route hashes (`path`), signal quality (`SNR`, `RSSI`), transport type (`via_mqtt` / LoRa RF), and timestamps.
+- **Repeater Hash Resolution & Formatting**: MeshCore repeater hashes (1-byte or 2-byte) in inbound packet paths are automatically mapped to known contact names (e.g. `4161 [Wolf Repeater] → f3ed [LN4CY Repeater]`).
+- **Disambiguated Route Context**: Solved the issue where the AI reported multi-hop messages as direct. The context cleanly separates `[Live Inbound Packet: Hops: 2 | Route: ... | SNR: ... | RSSI: ...]` from the radio contact table's `Stored Outbound Route: direct (0 hops)` cache.
+- **Dedicated MCP Packet Telemetry Tools**:
+  - `get_meshcore_packet_info()`: Live RF telemetry (hops, repeater path, SNR, RSSI, transport method) for the incoming MeshCore message.
+  - `get_packet_info()`: Live RF telemetry (hops, SNR, RSSI, relay node, transport method) for the incoming Meshtastic message.
+
+### 🧭 Self-Node Identity & Local Bot Introspection
+- **Self-Node Resolution from `self_info`**: Fixed bot node lookups in MeshCore (`!bot`, bot name, or public key prefix) to inspect `self_info` directly, returning `Role: Local Bot`, frequency, bandwidth, spreading factor, TX power, and coordinates rather than reporting "not found in MeshCore contacts".
+- **Meshtastic Hop Distance Exposure**: Node metadata queries in Meshtastic now include `HopsAway` when available.
+
+### 🛣️ Dynamic Network Discovery & Route Event Subscriptions
+- Subscribed to `EventType.NEW_CONTACT`, `EventType.PATH_UPDATE`, and `EventType.ADVERT_PATH` in `MeshCoreHandler`, continuously updating contact routing tables and logging discovered nodes as advertisements are heard over RF.
+
+### 🧠 Semantic Knowledge Graph Packet Telemetry Indexing
+- Every conversation turn now indexes the inbound packet's RF properties into the SQLite Knowledge Graph (`last_heard_hops`, `heard_via_route`, `last_heard_snr`, `last_heard_rssi`, `last_heard_transport`, `heard_via_relay`), allowing long-term recall of how and where nodes reach the bot.
+
+---
+
 # Release Notes v2.2.0
 
 This release introduces **MeshCore Support**, a **Protocol-Isolated Architecture**, **First-Class Repeaters & Rooms Awareness**, **Adaptive RF ACK Delivery Tracking**, and full **Proactive Agent Parity** across both Meshtastic and MeshCore mesh networks.

@@ -182,7 +182,7 @@ class MeshCoreAIResponder(BaseAIResponder):
 
         self.meshcore.send_message(text, destination, channel, session_indicator)
 
-    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖", packet_metadata=None):
         """
         Handle an AI query for MeshCore.
 
@@ -193,7 +193,7 @@ class MeshCoreAIResponder(BaseAIResponder):
         send_thinking = getattr(config, 'MESHCORE_SEND_THINKING', False)
         if not send_thinking:
             initial_msg = None
-        super()._handle_ai_query(query, from_node, to_node, channel, is_dm=is_dm, initial_msg=initial_msg)
+        super()._handle_ai_query(query, from_node, to_node, channel, is_dm=is_dm, initial_msg=initial_msg, packet_metadata=packet_metadata)
 
     # ==================== Protocol-Specific Admin Commands ====================
 

@@ -103,7 +103,8 @@ class TestHelpAndNewTopic(unittest.TestCase):
             self.responder.clear_history.assert_called_with("Channel:2:from")
             mock_query.assert_called_once_with(
                 "what is the weather?", "from", "^all", 2,
-                is_dm=False, initial_msg="Thinking (New Conversation)... 🤖"
+                is_dm=False, initial_msg="Thinking (New Conversation)... 🤖",
+                packet_metadata=None
             )
 
 if __name__ == '__main__':

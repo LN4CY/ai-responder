@@ -570,6 +570,82 @@ class TestAIResponder(unittest.TestCase):
             self.assertIsNotNone(kwargs['location'])
             self.assertIsNotNone(kwargs['tools'])
 
+    def test_format_dual_metadata_with_packet_telemetry(self):
+        """Test _format_dual_metadata includes live inbound packet details."""
+        pkt_metadata = {
+            'hops': 2,
+            'path': '4161 [Wolf Repeater] → f3ed [LN4CY Repeater]',
+            'snr': 8.5,
+            'rssi': -80,
+            'via_mqtt': False
+        }
+        res = self.responder._format_dual_metadata(
+            local_metadata="[Node: Bot | Radio: 906.875MHz]",
+            remote_metadata="[Node: Alice | Lat: 35.0, Lon: -80.0]",
+            network='meshcore',
+            packet_metadata=pkt_metadata
+        )
+        self.assertIn("[Network: Meshcore]", res)
+        self.assertIn("[Live Inbound Packet: Hops: 2 | Route: 4161 [Wolf Repeater] → f3ed [LN4CY Repeater] | SNR: 8.5dB | RSSI: -80dBm | Transport: LoRa RF]", res)
+        self.assertIn("[User: [Node: Alice | Lat: 35.0, Lon: -80.0]]", res)
+
+    def test_format_dual_metadata_direct_rf(self):
+        """Test _format_dual_metadata for direct 0 hops."""
+        pkt_metadata = {
+            'hops': 0,
+            'snr': 12.0,
+            'rssi': -55,
+            'via_mqtt': False
+        }
+        res = self.responder._format_dual_metadata(
+            local_metadata=None,
+            remote_metadata="[Node: Bob]",
+            packet_metadata=pkt_metadata
+        )
+        self.assertIn("Hops: 0 (direct RF)", res)
+        self.assertIn("Transport: LoRa RF", res)
+
+    def test_format_dual_metadata_mqtt(self):
+        """Test _format_dual_metadata for MQTT packet."""
+        pkt_metadata = {
+            'hops': 0,
+            'via_mqtt': True
+        }
+        res = self.responder._format_dual_metadata(
+            local_metadata=None,
+            remote_metadata="[Node: Charlie]",
+            packet_metadata=pkt_metadata
+        )
+        self.assertIn("Transport: MQTT", res)
+
+    def test_indexing_packet_telemetry_facts(self):
+        """Test that _bg_index_conversation stores packet telemetry facts into knowledge graph."""
+        mock_mcp = MagicMock()
+        self.responder.mcp_client = mock_mcp
+        payload = {
+            'node_id': '!1234abcd',
+            'channel': 0,
+            'prompt': 'hello',
+            'response': 'hi there',
+            'is_dm': True,
+            'is_system': False,
+            'packet_metadata': {
+                'hops': 2,
+                'path': '4161 → f3ed',
+                'snr': 6.2,
+                'rssi': -84,
+                'via_mqtt': False
+            }
+        }
+        self.responder._bg_index_conversation(payload)
+        calls = [c[0][1] for c in mock_mcp.call_tool.call_args_list if c[0][0] == 'memory_add_fact']
+        predicates = {c['predicate']: c['object'] for c in calls if c['subject'] == '!1234abcd'}
+        self.assertEqual(predicates.get('last_heard_hops'), '2')
+        self.assertEqual(predicates.get('heard_via_route'), '4161 → f3ed')
+        self.assertEqual(predicates.get('last_heard_snr'), '6.2dB')
+        self.assertEqual(predicates.get('last_heard_rssi'), '-84dBm')
+        self.assertEqual(predicates.get('last_heard_transport'), 'LoRa_RF')
+
 class TestSessionNotifications(unittest.TestCase):
     def setUp(self):
         # Create temp dir for this test class

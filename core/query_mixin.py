@@ -73,7 +73,7 @@ class QueryMixin:
             logger.error(f"Unexpected error getting AI response: {e}")
             return f"Error: {str(e)}"
 
-    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖"):
+    def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖", packet_metadata=None):
         """
         Handle an AI query in a background thread.
         
@@ -84,6 +84,7 @@ class QueryMixin:
             channel: Channel index
             is_dm: Optional DM status (if already determined)
             initial_msg: Initial "thinking" message to send
+            packet_metadata: Optional telemetry dictionary for the incoming packet
         """
         # Determine if this is a DM interaction if not provided
         if is_dm is None:
@@ -96,7 +97,7 @@ class QueryMixin:
         # Process in background thread
         thread = threading.Thread(
             target=self._process_ai_query_thread,
-            args=(query, from_node, to_node, channel, is_dm)
+            args=(query, from_node, to_node, channel, is_dm, False, False, packet_metadata)
         )
         thread.daemon = True
         thread.start()
@@ -143,7 +144,7 @@ class QueryMixin:
             logger.error(f"Geocoding error: {e}")
             return f"Error contacting geocoding service: {e}"
 
-    def _inject_legacy_metadata(self, query, from_node):
+    def _inject_legacy_metadata(self, query, from_node, packet_metadata=None):
         """Helper to inject a clean metadata block for tool-blind models."""
         handler = getattr(self, 'meshtastic', None)
         if not handler:
@@ -158,13 +159,33 @@ class QueryMixin:
             metadata_block += f"Self: {my_info}\n"
         if user_info:
             metadata_block += f"User ({from_node}): {user_info}\n"
+        if packet_metadata:
+            pkt_desc = []
+            hops = packet_metadata.get('hops')
+            if hops is not None:
+                pkt_desc.append(f"{hops} hops" if hops > 0 else "direct (0 hops)")
+            if packet_metadata.get('path'):
+                pkt_desc.append(f"Route: {packet_metadata['path']}")
+            if packet_metadata.get('relay_node'):
+                pkt_desc.append(f"Relayed by: {packet_metadata['relay_node']}")
+            if packet_metadata.get('snr') is not None:
+                snr = packet_metadata['snr']
+                pkt_desc.append(f"SNR: {snr:.1f}dB" if isinstance(snr, (int, float)) else f"SNR: {snr}dB")
+            if packet_metadata.get('rssi') is not None:
+                pkt_desc.append(f"RSSI: {packet_metadata['rssi']}dBm")
+            if packet_metadata.get('via_mqtt'):
+                pkt_desc.append("Transport: MQTT")
+            elif hops is not None or packet_metadata.get('snr') is not None:
+                pkt_desc.append("Transport: LoRa RF")
+            if pkt_desc:
+                metadata_block += f"Inbound Packet: {' | '.join(pkt_desc)}\n"
         if neighbor_summary:
             metadata_block += f"{neighbor_summary}\n"
         metadata_block += "[/RADIO CONTEXT]"
         
         return f"{query}{metadata_block}"
 
-    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False, disable_tools=False):
+    def _process_ai_query_thread(self, query, from_node, to_node, channel, is_dm=False, is_system_trigger=False, disable_tools=False, packet_metadata=None):
         """Background thread for processing AI queries with adaptive tool support."""
         logger = get_logger()
         time = get_time()
@@ -180,7 +201,8 @@ class QueryMixin:
                 'to_node': to_node,
                 'channel': channel,
                 'is_system_trigger': is_system_trigger,
-                'network': network
+                'network': network,
+                'packet_metadata': packet_metadata
             }
             
         # Inject context for MCP tools running in this thread
@@ -189,7 +211,8 @@ class QueryMixin:
             'to_node': to_node,
             'channel': channel,
             'is_system_trigger': is_system_trigger,
-            'network': network
+            'network': network,
+            'packet_metadata': packet_metadata
         }
             
         try:
@@ -222,8 +245,9 @@ class QueryMixin:
                 is_first_msg = len(current_history) == 0
                 needs_refresh = (from_node in self._refresh_metadata_nodes)
                 
-                keywords = ['battery', 'voltage', 'location', 'where', 'snr', 'rssi', 'distance', 'away', 'status']
+                keywords = ['battery', 'voltage', 'location', 'where', 'snr', 'rssi', 'distance', 'away', 'status', 'path', 'hop', 'hops', 'route', 'repeater']
                 is_keyword_query = any(k in query.lower() for k in keywords)
+                has_packet_metadata = bool(packet_metadata and any(v is not None for v in packet_metadata.values()))
                 
                 mentions_bot = False
                 active_handler = getattr(self, 'meshtastic', None)
@@ -237,7 +261,7 @@ class QueryMixin:
                     bot_names = [n for n in bot_names if n]
                     mentions_bot = any(n in query.lower() for n in bot_names)
 
-                must_refresh = is_first_msg or needs_refresh or is_keyword_query or mentions_bot
+                must_refresh = is_first_msg or needs_refresh or is_keyword_query or mentions_bot or has_packet_metadata
                 
                 combined_metadata = None
                 if must_refresh:
@@ -248,7 +272,8 @@ class QueryMixin:
                     combined_metadata = self._format_dual_metadata(
                         local_metadata,
                         remote_metadata,
-                        network=network if network == 'meshcore' else None
+                        network=network if network == 'meshcore' else None,
+                        packet_metadata=packet_metadata
                     )
                     
                     if from_node in self._refresh_metadata_nodes:
@@ -269,7 +294,7 @@ class QueryMixin:
                         current_history.append({'role': 'user', 'content': msg})
                 else:
                     logger.info(f"💾 Provider '{provider.name}' does not support native tools. Injecting legacy metadata block.")
-                    final_query = self._inject_legacy_metadata(query, from_node) if combined_metadata else query
+                    final_query = self._inject_legacy_metadata(query, from_node, packet_metadata=packet_metadata) if combined_metadata else query
                     if not is_system_trigger:
                         self.add_to_history(history_key, 'user', query, node_id=from_node, metadata=combined_metadata)
                         current_history = list(self.history.get(history_key, []))
@@ -336,7 +361,8 @@ class QueryMixin:
                 'prompt': query,
                 'response': response,
                 'is_dm': is_dm,
-                'is_system': is_system_trigger
+                'is_system': is_system_trigger,
+                'packet_metadata': packet_metadata
             })
             
             logger.info(f"💬 {provider.name} response ({len(response)} chars): {response[:80]}...")

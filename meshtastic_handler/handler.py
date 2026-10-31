@@ -793,9 +793,12 @@ class MeshtasticHandler:
                 # Convert seconds to simpler format if needed, but seconds is fine for AI
                 metadata_parts.append(f"Uptime: {uptime}s")
 
-            # 3. Signal Strength
+            # 3. Signal Strength & Hop Distance
             snr = node_info.get('snr')
             rssi = node_info.get('rssi')
+            hops_away = node_info.get('hopsAway')
+            if hops_away is not None:
+                metadata_parts.append(f"HopsAway: {hops_away}")
             if snr is not None:
                 metadata_parts.append(f"SNR: {snr:.1f}dB")
             if rssi is not None:

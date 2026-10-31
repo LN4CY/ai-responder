@@ -49,6 +49,19 @@ def get_meshcore_self_info() -> Dict[str, Any]:
     return _sanitize_for_json(info) if info else {"error": "Failed to get MeshCore node info"}
 
 @mcp.tool()
+def get_meshcore_packet_info() -> Dict[str, Any]:
+    """
+    Get live RF telemetry for the incoming packet that triggered this query.
+    Returns hops count, repeater path / route, SNR, RSSI, and transport method (LoRa RF vs MQTT).
+    Use this when the user asks how their message reached the bot, what path it took, or what its signal strength was.
+    """
+    thread_local = getattr(threading.current_thread(), "ai_context", {})
+    pkt = thread_local.get('packet_metadata')
+    if not pkt:
+        return {"info": "No live inbound packet telemetry recorded for this interaction (e.g. system trigger or proactive task)."}
+    return _sanitize_for_json(pkt)
+
+@mcp.tool()
 def get_meshcore_contacts() -> str:
     """Get the authoritative list of active MeshCore contacts and neighbors, including node types (Repeater, Room, Chat) and hop distances."""
     if not responder_app or not getattr(responder_app, 'meshcore', None):

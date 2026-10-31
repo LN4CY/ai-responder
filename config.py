@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 MESH_TYPE = os.getenv('MESH_NETWORK_TYPE', os.getenv('MESH_TYPE', 'meshtastic')).lower()  # 'meshtastic', 'meshcore', 'dual'
 
 # Meshtastic Configuration
@@ -125,9 +125,17 @@ TOOL USAGE PROTOCOL:
 1. MESHCORE TOOLS (Data Gathering Only):
    - Use these to inspect contacts and interact with the MeshCore network.
    - "get_meshcore_self_info": View local MeshCore bot identity (public key, name, radio settings).
+   - "get_meshcore_packet_info": Live RF packet telemetry (inbound hops taken, repeater route/path, SNR, RSSI, transport) for the incoming message that triggered this interaction. Use when asked how the user's message reached the bot, what path/route it took, or what its signal strength was.
    - "get_meshcore_contacts": "Who is online" / active MeshCore contacts and neighbor hops.
+   - "get_meshcore_repeaters": Discover MeshCore Repeaters on the mesh, with IDs, hops, and locations.
+   - "get_meshcore_rooms": Discover MeshCore Room servers and BBS communities.
+   - "get_meshcore_status(contact_id_or_name)": Request live OTA status (battery voltage, uptime, noise floor, SNR, packet stats) from a repeater, room, or client.
    - "get_meshcore_contact_details(contact_id_or_name)": View MeshCore contact telemetry, hops, and GPS coordinates.
    - "send_meshcore_message(destination, text, channel)": Send an outbound message or alert on MeshCore.
+
+ROUTE & HOP AWARENESS:
+- Always distinguish between the LIVE INBOUND PACKET route (found in `[Live Inbound Packet: ...]` context or via `get_meshcore_packet_info()`) and the STORED OUTBOUND ROUTE (in contact details).
+- If the user asks what route their message took, how many hops away they are right now, or what repeaters relayed their message, report the LIVE INBOUND PACKET information!
 
 2. SEMANTIC MEMORY (KNOWLEDGE GRAPH & SEARCH):
    - You have persistent long-term memory via built-in memory tools. Use them proactively.
@@ -186,11 +194,13 @@ TOOL USAGE PROTOCOL:
    - You operate across Meshtastic and/or MeshCore mesh networks. Check the user's `[Network: Meshtastic]` or `[Network: MeshCore]` context tag to select the appropriate toolset:
    - FOR MESHTASTIC:
      * "get_my_info": Local Meshtastic bot identity and settings.
+     * "get_packet_info": Live RF packet telemetry (inbound hops taken, SNR, RSSI, relay node, transport) for the incoming message that triggered this interaction.
      * "get_mesh_nodes": "Who is online" on Meshtastic, lists hardware IDs (!xxxxx) and distances.
      * "get_node_details(node_id_or_name)": View Meshtastic SNR, battery, and telemetry. CALL THIS FIRST.
      * "request_node_telemetry(node_id_or_name, telemetry_type)": Force OTA sensor refresh.
    - FOR MESHCORE:
      * "get_meshcore_self_info": Local MeshCore bot identity (public key, name, radio settings).
+     * "get_meshcore_packet_info": Live RF packet telemetry (inbound hops taken, repeater route/path, SNR, RSSI, transport) for the incoming message that triggered this interaction.
      * "get_meshcore_contacts": "Who is online" / active MeshCore contacts, node types (Repeater, Room, Chat), and neighbor hops.
      * "get_meshcore_repeaters": Discover MeshCore Repeaters on the mesh, with IDs, hops, and locations.
      * "get_meshcore_rooms": Discover MeshCore Room servers and BBS communities.
