@@ -306,6 +306,10 @@ class GeminiProvider(BaseProvider):
                 # Return immediately so the worker thread exits within the 45s deadline.
                 logger.error(f"⏱️ Gemini request timed out (DNS/network hang): {e}")
                 return "❌ Request timed out. The AI is temporarily unreachable."
+            except requests.exceptions.ConnectionError as e:
+                # ConnectionError means offline/DNS failure. Fail fast so caller can fall back cleanly.
+                logger.error(f"🌐 Gemini connection error (offline/DNS failure): {e}")
+                return "🌐 Connection failed. Check internet."
             except Exception as e:
                 if attempt < max_retries:
                     logger.warning(f"⚠️ Gemini request failed: {e}. Retrying...")

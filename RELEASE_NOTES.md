@@ -1,3 +1,20 @@
+# Release Notes v2.4.0
+
+This release introduces **Automatic Offline Cloud → Ollama Failover**, ensuring uninterrupted AI responses over LoRa when internet connectivity or upstream cloud APIs go down.
+
+## Major Features & Enhancements 🚀
+
+### 🌩️ Automatic Offline Cloud → Ollama Failover (`OLLAMA_AUTO_FALLBACK`)
+- **Transparent Local Failover**: When a cloud provider (`gemini`, `anthropic`, `openai`) fails due to internet outage, DNS failure, timeout, or upstream 5xx unavailability, `QueryMixin._try_ollama_fallback` automatically routes that turn to local **Ollama** without requiring manual `!ai -p ollama` intervention.
+- **Preserves Preferred Cloud Provider**: Failover operates per turn without overwriting `current_provider`, so normal cloud service resumes automatically once connectivity returns.
+- **`[Offline]` Response Tagging & Context Adaptation**: Successful failover replies are prefixed with `[Offline] `, tune history window to `MEMORY_BOOTSTRAP_LOCAL`, and automatically inject compact `[RADIO CONTEXT]` metadata for tool-less local models.
+- **Configurable Toggle**: Controlled via `OLLAMA_AUTO_FALLBACK=true` (enabled by default in `config.py`).
+
+### ⚡ Gemini Fast-Fail on Network Outages
+- Updated `GeminiProvider.get_response` to catch `requests.exceptions.ConnectionError` and fail fast on attempt 1 rather than blocking behind exponential-backoff retries when offline, cutting failover latency dramatically.
+
+---
+
 # Release Notes v2.3.0
 
 This release introduces **Full Packet Telemetry Preservation & Route/Hop Awareness**, **Live Inbound Route vs. Stored Outbound Cache Disambiguation**, **Dynamic MeshCore Routing Event Subscriptions**, **Self-Node Identity Introspection**, and **Packet Telemetry Memory Indexing** across both MeshCore and Meshtastic networks.

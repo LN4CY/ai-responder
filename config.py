@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 MESH_TYPE = os.getenv('MESH_NETWORK_TYPE', os.getenv('MESH_TYPE', 'meshtastic')).lower()  # 'meshtastic', 'meshcore', 'dual'
 
 # Meshtastic Configuration
@@ -71,6 +71,9 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-haiku-5-5')       # fast model (simple queries)
 ANTHROPIC_THINKING_MODEL = os.getenv('ANTHROPIC_THINKING_MODEL', 'claude-sonnet-5-5')  # thinking model (complex)
 OLLAMA_THINKING_MODEL = os.getenv('OLLAMA_THINKING_MODEL', '')         # empty = same as OLLAMA_MODEL
+
+# Automatic Offline Failover (fall back to local Ollama when cloud providers fail due to network/outage)
+OLLAMA_AUTO_FALLBACK = os.getenv('OLLAMA_AUTO_FALLBACK', 'true').lower() == 'true'
 
 # History and Storage Configuration
 HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
