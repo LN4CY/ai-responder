@@ -646,6 +646,86 @@ class TestAIResponder(unittest.TestCase):
         self.assertEqual(predicates.get('last_heard_rssi'), '-84dBm')
         self.assertEqual(predicates.get('last_heard_transport'), 'LoRa_RF')
 
+    def test_cloud_to_ollama_auto_fallback_on_outage(self):
+        """Test that a cloud provider outage automatically falls back to Ollama with [Offline] prefix and keeps config unchanged."""
+        self.responder.config.set('current_provider', 'gemini')
+        self.responder.send_response = MagicMock()
+        self.responder.meshtastic.get_node_metadata.return_value = "Node !u1 Batt:90%"
+
+        mock_gemini = MagicMock()
+        mock_gemini.name = "Gemini"
+        mock_gemini.supports_tools = True
+        mock_gemini.get_response.return_value = "🌐 Connection failed. Check internet."
+
+        mock_ollama = MagicMock()
+        mock_ollama.name = "Ollama"
+        mock_ollama.supports_tools = False
+        mock_ollama.get_response.return_value = "Local offline answer."
+
+        def fake_get_provider(name, cfg):
+            return mock_ollama if name == 'ollama' else mock_gemini
+
+        with patch('ai_responder.get_provider', side_effect=fake_get_provider):
+            self.responder._process_ai_query_thread("What frequency?", "!u1", "!bot", 0)
+
+        mock_gemini.get_response.assert_called_once()
+        mock_ollama.get_response.assert_called_once()
+        ollama_args, ollama_kwargs = mock_ollama.get_response.call_args
+        self.assertIn("[RADIO CONTEXT]", ollama_args[0])
+        self.assertIsNone(ollama_kwargs['tools'])
+
+        sent_text = self.responder.send_response.call_args[0][0]
+        self.assertEqual(sent_text, "[Offline] Local offline answer.")
+        self.assertEqual(self.responder.config.get('current_provider'), 'gemini')
+
+    def test_cloud_to_ollama_auto_fallback_disabled(self):
+        """Test that disabling ollama_auto_fallback returns the cloud outage message directly."""
+        self.responder.config.set('current_provider', 'gemini')
+        self.responder.config.set('ollama_auto_fallback', False)
+        self.responder.send_response = MagicMock()
+
+        mock_gemini = MagicMock()
+        mock_gemini.name = "Gemini"
+        mock_gemini.supports_tools = True
+        mock_gemini.get_response.return_value = "🌐 Connection failed. Check internet."
+
+        mock_ollama = MagicMock()
+
+        def fake_get_provider(name, cfg):
+            return mock_ollama if name == 'ollama' else mock_gemini
+
+        with patch('ai_responder.get_provider', side_effect=fake_get_provider):
+            self.responder._process_ai_query_thread("ping", "!u1", "!bot", 0)
+
+        mock_ollama.get_response.assert_not_called()
+        sent_text = self.responder.send_response.call_args[0][0]
+        self.assertEqual(sent_text, "🌐 Connection failed. Check internet.")
+
+    def test_cloud_to_ollama_fallback_when_ollama_also_fails(self):
+        """Test that if local Ollama also fails during failover, the original cloud error is returned."""
+        self.responder.config.set('current_provider', 'gemini')
+        self.responder.send_response = MagicMock()
+
+        mock_gemini = MagicMock()
+        mock_gemini.name = "Gemini"
+        mock_gemini.supports_tools = True
+        mock_gemini.get_response.return_value = "❌ Request timed out. The AI is temporarily unreachable."
+
+        mock_ollama = MagicMock()
+        mock_ollama.name = "Ollama"
+        mock_ollama.supports_tools = False
+        mock_ollama.get_response.return_value = "🌐 Cannot connect to Ollama at ollama:11434. Is it running?"
+
+        def fake_get_provider(name, cfg):
+            return mock_ollama if name == 'ollama' else mock_gemini
+
+        with patch('ai_responder.get_provider', side_effect=fake_get_provider):
+            self.responder._process_ai_query_thread("ping", "!u1", "!bot", 0)
+
+        mock_ollama.get_response.assert_called_once()
+        sent_text = self.responder.send_response.call_args[0][0]
+        self.assertEqual(sent_text, "❌ Request timed out. The AI is temporarily unreachable.")
+
 class TestSessionNotifications(unittest.TestCase):
     def setUp(self):
         # Create temp dir for this test class
@@ -1199,6 +1279,24 @@ class TestAIProviders(unittest.TestCase):
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
         response = provider.get_response("test")
         self.assertIn("Is it running?", response)
+
+    @patch('providers.gemini.time.sleep')
+    @patch('providers.gemini.requests.Session')
+    def test_gemini_connection_error_fails_fast(self, mock_session_cls, mock_sleep):
+        """Test that Gemini ConnectionError fails fast on attempt 1 without retry sleep."""
+        from providers.gemini import GeminiProvider
+        provider = GeminiProvider(self.config)
+
+        mock_session = MagicMock()
+        mock_session.post.side_effect = requests.exceptions.ConnectionError("NameResolutionError: offline")
+        mock_session_cls.return_value = mock_session
+
+        with patch.object(config, 'GEMINI_API_KEY', 'test-key'):
+            response = provider.get_response("test")
+
+        self.assertEqual(mock_session.post.call_count, 1)
+        mock_sleep.assert_not_called()
+        self.assertEqual(response, "🌐 Connection failed. Check internet.")
 
 if __name__ == "__main__":
     unittest.main()

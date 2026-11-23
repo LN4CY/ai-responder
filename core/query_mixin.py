@@ -64,6 +64,11 @@ class QueryMixin:
                 prompt, history, context_id=history_key, location=location, 
                 tools=tools, mcp_client=self.mcp_client
             )
+            awareness_enabled = self.config.get('meshtastic_awareness', config.MESHTASTIC_AWARENESS)
+            response = self._try_ollama_fallback(
+                provider_name, provider, response, prompt, history, history_key,
+                location=location, awareness_enabled=awareness_enabled
+            )
             return response
             
         except ValueError as e:
@@ -72,6 +77,103 @@ class QueryMixin:
         except Exception as e:
             logger.error(f"Unexpected error getting AI response: {e}")
             return f"Error: {str(e)}"
+
+    @staticmethod
+    def _is_cloud_outage_error(response) -> bool:
+        """Return True if a cloud provider response indicates network/service outage."""
+        if not isinstance(response, str):
+            return False
+        low = response.lower()
+        outage_markers = (
+            "connection failed",
+            "timed out",
+            "temporarily unreachable",
+            "failed to get response after multiple attempts",
+            "server error",
+            "terminal api error (5",
+            "service unavailable",
+        )
+        return any(marker in low for marker in outage_markers)
+
+    def _try_ollama_fallback(
+        self,
+        cloud_provider_name,
+        cloud_provider,
+        cloud_response,
+        query,
+        current_history,
+        context_id,
+        from_node=None,
+        location=None,
+        awareness_enabled=False,
+        packet_metadata=None,
+        disable_tools=False,
+    ):
+        """Fall back to local Ollama for a single turn when a cloud provider fails due to outage."""
+        logger = get_logger()
+        config = get_config_module()
+        get_provider = get_provider_fn()
+
+        if str(cloud_provider_name).lower() in ('ollama', 'local'):
+            return cloud_response
+
+        auto_fallback = self.config.get('ollama_auto_fallback', getattr(config, 'OLLAMA_AUTO_FALLBACK', True))
+        if not auto_fallback or not self._is_cloud_outage_error(cloud_response):
+            return cloud_response
+
+        logger.warning(
+            f"🌩️ Cloud provider '{cloud_provider_name}' unreachable/failed "
+            f"({str(cloud_response)[:80]}). Falling back to local Ollama."
+        )
+        try:
+            self._touch_worker()
+        except Exception:
+            pass
+
+        try:
+            fallback_provider = get_provider('ollama', self.config)
+        except Exception as e:
+            logger.warning(f"⚠️ Local Ollama failover initialization failed: {e}")
+            return cloud_response
+
+        if fallback_provider is None or fallback_provider is cloud_provider:
+            return cloud_response
+
+        local_limit = getattr(config, 'MEMORY_BOOTSTRAP_LOCAL', 6)
+        fallback_history = list(current_history[-local_limit:]) if current_history else []
+        fallback_tools = (
+            self.mcp_client.get_all_tools()
+            if (awareness_enabled and not disable_tools and fallback_provider.supports_tools and self.mcp_client)
+            else None
+        )
+
+        fallback_query = query
+        if awareness_enabled and from_node and not fallback_provider.supports_tools:
+            fallback_query = self._inject_legacy_metadata(query, from_node, packet_metadata=packet_metadata)
+            if fallback_history and fallback_history[-1].get('role') == 'user':
+                fallback_history[-1] = {'role': 'user', 'content': fallback_query}
+
+        try:
+            fallback_resp = fallback_provider.get_response(
+                fallback_query,
+                fallback_history,
+                context_id=context_id,
+                location=location,
+                tools=fallback_tools,
+                mcp_client=self.mcp_client,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Local Ollama failover error: {e}")
+            return cloud_response
+
+        if fallback_resp == "__SILENT_ACK__":
+            return "__SILENT_ACK__"
+        if isinstance(fallback_resp, str) and fallback_resp and not fallback_resp.startswith(("🌐", "❌", "⏱️", "⚠️ No response")):
+            logger.info("✅ Local Ollama failover succeeded.")
+            return f"[Offline] {fallback_resp}"
+
+        logger.warning(f"⚠️ Local Ollama failover also failed: {fallback_resp}")
+        return cloud_response
 
     def _handle_ai_query(self, query, from_node, to_node, channel, is_dm=None, initial_msg="Thinking... 🤖", packet_metadata=None):
         """
@@ -333,9 +435,15 @@ class QueryMixin:
                 history_limit = config.MEMORY_BOOTSTRAP_LOCAL if is_local else config.MEMORY_BOOTSTRAP_ONLINE
             else:
                 history_limit = 30
+            ctx_id = history_key if not is_system_trigger else f"sys_{history_key}"
             response = provider.get_response(final_query, current_history[-history_limit:], 
-                                          context_id=history_key if not is_system_trigger else f"sys_{history_key}", 
+                                          context_id=ctx_id, 
                                           location=location, tools=tools, mcp_client=self.mcp_client)
+            response = self._try_ollama_fallback(
+                provider_name, provider, response, query, current_history, ctx_id,
+                from_node=from_node, location=location, awareness_enabled=awareness_enabled,
+                packet_metadata=packet_metadata, disable_tools=disable_tools
+            )
             
             # 6. Silent-ACK
             if response == "__SILENT_ACK__":
