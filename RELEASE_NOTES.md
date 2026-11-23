@@ -1,3 +1,26 @@
+# Release Notes v2.5.0
+
+This release introduces **Offline-Only Kiwix Encyclopedia Fallback (`core/kiwix.py`)**, wiring local offline Kiwix ZIM libraries (Wikipedia, WikiMed, Appropedia, iFixit, Post-Disaster, etc.) into local Ollama responses **strictly when online lookup is unavailable**.
+
+## Major Features & Enhancements 🚀
+
+### 📚 Offline-Only Kiwix Reference Injection (`KIWIX_URL`, `KIWIX_OFFLINE_ONLY`)
+- **Zero-Overhead Online Bypass**:
+  - Healthy cloud providers (`gemini`, `anthropic`, `openai`) never call Kiwix.
+  - Direct `ollama` mode performs a lightweight cached TCP connectivity probe (`is_online()`, 60s TTL) when `KIWIX_OFFLINE_ONLY=true` (default) and skips Kiwix whenever internet connectivity is available.
+  - During automatic Cloud → Ollama failover (`OLLAMA_AUTO_FALLBACK`), online lookup is already known to be unavailable, so Kiwix is queried immediately without extra probing.
+- **Smart Query Filtering & Extraction (`core/kiwix.py`)**:
+  - Automatically skips short greetings/acknowledgments, `!`/`/` commands, and mesh RF telemetry/reminder requests while allowing general knowledge, survival, medical, and repair queries.
+  - Queries Kiwix OpenSearch XML (`/search?format=xml`), deduplicates results across ZIM archives, ranks by title/snippet relevance with secondary two-term fallback, and fetches clean lead + keyword-matching article paragraphs capped by `KIWIX_MAX_CHARS` (default `1200`) into an `[OFFLINE REFERENCE (Kiwix)]` block.
+  - Ephemeral context injection ensures conversation history on disk stays clean and Kiwix errors degrade gracefully without breaking Ollama responses.
+- **Configuration Options (`config.py`)**:
+  - `KIWIX_URL`: Base URL of local `kiwix-serve` (e.g., `http://kiwix:8080`; empty disables integration by default).
+  - `KIWIX_OFFLINE_ONLY`: When `true` (default), bypasses Kiwix in direct Ollama mode while internet is reachable.
+  - `KIWIX_MAX_CHARS`: Maximum reference excerpt character budget injected per turn (default `1200`).
+  - `KIWIX_TIMEOUT`: HTTP timeout in seconds for Kiwix queries (default `5.0`).
+
+---
+
 # Release Notes v2.4.0
 
 This release introduces **Automatic Offline Cloud → Ollama Failover**, ensuring uninterrupted AI responses over LoRa when internet connectivity or upstream cloud APIs go down.

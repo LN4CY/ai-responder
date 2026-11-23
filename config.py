@@ -12,7 +12,7 @@ import datetime
 logger = logging.getLogger(__name__)
 
 # Environment Variables
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 MESH_TYPE = os.getenv('MESH_NETWORK_TYPE', os.getenv('MESH_TYPE', 'meshtastic')).lower()  # 'meshtastic', 'meshcore', 'dual'
 
 # Meshtastic Configuration
@@ -75,6 +75,12 @@ OLLAMA_THINKING_MODEL = os.getenv('OLLAMA_THINKING_MODEL', '')         # empty =
 # Automatic Offline Failover (fall back to local Ollama when cloud providers fail due to network/outage)
 OLLAMA_AUTO_FALLBACK = os.getenv('OLLAMA_AUTO_FALLBACK', 'true').lower() == 'true'
 
+# Offline Kiwix Reference Fallback (used ONLY when online lookup is unavailable)
+KIWIX_URL = os.getenv('KIWIX_URL', '')  # e.g., http://kiwix:8080 (empty = disabled)
+KIWIX_MAX_CHARS = int(os.getenv('KIWIX_MAX_CHARS', '1200'))
+KIWIX_TIMEOUT = float(os.getenv('KIWIX_TIMEOUT', '5.0'))
+KIWIX_OFFLINE_ONLY = os.getenv('KIWIX_OFFLINE_ONLY', 'true').lower() == 'true'
+
 # History and Storage Configuration
 HISTORY_DIR = os.getenv('HISTORY_DIR', '/app/data/history')
 HISTORY_MAX_MESSAGES = int(os.getenv('HISTORY_MAX_MESSAGES', '100'))
@@ -110,6 +116,7 @@ TIME AWARENESS:
 
 PERSONA:
 - You receive [Node ID / Contact Name] and minimal environment metadata with user messages.
+- If an [OFFLINE REFERENCE] block is included, use its verified facts to answer accurately and concisely.
 - Keep responses concise, direct, and under 160 characters suitable for LoRa packet transmission.
 """
 
@@ -178,6 +185,7 @@ TIME AWARENESS:
 
 PERSONA:
 - You receive [Node ID] and minimal environment metadata with user messages.
+- If an [OFFLINE REFERENCE] block is included, use its verified facts to answer accurately and concisely.
 - Keep responses concise, direct, and under 200 characters suitable for LoRa packet transmission.
 """
 

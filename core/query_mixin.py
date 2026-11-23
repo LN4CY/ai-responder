@@ -5,6 +5,7 @@
 """AI query execution and provider interaction mixin."""
 
 import threading
+from core import kiwix
 from core._compat import (
     get_provider_fn,
     get_time,
@@ -60,8 +61,17 @@ class QueryMixin:
                 history = self.history[history_key][-limit:]
             
             # Get response
+            effective_prompt = prompt
+            if str(provider_name).lower() in ('ollama', 'local'):
+                effective_prompt = self._maybe_inject_kiwix_context(
+                    prompt, raw_query=prompt, online_unavailable=False
+                )
+                if effective_prompt != prompt and history and history[-1].get('role') == 'user':
+                    history = list(history)
+                    history[-1] = {'role': 'user', 'content': effective_prompt}
+
             response = provider.get_response(
-                prompt, history, context_id=history_key, location=location, 
+                effective_prompt, history, context_id=history_key, location=location, 
                 tools=tools, mcp_client=self.mcp_client
             )
             awareness_enabled = self.config.get('meshtastic_awareness', config.MESHTASTIC_AWARENESS)
@@ -77,6 +87,38 @@ class QueryMixin:
         except Exception as e:
             logger.error(f"Unexpected error getting AI response: {e}")
             return f"Error: {str(e)}"
+
+    def _maybe_inject_kiwix_context(self, formatted_query, raw_query, online_unavailable=False):
+        """Inject offline Kiwix encyclopedia context only when online lookup is unavailable."""
+        logger = get_logger()
+        config = get_config_module()
+
+        kiwix_url = self.config.get('kiwix_url', getattr(config, 'KIWIX_URL', ''))
+        if not kiwix_url:
+            return formatted_query
+
+        offline_only = self.config.get('kiwix_offline_only', getattr(config, 'KIWIX_OFFLINE_ONLY', True))
+        if offline_only and not online_unavailable:
+            if kiwix.is_online():
+                return formatted_query
+
+        try:
+            self._touch_worker()
+        except Exception:
+            pass
+
+        max_chars = int(self.config.get('kiwix_max_chars', getattr(config, 'KIWIX_MAX_CHARS', 1200)))
+        timeout = float(self.config.get('kiwix_timeout', getattr(config, 'KIWIX_TIMEOUT', 5.0)))
+        ref = kiwix.search_kiwix(
+            raw_query,
+            base_url=kiwix_url,
+            max_chars=max_chars,
+            timeout=timeout,
+        )
+        if ref:
+            logger.info(f"📚 Injected Kiwix offline reference ({len(ref)} chars)")
+            return f"{formatted_query}\n\n{ref}"
+        return formatted_query
 
     @staticmethod
     def _is_cloud_outage_error(response) -> bool:
@@ -150,8 +192,12 @@ class QueryMixin:
         fallback_query = query
         if awareness_enabled and from_node and not fallback_provider.supports_tools:
             fallback_query = self._inject_legacy_metadata(query, from_node, packet_metadata=packet_metadata)
-            if fallback_history and fallback_history[-1].get('role') == 'user':
-                fallback_history[-1] = {'role': 'user', 'content': fallback_query}
+
+        fallback_query = self._maybe_inject_kiwix_context(
+            fallback_query, raw_query=query, online_unavailable=True
+        )
+        if fallback_query != query and fallback_history and fallback_history[-1].get('role') == 'user':
+            fallback_history[-1] = {'role': 'user', 'content': fallback_query}
 
         try:
             fallback_resp = fallback_provider.get_response(
@@ -435,6 +481,14 @@ class QueryMixin:
                 history_limit = config.MEMORY_BOOTSTRAP_LOCAL if is_local else config.MEMORY_BOOTSTRAP_ONLINE
             else:
                 history_limit = 30
+            if str(provider_name).lower() in ('ollama', 'local') and not is_system_trigger:
+                enriched_query = self._maybe_inject_kiwix_context(
+                    final_query, raw_query=query, online_unavailable=False
+                )
+                if enriched_query != final_query:
+                    final_query = enriched_query
+                    if current_history and current_history[-1].get('role') == 'user':
+                        current_history[-1] = {'role': 'user', 'content': final_query}
             ctx_id = history_key if not is_system_trigger else f"sys_{history_key}"
             response = provider.get_response(final_query, current_history[-history_limit:], 
                                           context_id=ctx_id, 
