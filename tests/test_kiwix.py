@@ -16,7 +16,6 @@ import requests
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import config
 from ai_responder import AIResponder
 from core import kiwix
 
